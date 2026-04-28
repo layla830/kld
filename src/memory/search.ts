@@ -206,12 +206,14 @@ export async function searchMemories(
     topK
   });
 
-  records ??= await searchMemoriesByText(env.DB, {
-    namespace: input.namespace,
-    query: input.query,
-    types: input.types,
-    limit: topK
-  });
+  if (!records || records.length === 0) {
+    records = await searchMemoriesByText(env.DB, {
+      namespace: input.namespace,
+      query: input.query,
+      types: input.types,
+      limit: topK
+    });
+  }
 
   await markMemoriesRecalled(env.DB, {
     namespace: input.namespace,
