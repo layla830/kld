@@ -9,12 +9,21 @@ export function buildOpenAICompatRequest(req: OpenAIChatRequest, targetModel: st
 }
 
 export function getOpenAICompatUrl(env: Env): string {
+  return `${normalizeAiGatewayBaseUrl(env)}/compat/chat/completions`;
+}
+
+export function normalizeAiGatewayBaseUrl(env: Env): string {
   const base = env.AI_GATEWAY_BASE_URL;
   if (!base) {
     throw new Error("Missing AI_GATEWAY_BASE_URL");
   }
 
-  return `${base.replace(/\/$/, "")}/compat/chat/completions`;
+  return base
+    .replace(/\/+$/, "")
+    .replace(/\/compat$/i, "")
+    .replace(/\/compat\/chat\/completions$/i, "")
+    .replace(/\/compat\/embeddings$/i, "")
+    .replace(/\/anthropic\/v1\/messages$/i, "");
 }
 
 export function buildOpenAICompatHeaders(env: Env): Headers {
@@ -41,11 +50,7 @@ export async function callOpenAICompatEmbeddings(
   env: Env,
   body: { model: string; input: string | string[] }
 ): Promise<Response> {
-  if (!env.AI_GATEWAY_BASE_URL) {
-    throw new Error("Missing AI_GATEWAY_BASE_URL");
-  }
-
-  return fetch(`${env.AI_GATEWAY_BASE_URL.replace(/\/$/, "")}/compat/embeddings`, {
+  return fetch(`${normalizeAiGatewayBaseUrl(env)}/compat/embeddings`, {
     method: "POST",
     headers: buildOpenAICompatHeaders(env),
     body: JSON.stringify(body)

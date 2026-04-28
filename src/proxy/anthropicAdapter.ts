@@ -1,6 +1,7 @@
 import { buildStableMemoryPack } from "../memory/stablePack";
 import type { Env, MemoryApiRecord, OpenAIChatMessage, OpenAIChatRequest, OpenAIChatResponse, TokenUsage } from "../types";
 import { formatMemoryPatch } from "../memory/inject";
+import { normalizeAiGatewayBaseUrl } from "./openaiAdapter";
 
 interface AnthropicTextBlock {
   type: "text";
@@ -92,11 +93,7 @@ function convertMessages(messages: OpenAIChatMessage[]): AnthropicMessage[] {
 }
 
 export function getAnthropicNativeUrl(env: Env): string {
-  if (!env.AI_GATEWAY_BASE_URL) {
-    throw new Error("Missing AI_GATEWAY_BASE_URL");
-  }
-
-  return `${env.AI_GATEWAY_BASE_URL.replace(/\/$/, "")}/anthropic/v1/messages`;
+  return `${normalizeAiGatewayBaseUrl(env)}/anthropic/v1/messages`;
 }
 
 export function buildAnthropicHeaders(env: Env): Headers {

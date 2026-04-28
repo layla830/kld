@@ -38,23 +38,25 @@ Project name: companion-memory-proxy
 Production branch: main
 Root directory: /
 Build command: npm ci
-Deploy command: npm run setup:cloudflare && npx wrangler deploy
+Deploy command: npm run setup:cloudflare && npx wrangler deploy --keep-vars
 ```
 
-在 Cloudflare 这个 Worker 的变量/密钥里填：
+在 Cloudflare 的构建配置里，找到 `Variables and Secrets`，点 `Add variable` 自己新增这 3 个，全部选 Text / 普通文本也可以：
 
 ```text
-AI_GATEWAY_BASE_URL       普通变量
-CHATBOX_API_KEY           Secret
-CF_AIG_TOKEN              Secret
+AI_GATEWAY_BASE_URL       普通变量，可以填到 gateway id 或 /compat 结尾
+CHATBOX_API_KEY           Text，自己编一个 sk-xxx
+CF_AIG_TOKEN              Text，你的 Cloudflare AI Gateway token
 ```
 
 可选：
 
 ```text
-IM_API_KEY                Secret
-DEBUG_API_KEY             Secret
+IM_API_KEY                Text
+DEBUG_API_KEY             Text
 ```
+
+如果你只看到了 `AI_GATEWAY_BASE_URL`，那是正常的。`CHATBOX_API_KEY` 和 `CF_AIG_TOKEN` 不会自动出现，要点 `Add variable` 手动新增名字和值。
 
 填完后点 Deploy。以后你只要 push GitHub，Cloudflare 会自动部署。
 
@@ -69,7 +71,7 @@ npm install
 Deploy command：
 
 ```bash
-npm run setup:cloudflare && npx wrangler deploy --name 你的项目名
+npm run setup:cloudflare && npx wrangler deploy --name 你的项目名 --keep-vars
 ```
 
 `setup:cloudflare` 会自动做这些事：
