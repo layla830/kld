@@ -108,7 +108,7 @@ cd files-mentioned-by-the-user-companion && npm install
 ```
 
 ```bash
-cd files-mentioned-by-the-user-companion && npm run setup:cloudflare && npx wrangler deploy --name 你的项目名
+cd files-mentioned-by-the-user-companion && npm run setup:cloudflare && npx wrangler deploy --name 你的项目名 --keep-vars
 ```
 
 ## 要填的 Text 变量

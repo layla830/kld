@@ -5,9 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
+    "deploy": "wrangler deploy --keep-vars",
     "setup:cloudflare": "node scripts/setup-cloudflare.mjs",
-    "deploy:cloudflare": "npm run setup:cloudflare && wrangler deploy",
+    "deploy:cloudflare": "npm run setup:cloudflare && wrangler deploy --keep-vars",
     "typecheck": "tsc --noEmit",
     "db:migrate:local": "wrangler d1 migrations apply companion_memory_proxy --local",
     "db:migrate:remote": "wrangler d1 migrations apply companion_memory_proxy --remote"
