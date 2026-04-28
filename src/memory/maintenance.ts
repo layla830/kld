@@ -3,7 +3,7 @@ import { createMemory, searchMemoriesByText } from "../db/memories";
 import { getMessagesByIds } from "../db/messages";
 import { upsertMemoryEmbedding } from "./embedding";
 import { extractMemoriesFromMessages, type ExtractedMemory } from "./extract";
-import type { Env, QueueMessage } from "../types";
+import type { Env, MessageRecord, QueueMessage } from "../types";
 
 function getMinImportance(env: Env): number {
   const value = Number(env.MEMORY_MIN_IMPORTANCE || 0.55);
@@ -27,6 +27,28 @@ async function isDuplicateMemory(
   return existing.some((record) => normalizeText(record.content) === content);
 }
 
+function buildExplicitMemoryFallback(messages: MessageRecord[]): ExtractedMemory[] {
+  const indicators = ["记住", "长期偏好", "稳定偏好", "稳定长期", "我的", "偏好是", "口令是"];
+
+  return messages.flatMap((message): ExtractedMemory[] => {
+    if (message.role !== "user") return [];
+    const content = message.content.trim().replace(/^(稳定长期偏好|长期偏好|稳定偏好)\s*[：:]\s*/, "");
+    if (content.length < 8 || content.length > 500) return [];
+    if (!indicators.some((indicator) => content.includes(indicator))) return [];
+
+    return [
+      {
+        type: "note",
+        content,
+        importance: 0.72,
+        confidence: 0.78,
+        tags: ["explicit-memory"],
+        source_message_ids: [message.id]
+      }
+    ];
+  });
+}
+
 export async function runMemoryMaintenance(env: Env, message: QueueMessage): Promise<void> {
   const started = await tryStartIdempotentTask(env.DB, {
     key: message.idempotencyKey,
@@ -41,9 +63,11 @@ export async function runMemoryMaintenance(env: Env, message: QueueMessage): Pro
     });
 
     const extraction = await extractMemoriesFromMessages(env, sourceMessages);
+    const memories =
+      extraction.memories.length > 0 ? extraction.memories : buildExplicitMemoryFallback(sourceMessages);
     const minImportance = getMinImportance(env);
 
-    for (const memory of extraction.memories) {
+    for (const memory of memories) {
       if (memory.importance < minImportance) continue;
       if (memory.confidence < 0.6) continue;
       if (await isDuplicateMemory(env, { namespace: message.namespace, memory })) continue;
