@@ -26,6 +26,20 @@ function extractAssistantText(response: OpenAIChatResponse): string {
   return JSON.stringify(message.content);
 }
 
+function isObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function hasImageContent(body: OpenAIChatRequest): boolean {
+  return body.messages.some((message) => {
+    if (!Array.isArray(message.content)) return false;
+    return message.content.some((part) => {
+      if (!isObject(part)) return false;
+      return part.type === "image_url" || part.type === "input_image";
+    });
+  });
+}
+
 export async function handleChatCompletions(
   request: Request,
   env: Env,
@@ -54,6 +68,11 @@ export async function handleChatCompletions(
   } catch (error) {
     const message = error instanceof Error ? error.message : "Failed to resolve target model";
     return openAiError(message, 500);
+  }
+
+  if (hasImageContent(body)) {
+    if (!env.VISION_MODEL) return openAiError("Missing VISION_MODEL", 500);
+    targetModel = env.VISION_MODEL;
   }
 
   const provider = classifyProvider(targetModel);

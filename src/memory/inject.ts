@@ -6,7 +6,13 @@ import { searchMemories, toMemoryApiRecord } from "./search";
 function contentToText(content: OpenAIChatMessage["content"]): string {
   if (typeof content === "string") return content;
   if (content == null) return "";
-  return JSON.stringify(content);
+  return content
+    .flatMap((part) => {
+      if (!part || typeof part !== "object" || Array.isArray(part)) return [];
+      const value = part as { type?: unknown; text?: unknown };
+      return value.type === "text" && typeof value.text === "string" ? [value.text] : [];
+    })
+    .join("\n");
 }
 
 export function extractLastUserText(messages: OpenAIChatMessage[]): string {
