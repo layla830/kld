@@ -46,10 +46,10 @@ Deploy command: npm run setup:cloudflare && npx wrangler deploy --keep-vars
 模型变量会从 `wrangler.toml` 自动出现在 Cloudflare 里，而且很直观，方便你随时看见和修改：
 
 ```text
-CHAT_MODEL                主聊天模型，比如 anthropic/claude-sonnet-4-5
-MEMORY_FILTER_MODEL       记忆压缩分拣模型，比如 openai/gpt-4.1-mini
-MEMORY_MODEL              记忆小秘书模型，比如 google-ai-studio/gemini-2.5-flash
-VISION_MODEL              导盲犬视觉模型，比如 openai/gpt-4.1-mini
+CHAT_MODEL                主聊天模型，默认 deepseek-v4-pro
+MEMORY_FILTER_MODEL       记忆压缩分拣模型，默认 openai/gpt-4.1-mini
+MEMORY_MODEL              记忆小秘书模型，默认 deepseek-v4-flash
+VISION_MODEL              导盲犬视觉模型，默认 openai/gpt-4.1-mini
 ```
 
 你只需要自己新增这 3 个 Text：
@@ -143,9 +143,9 @@ Model:    companion
 
 ```text
 PUBLIC_MODEL_NAME=companion
-CHAT_MODEL=anthropic/claude-sonnet-4-5
+CHAT_MODEL=deepseek-v4-pro
 MEMORY_FILTER_MODEL=openai/gpt-4.1-mini
-MEMORY_MODEL=google-ai-studio/gemini-2.5-flash
+MEMORY_MODEL=deepseek-v4-flash
 VISION_MODEL=openai/gpt-4.1-mini
 ```
 
