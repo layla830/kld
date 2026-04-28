@@ -1,0 +1,239 @@
+import { authenticate } from "../auth/apiKey";
+import { requireScope } from "../auth/scopes";
+import { getOrCreateConversation } from "../db/conversations";
+import { saveAssistantMessage, saveUserMessages } from "../db/messages";
+import { saveUsageLog } from "../db/usageLogs";
+import { extractLastUserText, injectMemoryPatchAsSystemMessage, selectMemoriesForInjection } from "../memory/inject";
+import { enqueueMemoryMaintenanceIfNeeded } from "../queue/producer";
+import {
+  buildAnthropicNativeRequest,
+  callAnthropicNative,
+  parseAnthropicNonStream
+} from "../proxy/anthropicAdapter";
+import { buildOpenAICompatRequest, callOpenAICompat } from "../proxy/openaiAdapter";
+import { classifyProvider, resolveTargetModel } from "../proxy/resolveModel";
+import { streamAnthropicToOpenAI } from "../proxy/streamAnthropic";
+import { streamOpenAIWithTee } from "../proxy/streamOpenAI";
+import type { Env, OpenAIChatRequest, OpenAIChatResponse } from "../types";
+import { openAiError } from "../utils/json";
+
+function extractAssistantText(response: OpenAIChatResponse): string {
+  const message = response.choices?.[0]?.message;
+  if (!message) return "";
+
+  if (typeof message.content === "string") return message.content;
+  if (message.content == null) return "";
+  return JSON.stringify(message.content);
+}
+
+export async function handleChatCompletions(
+  request: Request,
+  env: Env,
+  ctx: ExecutionContext
+): Promise<Response> {
+  const auth = await authenticate(request, env);
+  if (!auth.ok) return openAiError("Unauthorized", 401, "authentication_error");
+
+  const scopeError = requireScope(auth.profile, "chat:proxy");
+  if (scopeError) return scopeError;
+
+  let body: OpenAIChatRequest;
+  try {
+    body = (await request.json()) as OpenAIChatRequest;
+  } catch {
+    return openAiError("Request body must be valid JSON", 400);
+  }
+
+  if (!Array.isArray(body.messages)) {
+    return openAiError("messages must be an array", 400);
+  }
+
+  let targetModel: string;
+  try {
+    targetModel = resolveTargetModel(body.model, auth.profile, env);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Failed to resolve target model";
+    return openAiError(message, 500);
+  }
+
+  const provider = classifyProvider(targetModel);
+
+  const conversation = await getOrCreateConversation(env.DB, {
+    namespace: auth.profile.namespace
+  });
+
+  const savedUserMessageIds = await saveUserMessages(env.DB, {
+    conversationId: conversation.id,
+    namespace: auth.profile.namespace,
+    source: auth.profile.source,
+    messages: body.messages,
+    requestModel: body.model,
+    upstreamModel: targetModel,
+    upstreamProvider: provider,
+    stream: Boolean(body.stream)
+  });
+  const latestUserMessageId = savedUserMessageIds[savedUserMessageIds.length - 1];
+
+  const memories = await selectMemoriesForInjection(env, {
+    profile: auth.profile,
+    query: extractLastUserText(body.messages)
+  });
+
+  let upstream: Response;
+  try {
+    if (provider === "anthropic") {
+      const anthropicRequest = await buildAnthropicNativeRequest(body, {
+        env,
+        targetModel,
+        namespace: auth.profile.namespace,
+        memories
+      });
+      upstream = await callAnthropicNative(env, anthropicRequest);
+    } else {
+      const patchedBody = injectMemoryPatchAsSystemMessage(body, memories);
+      const upstreamRequest = buildOpenAICompatRequest(patchedBody, targetModel);
+      upstream = await callOpenAICompat(env, upstreamRequest);
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Failed to call upstream";
+    return openAiError(message, 502);
+  }
+
+  if (!upstream.ok) {
+    const errorText = await upstream.text();
+    return new Response(errorText, {
+      status: upstream.status,
+      headers: {
+        "content-type": upstream.headers.get("content-type") || "application/json; charset=utf-8"
+      }
+    });
+  }
+
+  if (body.stream) {
+    if (provider === "anthropic") {
+      return streamAnthropicToOpenAI(upstream, {
+        env,
+        ctx,
+        profile: auth.profile,
+        conversationId: conversation.id,
+        fromMessageId: latestUserMessageId,
+        requestModel: body.model,
+        upstreamModel: targetModel,
+        provider
+      });
+    }
+
+    return streamOpenAIWithTee(upstream, {
+      env,
+      ctx,
+      profile: auth.profile,
+      conversationId: conversation.id,
+      fromMessageId: latestUserMessageId,
+      requestModel: body.model,
+      upstreamModel: targetModel,
+      provider
+    });
+  }
+
+  const responseText = await upstream.text();
+
+  if (provider === "anthropic") {
+    let anthropicParsed: unknown;
+    try {
+      anthropicParsed = JSON.parse(responseText) as unknown;
+    } catch {
+      return openAiError("Upstream returned invalid JSON", 502);
+    }
+
+    const parsed = parseAnthropicNonStream(anthropicParsed as never);
+    const assistantMessageId = await saveAssistantMessage(env.DB, {
+      conversationId: conversation.id,
+      namespace: auth.profile.namespace,
+      source: auth.profile.source,
+      content: parsed.content,
+      requestModel: body.model,
+      upstreamModel: targetModel,
+      provider,
+      stream: false,
+      finishReason: parsed.finishReason,
+      usage: parsed.usage,
+      cacheMode: "anthropic_explicit",
+      cacheTtl: env.ANTHROPIC_CACHE_TTL || "5m"
+    });
+
+    ctx.waitUntil(
+      Promise.all([
+        saveUsageLog(env.DB, {
+          messageId: assistantMessageId,
+          namespace: auth.profile.namespace,
+          provider,
+          model: targetModel,
+          usage: parsed.usage,
+          cacheMode: "anthropic_explicit",
+          cacheTtl: env.ANTHROPIC_CACHE_TTL || "5m"
+        }),
+        enqueueMemoryMaintenanceIfNeeded(env, {
+          namespace: auth.profile.namespace,
+          conversationId: conversation.id,
+          fromMessageId: latestUserMessageId,
+          toMessageId: assistantMessageId,
+          source: auth.profile.source
+        })
+      ])
+    );
+
+    return new Response(JSON.stringify(parsed.openai), {
+      status: 200,
+      headers: {
+        "content-type": "application/json; charset=utf-8"
+      }
+    });
+  }
+
+  let parsed: OpenAIChatResponse;
+  try {
+    parsed = JSON.parse(responseText) as OpenAIChatResponse;
+  } catch {
+    return openAiError("Upstream returned invalid JSON", 502);
+  }
+
+  const assistantContent = extractAssistantText(parsed);
+  const assistantMessageId = await saveAssistantMessage(env.DB, {
+    conversationId: conversation.id,
+    namespace: auth.profile.namespace,
+    source: auth.profile.source,
+    content: assistantContent,
+    requestModel: body.model,
+    upstreamModel: targetModel,
+    provider,
+    stream: false,
+    finishReason: parsed.choices?.[0]?.finish_reason,
+    usage: parsed.usage
+  });
+
+  ctx.waitUntil(
+    Promise.all([
+      saveUsageLog(env.DB, {
+        messageId: assistantMessageId,
+        namespace: auth.profile.namespace,
+        provider,
+        model: targetModel,
+        usage: parsed.usage
+      }),
+      enqueueMemoryMaintenanceIfNeeded(env, {
+        namespace: auth.profile.namespace,
+        conversationId: conversation.id,
+        fromMessageId: latestUserMessageId,
+        toMessageId: assistantMessageId,
+        source: auth.profile.source
+      })
+    ])
+  );
+
+  return new Response(responseText, {
+    status: 200,
+    headers: {
+      "content-type": "application/json; charset=utf-8"
+    }
+  });
+}

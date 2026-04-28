@@ -1,146 +1,281 @@
-# saki-gateway
+# Companion Memory Proxy
 
-恋爱网关后端服务，提供聊天、记忆、日志、提醒与内置 Web 面板。
+这是一个 Cloudflare Workers 上的 OpenAI-compatible 记忆代理。当前已经完成 M1-M5 骨架：
 
-> 这个公开仓库已经做过脱敏处理：
-> - 不包含任何真实 API key / token
-> - 不包含真实 persona、长期记忆、聊天日志、数据库
-> - 不包含用户导入的数据与运行时缓存
+- `GET /health`
+- `GET /v1/models`
+- `POST /v1/chat/completions` 非流式 OpenAI-compatible proxy
+- `POST /v1/chat/completions` 流式 OpenAI SSE 透传
+- `Authorization: Bearer ...` / `x-api-key` 鉴权
+- D1 保存用户消息、助手消息和 usage log
+- 流式响应会边返回给前端，边累计助手回复，结束后写入 D1
+- 记忆 API：手动写入、列出、读取、修改、软删除、搜索
+- 聊天请求会按 `INJECTION_MODE` 自动注入长期记忆
+- 可用 `MEMORY_FILTER_MODEL` 在注入前筛选、压缩候选记忆
+- 自动路由：模型名包含 `anthropic` 或 `claude` 时走 Claude native + 显式 prompt cache，其余走 OpenAI-compatible
+- 聊天结束后通过 Queue 自动抽取长期记忆
+- Cache API：前端可缓存网页、搜索结果、工具结果、上下文包
 
-## 功能概览
+## 最简单部署：GitHub 自动部署
 
-- 聊天与上下文组装
-- 长期记忆管理
-- 每日日志生成与查看
-- 基于今日日志整理长期记忆
-- 提醒与事件记录
-- Web 面板 API
-- 仓库内置静态面板资源，可直接开箱运行
-
-## 项目结构
+你可以不用在本机跑部署命令。把这个项目放到 GitHub 仓库后，只要推送到 `main`，GitHub Actions 会自动：
 
 ```text
-src/saki_gateway/
-  server.py        # HTTP API 与主逻辑
-  memory.py        # 记忆存储层
-  runtime_store.py # 会话、提醒、事件存储
-  static/          # 内置前端面板静态文件
-
-data/
-  config.example.json
-  active_memory.md
-  core_profile.md
-  raw/events.jsonl
+npm ci
+npm run typecheck
+npm run setup:cloudflare
+npx wrangler deploy
 ```
 
-## 运行要求
+你只需要在 GitHub 仓库里填这些 Secrets：
 
-- Python 3.11+
-- 已配置可用的大模型 API
+```text
+CLOUDFLARE_API_TOKEN      Cloudflare API token
+CLOUDFLARE_ACCOUNT_ID     Cloudflare account id
+AI_GATEWAY_BASE_URL       https://gateway.ai.cloudflare.com/v1/<account_id>/<gateway_id>
+CHATBOX_API_KEY           你给 Chatbox 用的 sk-xxx
+CF_AIG_TOKEN              Cloudflare AI Gateway token
+```
 
-## 快速启动
+可选 Secrets：
+
+```text
+IM_API_KEY
+DEBUG_API_KEY
+```
+
+可选 Variables：
+
+```text
+WORKER_NAME               不填就用 companion-memory-proxy
+```
+
+路径：
+
+```text
+GitHub 仓库 -> Settings -> Secrets and variables -> Actions
+```
+
+填完后去：
+
+```text
+Actions -> Deploy Worker -> Run workflow
+```
+
+以后改代码只要 push 到 `main`，它会自己部署。
+
+## 手动部署命令
+
+Build command:
 
 ```bash
-git clone https://github.com/wusaki0723/Aelios.git
-cd Aelios
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e .
-cp data/config.example.json data/config.json
+npm install
 ```
 
-然后编辑 `data/config.json`，填写你自己的：
-
-- 模型 API 地址与 API key
-- 飞书 / QQ Bot / NapCat 配置
-- persona 示例内容
-- 面板密码哈希
-
-启动：
+Deploy command：
 
 ```bash
-python -m src.saki_gateway.server
+npm run setup:cloudflare && npx wrangler deploy --name 你的项目名
 ```
 
-或者使用已安装脚本：
+`setup:cloudflare` 会自动做这些事：
+
+- 创建或查找 D1：`companion_memory_proxy`
+- 自动把 D1 的 `database_id` 写进 `wrangler.toml`
+- 执行 D1 migrations 建表
+- 创建或复用 Vectorize：`companion_memories`
+- 创建 Vectorize metadata indexes：`namespace`、`status`、`type`、`pinned`
+- 确保 Vectorize binding 存在
+- 创建或复用 Queue：`companion-memory`
+
+如果你的平台要求先进入项目目录，就写成：
 
 ```bash
-saki-gateway
+cd files-mentioned-by-the-user-companion && npm install
 ```
-
-默认端口：`3457`
-
-## 首次配置说明
-
-### 1. 配置模型 API
-
-至少填写：
-
-- `chat_api.base_url`
-- `chat_api.api_key`
-- `chat_api.model`
-
-如需记忆整理、工具调用或搜索，再补充：
-
-- `action_api.*`
-- `search_api.*`
-
-### 2. 配置 persona
-
-仓库里只保留了示例 persona。请按自己的需求修改：
-
-- `persona.partner_name`
-- `persona.partner_role`
-- `persona.call_user`
-- `persona.core_identity`
-- `persona.boundaries`
-
-### 3. 配置面板密码
-
-`dashboard_security.password` 需要替换成你自己的密码或哈希值。
-
-### 4. 第三方通道
-
-如需启用飞书、QQ Bot 或 NapCat，请填写你自己的：
-
-- App ID
-- App Secret / Token
-- 对应回调地址
-
-## 数据目录说明
-
-以下内容属于运行时数据，不建议提交：
-
-- `data/config.json`
-- `data/*.db`
-- `data/*.db-shm`
-- `data/*.db-wal`
-- `data/raw/events.jsonl`
-- `.run/`
-
-仓库中保留的 `active_memory.md`、`core_profile.md`、`events.jsonl` 仅为示例或空文件，方便 clone 后直接启动。
-
-## 面板访问
-
-启动后访问：
-
-- `http://127.0.0.1:3457/`
-
-静态文件由后端从 `src/saki_gateway/static/` 提供。
-
-## 开发说明
-
-如果你要更新面板资源，可以从原前端目录同步到仓库内静态目录：
 
 ```bash
-rsync -a --delete --exclude='*.bak-*' /path/to/saki-phone/web/ src/saki_gateway/static/
+cd files-mentioned-by-the-user-companion && npm run setup:cloudflare && npx wrangler deploy --name 你的项目名
 ```
 
-## 安全提醒
+## Secrets
 
-请不要把以下内容提交到公开仓库：
+至少设置一个客户端 key，以及上游所需的 key：
+所有模型调用都走 Cloudflare AI Gateway。自定义 provider 请在 AI Gateway 里配置，Worker 只传模型名。
 
-- 真实 API keys
-- 真实聊天记录、长期记忆、persona
-- 导出的 worldbook / notion 数据
-- 任何包含个人域名、账号 ID、群 ID、用户 ID 的文件
+```bash
+wrangler secret put CHATBOX_API_KEY
+wrangler secret put CF_AIG_TOKEN
+```
+
+## Chatbox 配置
+
+```text
+Base URL: https://<your-worker>.workers.dev/v1
+API Key:  你设置的 CHATBOX_API_KEY
+Model:    companion
+```
+
+## 模型路由
+
+模型名全部由环境变量控制，代码里不内置固定模型：
+
+```text
+PUBLIC_MODEL_NAME=companion
+DEFAULT_UPSTREAM_MODEL=anthropic/claude-sonnet-4-5
+MEMORY_FILTER_MODEL=openai/gpt-4.1-mini
+MEMORY_MODEL=google-ai-studio/gemini-2.5-flash
+EMBEDDING_MODEL=@cf/baai/bge-m3
+```
+
+主模型、小模型分拣、embedding 都从 Worker 调 Cloudflare AI Gateway；Worker 不直接调用 OpenAI/Anthropic key，也不直接调用 Workers AI 模型。
+
+路由规则：
+
+```text
+模型名包含 anthropic 或 claude -> Anthropic native endpoint + cache_control
+其他模型名                    -> Cloudflare AI Gateway OpenAI-compatible endpoint
+```
+
+Claude 路径会跳过 Cloudflare 整轮 response cache，并使用 Anthropic prompt cache：
+
+```text
+ANTHROPIC_CACHE_ENABLED=true
+ANTHROPIC_CACHE_TTL=5m
+ANTHROPIC_CACHE_STABLE_SYSTEM=true
+```
+
+## Memory API
+
+写一条记忆：
+
+```bash
+curl -X POST "https://<your-worker>.workers.dev/v1/memories" \
+  -H "Authorization: Bearer <CHATBOX_API_KEY>" \
+  -H "content-type: application/json" \
+  -d '{
+    "type": "preference",
+    "content": "用户喜欢自然、短句、像 IM 一样的互动。",
+    "importance": 0.9,
+    "confidence": 1,
+    "tags": ["style", "chat"]
+  }'
+```
+
+搜索记忆：
+
+```bash
+curl -X POST "https://<your-worker>.workers.dev/v1/memories/search" \
+  -H "Authorization: Bearer <CHATBOX_API_KEY>" \
+  -H "content-type: application/json" \
+  -d '{ "query": "用户喜欢什么聊天风格？", "top_k": 8 }'
+```
+
+高级前端也可以显式提交一段对话，让后台抽取记忆：
+
+```bash
+curl -X POST "https://<your-worker>.workers.dev/v1/memories/ingest" \
+  -H "Authorization: Bearer <CHATBOX_API_KEY>" \
+  -H "content-type: application/json" \
+  -d '{
+    "source": "custom_frontend",
+    "conversation_id": "default",
+    "auto_extract": true,
+    "messages": [
+      { "role": "user", "content": "我最近在做 Cloudflare Worker 记忆代理。" },
+      { "role": "assistant", "content": "我记住啦，你在做一个带长期记忆的网关。" }
+    ]
+  }'
+```
+
+## Memory Injection
+
+普通 Chatbox 不需要主动调用 Memory API。只要 `/v1/memories` 里有 active 记忆，`/v1/chat/completions` 会在请求发给上游模型前自动追加一条 system memory patch。
+
+当前支持：
+
+```text
+INJECTION_MODE=rag     根据最后一条用户消息搜索相关记忆
+INJECTION_MODE=full    注入 active memories
+INJECTION_MODE=hybrid  pinned memories + RAG 相关记忆
+INJECTION_MODE=none    不注入
+```
+
+注入前的小模型筛选/压缩：
+
+```text
+ENABLE_MEMORY_FILTER=true
+MEMORY_FILTER_MODEL=openai/gpt-4.1-mini
+MEMORY_FILTER_MAX_CANDIDATES=16
+MEMORY_FILTER_MAX_OUTPUT=6
+```
+
+流程是：
+
+```text
+Vectorize/D1 召回候选记忆
+  -> MEMORY_FILTER_MODEL 判断相关性并压缩
+  -> 主模型只收到筛过的 memory patch
+```
+
+## Cache API
+
+写入缓存：
+
+```bash
+curl -X PUT "https://<your-worker>.workers.dev/v1/cache/web/example-key" \
+  -H "Authorization: Bearer <CHATBOX_API_KEY>" \
+  -H "content-type: application/json" \
+  -d '{
+    "value": {
+      "title": "文章标题",
+      "summary": "前端生成的摘要"
+    },
+    "ttl_seconds": 86400,
+    "tags": ["web", "article"]
+  }'
+```
+
+读取缓存：
+
+```bash
+curl "https://<your-worker>.workers.dev/v1/cache/web/example-key" \
+  -H "Authorization: Bearer <CHATBOX_API_KEY>"
+```
+
+删除缓存：
+
+```bash
+curl -X DELETE "https://<your-worker>.workers.dev/v1/cache/web/example-key" \
+  -H "Authorization: Bearer <CHATBOX_API_KEY>"
+```
+
+相关配置：
+
+```text
+ENABLE_CACHE_API=true
+CACHE_DEFAULT_TTL_SECONDS=86400
+CACHE_MAX_VALUE_BYTES=262144
+```
+
+## Auto Memory
+
+聊天完成后会自动投递 `memory_maintenance` 任务：
+
+```text
+保存 user/assistant messages
+  -> Queue memory_maintenance
+  -> MEMORY_MODEL 通过 Cloudflare AI Gateway 抽取 JSON
+  -> importance/confidence 过滤
+  -> D1 memories
+  -> Vectorize embedding upsert
+```
+
+相关配置：
+
+```text
+ENABLE_AUTO_MEMORY=true
+MEMORY_MODE=external
+MEMORY_MODEL=google-ai-studio/gemini-2.5-flash
+MEMORY_MIN_IMPORTANCE=0.55
+```

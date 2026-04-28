@@ -1,0 +1,139 @@
+import { listMemories } from "../db/memories";
+import type { Env, InjectionMode, KeyProfile, MemoryApiRecord, OpenAIChatMessage, OpenAIChatRequest } from "../types";
+import { filterAndCompressMemories } from "./filter";
+import { searchMemories, toMemoryApiRecord } from "./search";
+
+function contentToText(content: OpenAIChatMessage["content"]): string {
+  if (typeof content === "string") return content;
+  if (content == null) return "";
+  return JSON.stringify(content);
+}
+
+export function extractLastUserText(messages: OpenAIChatMessage[]): string {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.role === "user") return contentToText(message.content);
+  }
+
+  return "";
+}
+
+function resolveInjectionMode(profile: KeyProfile, env: Env): InjectionMode {
+  const mode = env.INJECTION_MODE || profile.injectionMode;
+  if (mode === "full" || mode === "hybrid" || mode === "none") return mode;
+  return "rag";
+}
+
+function getTopK(env: Env): number {
+  const value = Number(env.MEMORY_TOP_K || 8);
+  return Number.isFinite(value) ? Math.min(Math.max(value, 1), 50) : 8;
+}
+
+function dedupeMemories(memories: MemoryApiRecord[]): MemoryApiRecord[] {
+  const seen = new Set<string>();
+  const result: MemoryApiRecord[] = [];
+
+  for (const memory of memories) {
+    if (seen.has(memory.id)) continue;
+    seen.add(memory.id);
+    result.push(memory);
+  }
+
+  return result;
+}
+
+export async function selectMemoriesForInjection(
+  env: Env,
+  input: { profile: KeyProfile; query: string }
+): Promise<MemoryApiRecord[]> {
+  const mode = resolveInjectionMode(input.profile, env);
+  if (mode === "none") return [];
+
+  const namespace = input.profile.namespace;
+
+  if (mode === "full") {
+    const records = await listMemories(env.DB, {
+      namespace,
+      status: "active",
+      limit: 100
+    });
+
+    return filterAndCompressMemories(env, {
+      query: input.query,
+      memories: records.map((record) => toMemoryApiRecord(record))
+    });
+  }
+
+  const ragMemories = input.query.trim()
+    ? await searchMemories(env, {
+        namespace,
+        query: input.query,
+        topK: getTopK(env)
+      })
+    : [];
+
+  if (mode === "rag") {
+    return filterAndCompressMemories(env, {
+      query: input.query,
+      memories: ragMemories
+    });
+  }
+
+  const records = await listMemories(env.DB, {
+    namespace,
+    status: "active",
+    limit: 100
+  });
+  const pinned = records.filter((record) => record.pinned).map((record) => toMemoryApiRecord(record));
+
+  return filterAndCompressMemories(env, {
+    query: input.query,
+    memories: dedupeMemories([...pinned, ...ragMemories])
+  });
+}
+
+export function formatMemoryPatch(memories: MemoryApiRecord[]): string {
+  if (memories.length === 0) return "";
+
+  const lines = memories.map((memory) => {
+    const importance = memory.importance.toFixed(2);
+    const pinned = memory.pinned ? "[pinned]" : "";
+    return `- [${memory.type}][importance=${importance}]${pinned} ${memory.content}`;
+  });
+
+  return [
+    "以下是你自然记得的长期记忆。只有在相关时使用，不要机械复述。",
+    "不要说“根据记忆库”“系统记录”或暴露任何代理层实现。",
+    "",
+    "<memories>",
+    ...lines,
+    "</memories>"
+  ].join("\n");
+}
+
+export function injectMemoryPatchAsSystemMessage(
+  request: OpenAIChatRequest,
+  memories: MemoryApiRecord[]
+): OpenAIChatRequest {
+  const patch = formatMemoryPatch(memories);
+  if (!patch) return request;
+
+  const memoryMessage: OpenAIChatMessage = {
+    role: "system",
+    content: patch
+  };
+
+  const messages = [...request.messages];
+  let insertAt = 0;
+
+  while (insertAt < messages.length && messages[insertAt].role === "system") {
+    insertAt += 1;
+  }
+
+  messages.splice(insertAt, 0, memoryMessage);
+
+  return {
+    ...request,
+    messages
+  };
+}

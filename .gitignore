@@ -1,46 +1,6 @@
-# Python
-__pycache__/
-*.py[cod]
-*.so
-.venv/
-
-# Build
-build/
-dist/
-*.egg-info/
-
-# Runtime
-.run/
-*.log
-*.pid
-
-# Local config and secrets
-data/config.json
+node_modules/
+.wrangler/
+.dev.vars
 .env
-.env.*
-
-# Runtime databases
-data/*.db
-data/*.db-shm
-data/*.db-wal
-
-# Runtime logs / imports
-data/notion_import/
-
-# OS/editor
-.DS_Store
-.vscode/
-.idea/
-
-# Runtime debug / dumps
-data/debug_*.json
-data/prompt_dump.txt
-data/active_memory.md.backup
-data/raw/events.jsonl
-
-# Temp files
-*.tmp
-*.py.tmp
-
-# Demo copy
-sullyos-copy/
+.wrangler-secrets.json
+dist/
