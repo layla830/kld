@@ -2,6 +2,12 @@ import { saveAssistantMessage } from "../db/messages";
 import { saveUsageLog } from "../db/usageLogs";
 import { enqueueMemoryMaintenanceIfNeeded } from "../queue/producer";
 import { normalizeAnthropicUsage } from "./anthropicAdapter";
+import {
+  createThinkingFilterState,
+  flushPendingDash,
+  processStreamChunk,
+  type ThinkingFilterState,
+} from "../preset/streamFilters";
 import type { Env, KeyProfile, TokenUsage } from "../types";
 import { getSseData, splitSseEvents } from "../utils/sseParser";
 
@@ -23,6 +29,7 @@ interface StreamState {
   reasoningText: string;
   finishReason: string | null;
   usage?: TokenUsage;
+  thinkingFilter: ThinkingFilterState;
 }
 
 function openAIChunk(delta: { content?: string; reasoning_content?: string }): Uint8Array {
@@ -64,11 +71,16 @@ function consumeAnthropicData(data: string, state: StreamState): { content?: str
     }
 
     if (parsed.type === "content_block_delta" && parsed.delta?.type === "text_delta" && parsed.delta.text) {
-      state.assistantText += parsed.delta.text;
-      return { content: parsed.delta.text };
+      // Filter visible content: strip leaked <thinking>, replace dashes, remove ■.
+      // reasoning_content (thinking_delta) is handled separately and never filtered.
+      const filtered = processStreamChunk(parsed.delta.text, state.thinkingFilter);
+      if (!filtered) return null;
+      state.assistantText += filtered;
+      return { content: filtered };
     }
 
     if (parsed.type === "content_block_delta" && parsed.delta?.type === "thinking_delta" && parsed.delta.thinking) {
+      // reasoning_content is NEVER filtered — pass through as-is.
       state.reasoningText += parsed.delta.thinking;
       return { reasoning_content: parsed.delta.thinking };
     }
@@ -141,7 +153,8 @@ export function streamAnthropicToOpenAI(upstream: Response, options: StreamAnthr
   const state: StreamState = {
     assistantText: "",
     reasoningText: "",
-    finishReason: null
+    finishReason: null,
+    thinkingFilter: createThinkingFilterState()
   };
 
   void (async () => {
@@ -172,6 +185,13 @@ export function streamAnthropicToOpenAI(upstream: Response, options: StreamAnthr
         if (!data) continue;
         const delta = consumeAnthropicData(data, state);
         if (delta) await writer.write(openAIChunk(delta));
+      }
+
+      // Flush any trailing dash that was held for cross-chunk collapsing.
+      const trailing = flushPendingDash(state.thinkingFilter);
+      if (trailing) {
+        state.assistantText += trailing;
+        await writer.write(openAIChunk({ content: trailing }));
       }
 
       await writer.write(doneChunk());

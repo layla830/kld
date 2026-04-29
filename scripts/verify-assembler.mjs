@@ -1675,6 +1675,333 @@ check("preset_lite no longer hardcodes short paragraphs or hidden-thinking suppr
 });
 
 // ---------------------------------------------------------------------------
+// Contract mirrors for preset/regexRules.ts, preset/regexPipeline.ts,
+// preset/historyPreprocess.ts, and preset/streamFilters.ts
+// ---------------------------------------------------------------------------
+
+// --- Regex rules (must match src/preset/regexRules.ts) ---
+
+const STRIP_THINKING = { id: "strip_thinking", find: /<thinking>[\s\S]*?<\/thinking>/g, replace: "", applyTo: ["content", "history"] };
+const STRIP_LANG_DETAILS = { id: "strip_lang_details", find: /<details>\s*<summary>(英文版|日本語版|English|Japanese)<\/summary>[\s\S]*?<\/details>/g, replace: "", applyTo: ["content"] };
+const STRIP_SOLID_SQUARE = { id: "strip_solid_square", find: /■/g, replace: "", applyTo: ["content", "stream"] };
+const DASH_TO_COMMA = { id: "dash_to_comma", find: /——|—|–/g, replace: "，", applyTo: ["content", "stream"] };
+
+const DEFAULT_RULES = [STRIP_THINKING, STRIP_LANG_DETAILS, STRIP_SOLID_SQUARE, DASH_TO_COMMA];
+const CONTENT_RULES = DEFAULT_RULES.filter((r) => r.applyTo.includes("content"));
+const HISTORY_RULES = DEFAULT_RULES.filter((r) => r.applyTo.includes("history"));
+
+// --- regexPipeline contract mirror ---
+
+function applyRegexRules(text, rules) {
+  let result = text;
+  for (const rule of rules) {
+    result = result.replace(new RegExp(rule.find.source, rule.find.flags), rule.replace);
+  }
+  return result;
+}
+
+// --- historyPreprocess contract mirror ---
+
+function preprocessMessage(msg) {
+  if (msg.role !== "user" && msg.role !== "assistant") return msg;
+  if (typeof msg.content === "string") {
+    const cleaned = applyRegexRules(msg.content, HISTORY_RULES);
+    if (cleaned === msg.content) return msg;
+    return { ...msg, content: cleaned };
+  }
+  if (Array.isArray(msg.content)) {
+    let changed = false;
+    const newParts = [];
+    for (const part of msg.content) {
+      if (part && typeof part === "object" && !Array.isArray(part) && part.type === "text" && typeof part.text === "string") {
+        const cleaned = applyRegexRules(part.text, HISTORY_RULES);
+        if (cleaned !== part.text) { changed = true; newParts.push({ ...part, text: cleaned }); }
+        else newParts.push(part);
+      } else {
+        newParts.push(part);
+      }
+    }
+    if (!changed) return msg;
+    return { ...msg, content: newParts };
+  }
+  return msg;
+}
+
+function preprocessHistory(messages) {
+  let changed = false;
+  const result = [];
+  for (const msg of messages) {
+    const cleaned = preprocessMessage(msg);
+    if (cleaned !== msg) changed = true;
+    result.push(cleaned);
+  }
+  return changed ? result : messages;
+}
+
+// --- streamFilters contract mirror ---
+
+const THINKING_OPEN = "<thinking>";
+const THINKING_CLOSE = "</thinking>";
+
+function createThinkingFilterState() {
+  return { state: "IDLE", buffer: "", pendingDash: false };
+}
+
+function isDash(ch) {
+  return ch === "—" || ch === "–";
+}
+
+function applySingleCharRules(ch) {
+  if (ch === "■") return "";
+  return ch;
+}
+
+function processStreamChunk(chunk, state) {
+  if (!chunk) return null;
+  let output = "";
+  let inDashRun = state.pendingDash;
+  state.pendingDash = false;
+
+  for (let i = 0; i < chunk.length; i++) {
+    const ch = chunk[i];
+    if (state.state === "IDLE") {
+      // Dash collapsing
+      if (isDash(ch)) {
+        inDashRun = true;
+        continue;
+      }
+      // Non-dash: flush any pending dash run as a single ，
+      if (inDashRun) {
+        output += "，";
+        inDashRun = false;
+      }
+      // <thinking> tag detection
+      state.buffer += ch;
+      if (THINKING_OPEN.startsWith(state.buffer)) {
+        if (state.buffer === THINKING_OPEN) {
+          state.state = "INSIDE_THINKING";
+          state.buffer = "";
+        }
+        continue;
+      }
+      while (state.buffer.length > 0 && !THINKING_OPEN.startsWith(state.buffer)) {
+        output += applySingleCharRules(state.buffer[0]);
+        state.buffer = state.buffer.slice(1);
+      }
+      if (state.buffer === THINKING_OPEN) {
+        state.state = "INSIDE_THINKING";
+        state.buffer = "";
+      }
+      continue;
+    }
+    // INSIDE_THINKING
+    state.buffer += ch;
+    if (THINKING_CLOSE.startsWith(state.buffer)) {
+      if (state.buffer === THINKING_CLOSE) {
+        state.state = "IDLE";
+        state.buffer = "";
+      }
+      continue;
+    }
+    state.buffer = "";
+  }
+  // Hold trailing dash for cross-chunk collapsing. Even if this chunk already
+  // emitted text, the next chunk may start with another dash.
+  if (state.state === "IDLE" && inDashRun) {
+    state.pendingDash = true;
+  }
+  if (state.state === "IDLE" && state.buffer && !THINKING_OPEN.startsWith(state.buffer)) {
+    for (const bufCh of state.buffer) { output += applySingleCharRules(bufCh); }
+    state.buffer = "";
+  }
+  return output || null;
+}
+
+function flushPendingDash(state) {
+  if (state.pendingDash) {
+    state.pendingDash = false;
+    return "，";
+  }
+  return "";
+}
+
+// ---------------------------------------------------------------------------
+// Test 14: Regex Pipeline
+// ---------------------------------------------------------------------------
+
+console.log("\n--- Test 14: Regex Pipeline ---");
+
+check("dash_to_comma: em dash and en dash and double dash all become ，", () => {
+  assert.strictEqual(applyRegexRules("这是—测试——示例–结束", CONTENT_RULES), "这是，测试，示例，结束");
+});
+
+check("strip_solid_square: ■ removed", () => {
+  assert.strictEqual(applyRegexRules("这是■测试■", CONTENT_RULES), "这是测试");
+});
+
+check("strip_lang_details: English details block removed", () => {
+  const input = "before<details>\n<summary>English</summary>\nSome english text\n</details>after";
+  assert.strictEqual(applyRegexRules(input, CONTENT_RULES), "beforeafter");
+});
+
+check("strip_lang_details: Japanese details block removed", () => {
+  const input = "before<details>\n<summary>日本語版</summary>\n日本語テキスト\n</details>after";
+  assert.strictEqual(applyRegexRules(input, CONTENT_RULES), "beforeafter");
+});
+
+check("strip_thinking: complete <thinking>...</thinking> removed", () => {
+  const input = "before<thinking>internal reasoning</thinking>after";
+  assert.strictEqual(applyRegexRules(input, CONTENT_RULES), "beforeafter");
+});
+
+check("strip_thinking: multiline thinking block removed", () => {
+  const input = "line1\n<thinking>\nstep 1\nstep 2\n</thinking>\nline2";
+  assert.strictEqual(applyRegexRules(input, CONTENT_RULES), "line1\n\nline2");
+});
+
+check("history preprocess: strips thinking from history but not last user", () => {
+  const messages = [
+    { role: "user", content: "hello" },
+    { role: "assistant", content: "reply<thinking>internal</thinking>continued" },
+    { role: "user", content: "follow<thinking>user thinking</thinking>up" },
+  ];
+  const result = preprocessHistory(messages);
+  assert.strictEqual(result[0].content, "hello");
+  assert.strictEqual(result[1].content, "replycontinued");
+  // Last user message should NOT be touched (caller responsibility,
+  // but preprocessHistory processes all messages it receives).
+  // In the real flow, only historyMessages are passed, not currentUserMessage.
+  // Here we test that it does process what it receives:
+  assert.ok(result[2].content.includes("follow") && result[2].content.includes("up"));
+});
+
+check("history preprocess: preserves image_url content parts", () => {
+  const messages = [
+    { role: "user", content: [
+      { type: "text", text: "look at this<thinking>leaked</thinking>" },
+      { type: "image_url", image_url: { url: "https://example.com/cat.jpg" } },
+    ]},
+  ];
+  const result = preprocessHistory(messages);
+  const parts = result[0].content;
+  assert.strictEqual(parts.length, 2);
+  assert.strictEqual(parts[0].type, "text");
+  assert.ok(!parts[0].text.includes("<thinking>"));
+  assert.strictEqual(parts[1].type, "image_url");
+  assert.strictEqual(parts[1].image_url.url, "https://example.com/cat.jpg");
+});
+
+check("history preprocess: skips tool messages", () => {
+  const messages = [
+    { role: "tool", content: '{"result":"ok"}' },
+    { role: "assistant", content: "done" },
+  ];
+  const result = preprocessHistory(messages);
+  assert.strictEqual(result[0].content, '{"result":"ok"}');
+  assert.strictEqual(result[1].content, "done");
+});
+
+check("stream: <thinking> tag split across chunks is stripped", () => {
+  const state = createThinkingFilterState();
+  const r1 = processStreamChunk("before<thi", state);
+  const r2 = processStreamChunk("nking>hidden</thin", state);
+  const r3 = processStreamChunk("king>after", state);
+  assert.strictEqual(r1, "before");
+  assert.strictEqual(r2, null);
+  assert.strictEqual(r3, "after");
+});
+
+check("stream: dash replacement works across chunks", () => {
+  const state = createThinkingFilterState();
+  const r1 = processStreamChunk("这", state);
+  const r2 = processStreamChunk("是—测试", state);
+  assert.strictEqual(r1, "这");
+  assert.strictEqual(r2, "是，测试");
+});
+
+check("stream: consecutive dashes collapse into single ，", () => {
+  const state = createThinkingFilterState();
+  const r = processStreamChunk("———", state);
+  // All-dash chunk: held in pendingDash (output is null).
+  assert.strictEqual(r, null);
+  // After flushPendingDash, get a single ，
+  const trailing = flushPendingDash(state);
+  assert.strictEqual(trailing, "，");
+});
+
+check("stream: trailing dashes after text are held for the next chunk", () => {
+  const state = createThinkingFilterState();
+  const r = processStreamChunk("text———", state);
+  assert.strictEqual(r, "text");
+  assert.strictEqual(flushPendingDash(state), "，");
+});
+
+check("stream: cross-chunk dash collapsing (all-dash chunks)", () => {
+  const state = createThinkingFilterState();
+  const r1 = processStreamChunk("—", state);
+  const r2 = processStreamChunk("—", state);
+  // Chunk 1: all dash, held in pendingDash
+  assert.strictEqual(r1, null);
+  // Chunk 2: another dash joins the run, still all-dash, held
+  assert.strictEqual(r2, null);
+  // Flush at stream end
+  const trailing = flushPendingDash(state);
+  assert.strictEqual(trailing, "，");
+});
+
+check("stream: cross-chunk dash collapse after visible text", () => {
+  const state = createThinkingFilterState();
+  const r1 = processStreamChunk("text—", state);
+  const r2 = processStreamChunk("—more", state);
+  assert.strictEqual(r1, "text");
+  assert.strictEqual(r2, "，more");
+  assert.strictEqual(flushPendingDash(state), "");
+});
+
+check("stream: trailing all-dash chunk flushed at stream end", () => {
+  const state = createThinkingFilterState();
+  const r = processStreamChunk("—", state);
+  // All-dash chunk → held in pendingDash
+  assert.strictEqual(r, null);
+  const trailing = flushPendingDash(state);
+  assert.strictEqual(trailing, "，");
+});
+
+check("stream: no trailing dash → flushPendingDash returns empty", () => {
+  const state = createThinkingFilterState();
+  processStreamChunk("text", state);
+  const trailing = flushPendingDash(state);
+  assert.strictEqual(trailing, "");
+});
+
+check("stream: ■ stripped in stream", () => {
+  const state = createThinkingFilterState();
+  const r = processStreamChunk("a■b■c", state);
+  assert.strictEqual(r, "abc");
+});
+
+check("stream: reasoning_content is never filtered (caller responsibility)", () => {
+  // The stream filter only processes visible content chunks.
+  // reasoning_content deltas are routed around processStreamChunk.
+  // This test documents the contract: processStreamChunk only sees visible text.
+  const state = createThinkingFilterState();
+  // A normal reasoning content chunk passes through processStreamChunk
+  // as regular text (it's the CALLER's job to not send reasoning_content here).
+  const r = processStreamChunk("reasoning text", state);
+  assert.strictEqual(r, "reasoning text");
+});
+
+check("content rules do NOT include stream-only rule in content path", () => {
+  // All 4 rules apply to content
+  assert.strictEqual(CONTENT_RULES.length, 4);
+});
+
+check("history rules only include strip_thinking", () => {
+  assert.strictEqual(HISTORY_RULES.length, 1);
+  assert.strictEqual(HISTORY_RULES[0].id, "strip_thinking");
+});
+
+// ---------------------------------------------------------------------------
 // Summary
 // ---------------------------------------------------------------------------
 

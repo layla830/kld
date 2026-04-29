@@ -19,6 +19,8 @@ import { buildOpenAICompatRequest, buildOpenAIRequestFromAssembled, callOpenAICo
 import { classifyProvider, resolveTargetModel } from "../proxy/resolveModel";
 import { streamAnthropicToOpenAI } from "../proxy/streamAnthropic";
 import { streamOpenAIWithTee } from "../proxy/streamOpenAI";
+import { CONTENT_RULES } from "../preset/regexRules";
+import { applyRegexRules } from "../preset/regexPipeline";
 import type { Env, MemoryApiRecord, OpenAIChatRequest, OpenAIChatResponse } from "../types";
 import { openAiError } from "../utils/json";
 
@@ -234,11 +236,16 @@ export async function handleChatCompletions(
     }
 
     const parsed = parseAnthropicNonStream(anthropicParsed as never);
+    // Filter visible content only — reasoning_content is preserved upstream.
+    const filteredContent = applyRegexRules(parsed.content, CONTENT_RULES);
+    if (parsed.openai.choices?.[0]?.message) {
+      parsed.openai.choices[0].message.content = filteredContent;
+    }
     const assistantMessageId = await saveAssistantMessage(env.DB, {
       conversationId: conversation.id,
       namespace: auth.profile.namespace,
       source: auth.profile.source,
-      content: parsed.content,
+      content: filteredContent,
       requestModel: body.model,
       upstreamModel: targetModel,
       provider,
@@ -288,11 +295,16 @@ export async function handleChatCompletions(
   }
 
   const assistantContent = extractAssistantText(parsed);
+  const filteredContent = applyRegexRules(assistantContent, CONTENT_RULES);
+  // Patch the response that goes back to the client.
+  if (parsed.choices?.[0]?.message) {
+    parsed.choices[0].message.content = filteredContent;
+  }
   const assistantMessageId = await saveAssistantMessage(env.DB, {
     conversationId: conversation.id,
     namespace: auth.profile.namespace,
     source: auth.profile.source,
-    content: assistantContent,
+    content: filteredContent,
     requestModel: body.model,
     upstreamModel: targetModel,
     provider,
@@ -322,7 +334,7 @@ export async function handleChatCompletions(
     ])
   );
 
-  return new Response(responseText, {
+  return new Response(JSON.stringify(parsed), {
     status: 200,
     headers: {
       "content-type": "application/json; charset=utf-8"

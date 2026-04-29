@@ -13,6 +13,7 @@
  */
 
 import type { MemoryApiRecord, OpenAIChatMessage } from "../types";
+import { preprocessHistory } from "../preset/historyPreprocess";
 import type {
   AssembledPrompt,
   AssemblerContext,
@@ -327,8 +328,11 @@ export function assemble(ctx: AssemblerContext): AssembledPrompt {
     if (block.kind === "passthrough") {
       // Passthrough blocks route to messages with original content preserved.
       if (block.id === "recent_history") {
+        // Strip <thinking> tags from historical messages before they enter
+        // the assembled prompt. Current user message is NEVER touched.
+        const cleanedHistory = preprocessHistory(ctx.historyMessages);
         let added = false;
-        for (const msg of ctx.historyMessages) {
+        for (const msg of cleanedHistory) {
           const out = messageToOutput(msg);
           if (out) {
             messages.push(out);
