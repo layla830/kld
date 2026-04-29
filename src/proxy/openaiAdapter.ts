@@ -2,11 +2,18 @@ import type { AssembledPrompt } from "../assembler/types";
 import { assembledToOpenAIChatMessages } from "../assembler/toOpenAI";
 import type { Env, OpenAIChatRequest } from "../types";
 
+function stripClaudeNativeThinkingFields(req: OpenAIChatRequest): OpenAIChatRequest {
+  const cleaned: OpenAIChatRequest = { ...req };
+  delete cleaned.thinking;
+  return cleaned;
+}
+
 export function buildOpenAICompatRequest(req: OpenAIChatRequest, targetModel: string): OpenAIChatRequest {
+  const cleaned = stripClaudeNativeThinkingFields(req);
   return {
-    ...req,
+    ...cleaned,
     model: targetModel,
-    stream: Boolean(req.stream)
+    stream: Boolean(cleaned.stream)
   };
 }
 

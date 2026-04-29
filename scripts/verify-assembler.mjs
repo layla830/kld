@@ -1202,7 +1202,9 @@ check("assembler receives non-null pinnedPersonaMemories (not null fallback)", (
 
 function buildOpenAIRequestFromAssembled(req, targetModel, assembled) {
   const messages = assembledToOpenAIChatMessages(assembled);
-  return { ...req, model: targetModel, stream: Boolean(req.stream), messages };
+  const cleaned = { ...req, messages };
+  delete cleaned.thinking;
+  return { ...cleaned, model: targetModel, stream: Boolean(cleaned.stream) };
 }
 
 function getThinkingBudget(env) {
@@ -1377,6 +1379,23 @@ check("OpenAI helper: image_url preserved in last user message", () => {
   const lastUser = req.messages.filter((m) => m.role === "user").pop();
   assert.ok(Array.isArray(lastUser.content));
   assert.strictEqual(lastUser.content[1].type, "image_url");
+});
+
+check("OpenAI helper: strips Claude native thinking but keeps reasoning_effort", () => {
+  const ctx = makeBaseCtx();
+  const assembled = assemble(ctx);
+  const req = buildOpenAIRequestFromAssembled(
+    {
+      model: "companion",
+      messages: [],
+      thinking: false,
+      reasoning_effort: "high",
+    },
+    "deepseek/deepseek-v4-pro",
+    assembled
+  );
+  assert.strictEqual("thinking" in req, false);
+  assert.strictEqual(req.reasoning_effort, "high");
 });
 
 check("Anthropic helper: cache_control only on client_system", () => {
