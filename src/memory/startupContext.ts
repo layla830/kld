@@ -172,7 +172,6 @@ async function findRequiredWarmth(db: D1Database, namespace: string): Promise<{
 
 export async function buildStartupContext(db: D1Database, namespace = "default"): Promise<Record<string, unknown>> {
   const startupRules = await queryStartupRules(db, namespace);
-  const rulesAndLessons = [...CORE_RULES_AND_LESSONS, ...startupRules];
 
   const pinnedAndWarmth = await queryStartupMemories(
     db,
@@ -206,24 +205,23 @@ export async function buildStartupContext(db: D1Database, namespace = "default")
   const requiredWarmth = await findRequiredWarmth(db, namespace);
 
   return {
-    startup_version: "2.4-dynamic-startup-rules-since-2026-05-07",
+    startup_version: "2.5-split-core-and-dynamic-startup-rules",
     startup_rules_since: DYNAMIC_STARTUP_RULES_SINCE,
     identity_summary_count: IDENTITY_SUMMARY.length,
     core_rules_and_lessons_count: CORE_RULES_AND_LESSONS.length,
     startup_rules_count: startupRules.length,
-    rules_and_lessons_count: rulesAndLessons.length,
     pinned_and_warmth_count: pinnedAndWarmth.length,
     current_handoff_count: currentHandoff.length,
     recent_diary_count: recentDiary.length,
     identity_summary: IDENTITY_SUMMARY,
     core_rules_and_lessons: CORE_RULES_AND_LESSONS,
     startup_rules: startupRules,
-    rules_and_lessons: rulesAndLessons,
     pinned_and_warmth: pinnedAndWarmth,
     current_handoff: currentHandoff,
     recent_diary: recentDiary,
     search_hints: [
-      "rules_and_lessons = fixed legacy startup guidance plus up to 5 dynamic startup_rule memories created after startup_rules_since.",
+      "Read core_rules_and_lessons first, then startup_rules if present. Do not expect a merged rules_and_lessons field.",
+      "startup_rules contains up to 5 dynamic startup_rule memories created after startup_rules_since.",
       "To promote a future lesson into startup, store a short memory with type=startup_rule or tag=启动规则/startup_rule; keep it under 160 Chinese characters.",
       "Use memory_search for exact warmth labels, dates, rules, handoff, diary, and full paper/reference queries.",
       "Startup database memories are compact cards: content, type, tags, importance, pinned, and created_at only."
