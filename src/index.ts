@@ -4,6 +4,7 @@ import { handleCacheHealth } from "./api/debug";
 import { handleChatCompletions } from "./api/chatCompletions";
 import { handleGuideDogChatCompletions } from "./api/guideDog";
 import { handleAdminMemories } from "./api/adminMemories";
+import { handleAdminStartupContext } from "./api/adminStartup";
 import { handleMemories } from "./api/memories";
 import { handleMcp } from "./api/mcp";
 import { handleMigration } from "./api/migration";
@@ -20,8 +21,12 @@ export default {
       return handleHealth(env);
     }
 
-    if (["/admin/memories", "/admin/memories/create", "/admin/memories/delete"].includes(url.pathname)) {
+    if (["/admin/memories", "/admin/memories/create", "/admin/memories/edit", "/admin/memories/delete"].includes(url.pathname)) {
       return handleAdminMemories(request, env, ctx);
+    }
+
+    if (url.pathname === "/admin/startup-context") {
+      return handleAdminStartupContext(request, env);
     }
 
     if (request.method === "GET" && url.pathname === "/v1/models") {
