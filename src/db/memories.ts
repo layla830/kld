@@ -109,11 +109,7 @@ export async function listMemories(db: D1Database, filters: ListMemoryFilters): 
   sql += " ORDER BY pinned DESC, importance DESC, updated_at DESC LIMIT ?";
   binds.push(filters.limit);
 
-  const result = await db
-    .prepare(sql)
-    .bind(...binds)
-    .all<MemoryRecord>();
-
+  const result = await db.prepare(sql).bind(...binds).all<MemoryRecord>();
   return result.results ?? [];
 }
 
@@ -167,9 +163,7 @@ export async function updateMemory(
   if (input.patch.sourceMessageIds !== undefined) set("source_message_ids", JSON.stringify(input.patch.sourceMessageIds));
   if (input.patch.expiresAt !== undefined) set("expires_at", input.patch.expiresAt);
 
-  if (assignments.length === 0) {
-    return getMemoryById(db, input);
-  }
+  if (assignments.length === 0) return getMemoryById(db, input);
 
   set("updated_at", nowIso());
 
@@ -185,13 +179,35 @@ export async function softDeleteMemory(
   db: D1Database,
   input: { namespace: string; id: string }
 ): Promise<MemoryRecord | null> {
-  return updateMemory(db, {
-    namespace: input.namespace,
-    id: input.id,
-    patch: {
-      status: "deleted"
+  return updateMemory(db, { namespace: input.namespace, id: input.id, patch: { status: "deleted" } });
+}
+
+function escapeLike(value: string): string {
+  return value.replace(/[\\%_]/g, "\\$&");
+}
+
+function tokenizeQuery(query: string): string[] {
+  const normalized = query.trim().toLowerCase().replace(/\s+/g, " ").slice(0, 500);
+  const words = normalized.match(/[a-z0-9_+-]{2,}|[\u4e00-\u9fff]{1,}/gi) ?? [];
+  const tokens = words.flatMap((word) => {
+    if (/^[\u4e00-\u9fff]+$/.test(word) && word.length > 2) {
+      return [word, ...Array.from(word)];
     }
+    return [word];
   });
+  return [...new Set(tokens)].slice(0, 12);
+}
+
+function haystack(record: MemoryRecord): string {
+  return `${record.content} ${record.summary || ""} ${record.tags || ""} ${record.type}`.toLowerCase();
+}
+
+function scoreKeywordRecord(record: MemoryRecord, query: string, tokens: string[]): number {
+  const text = haystack(record);
+  const exact = query && text.includes(query.toLowerCase()) ? 0.25 : 0;
+  const hits = tokens.filter((token) => text.includes(token)).length;
+  const tokenScore = tokens.length ? hits / tokens.length : 0;
+  return 0.35 + exact + tokenScore * 0.35 + record.importance * 0.05 + (record.pinned ? 0.05 : 0);
 }
 
 export async function searchMemoriesByText(
@@ -199,39 +215,44 @@ export async function searchMemoriesByText(
   input: { namespace: string; query: string; types?: string[]; limit: number }
 ): Promise<Array<MemoryRecord & { score: number }>> {
   const query = input.query.trim().replace(/\s+/g, " ").slice(0, 500);
-  const like = `%${query.replace(/[\\%_]/g, "\\$&")}%`;
+  const tokens = tokenizeQuery(query);
   let sql = "SELECT * FROM memories WHERE namespace = ? AND status = 'active'";
   const binds: unknown[] = [input.namespace];
-
-  if (query) {
-    sql += " AND (content LIKE ? ESCAPE '\\' OR summary LIKE ? ESCAPE '\\' OR tags LIKE ? ESCAPE '\\' OR type LIKE ? ESCAPE '\\')";
-    binds.push(like, like, like, like);
-  }
 
   if (input.types && input.types.length > 0) {
     sql += ` AND type IN (${input.types.map(() => "?").join(", ")})`;
     binds.push(...input.types);
   }
 
+  if (query) {
+    const clauses = [`content LIKE ? ESCAPE '\\'`, `summary LIKE ? ESCAPE '\\'`, `tags LIKE ? ESCAPE '\\'`, `type LIKE ? ESCAPE '\\'`];
+    const exactLike = `%${escapeLike(query)}%`;
+    binds.push(exactLike, exactLike, exactLike, exactLike);
+
+    for (const token of tokens) {
+      const like = `%${escapeLike(token)}%`;
+      clauses.push(`content LIKE ? ESCAPE '\\'`, `summary LIKE ? ESCAPE '\\'`, `tags LIKE ? ESCAPE '\\'`, `type LIKE ? ESCAPE '\\'`);
+      binds.push(like, like, like, like);
+    }
+
+    sql += ` AND (${clauses.join(" OR ")})`;
+  }
+
   sql += " ORDER BY pinned DESC, importance DESC, updated_at DESC LIMIT ?";
-  binds.push(input.limit);
+  binds.push(Math.max(input.limit * 4, input.limit));
 
   let result: D1Result<MemoryRecord>;
   try {
-    result = await db
-      .prepare(sql)
-      .bind(...binds)
-      .all<MemoryRecord>();
+    result = await db.prepare(sql).bind(...binds).all<MemoryRecord>();
   } catch (error) {
     console.error("text memory search failed", error);
     return [];
   }
 
-  const lowered = query.toLowerCase();
-  return (result.results ?? []).map((record) => ({
-    ...record,
-    score: lowered && record.content.toLowerCase().includes(lowered) ? 0.75 : 0.5
-  }));
+  return (result.results ?? [])
+    .map((record) => ({ ...record, score: scoreKeywordRecord(record, query, tokens) }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, input.limit);
 }
 
 export async function markMemoriesRecalled(
