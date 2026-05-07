@@ -234,7 +234,7 @@ if (next.type && next.tab === “browse”) params.set(“type”, next.type);
 if (next.status !== “active”) params.set(“status”, next.status);
 if (next.page > 1) params.set(“page”, String(next.page));
 const text = params.toString();
-return text ? `?${text}` : “”;
+return text ? `?${text}` : “?”;
 }
 
 function renderTabs(input: PageInput): string {
