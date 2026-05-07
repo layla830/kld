@@ -5,6 +5,7 @@ import { handleChatCompletions } from "./api/chatCompletions";
 import { handleGuideDogChatCompletions } from "./api/guideDog";
 import { handleMemories } from "./api/memories";
 import { handleMcp } from "./api/mcp";
+import { handleMigration } from "./api/migration";
 import { handleModels } from "./api/models";
 import { handleQueueMessage } from "./queue/consumer";
 import type { Env, QueueMessage } from "./types";
@@ -35,6 +36,10 @@ export default {
 
     if (url.pathname === "/mcp" || url.pathname === "/memory-mcp") {
       return handleMcp(request, env, ctx);
+    }
+
+    if (url.pathname === "/v1/migration/memories") {
+      return handleMigration(request, env, ctx);
     }
 
     if (url.pathname.startsWith("/v1/memories")) {
