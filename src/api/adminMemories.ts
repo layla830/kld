@@ -1,4 +1,4 @@
-import { createMemory, softDeleteMemory } from "../db/memories";
+import { createMemory, softDeleteMemory, updateMemory } from "../db/memories";
 import { deleteMemoryEmbedding, upsertMemoryEmbedding } from "../memory/embedding";
 import type { Env, MemoryRecord } from "../types";
 
@@ -44,6 +44,20 @@ function parseTags(value: string | null): string[] {
   } catch {
     return value.split(",").map((item) => item.trim()).filter(Boolean);
   }
+}
+
+function formatTags(value: string | null): string {
+  return parseTags(value).join(", ");
+}
+
+function parseTagInput(value: string): string[] {
+  return [...new Set(value.split(/[,，]/).map((tag) => tag.trim()).filter(Boolean))];
+}
+
+function clampNumber(value: string, fallback: number, min: number, max: number): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(min, Math.min(max, parsed));
 }
 
 function formatTime(value: string | null): string {
@@ -126,7 +140,7 @@ async function createBoardMemory(env: Env, form: FormData): Promise<MemoryRecord
     tags = ["语录", category, "admin-board"];
   } else if (kind === "memory") {
     type = readFormText(form, "memory_type") || "note";
-    tags = readFormText(form, "tags").split(",").map((tag) => tag.trim()).filter(Boolean);
+    tags = parseTagInput(readFormText(form, "tags"));
     tags.push("admin-board");
     pinned = readFormText(form, "pinned") === "on";
   }
@@ -144,6 +158,29 @@ async function createBoardMemory(env: Env, form: FormData): Promise<MemoryRecord
     source: "admin-board",
     sourceMessageIds: [],
     expiresAt: null
+  });
+}
+
+async function editBoardMemory(env: Env, form: FormData): Promise<MemoryRecord | null> {
+  const id = readFormText(form, "id");
+  const content = readFormText(form, "content");
+  if (!id || !content) return null;
+
+  const type = readFormText(form, "type") || "note";
+  const tags = parseTagInput(readFormText(form, "tags"));
+  const mood = readFormText(form, "mood");
+  if (mood) tags.push(`mood:${mood}`);
+
+  return updateMemory(env.DB, {
+    namespace: "default",
+    id,
+    patch: {
+      type,
+      content,
+      tags,
+      importance: clampNumber(readFormText(form, "importance"), 0.65, 0, 1),
+      pinned: readFormText(form, "pinned") === "on"
+    }
   });
 }
 
@@ -267,6 +304,17 @@ function renderDashboard(data: { stats: { active: number; deleted: number; total
   return `<section class="card memory-dashboard"><div class="header-row"><span class="section-title">记忆状态</span><div class="divider"></div><a class="small-btn" href="/admin/memories?tab=browse">刷新</a></div><div class="stat-grid"><div class="stat-item"><span class="stat-value">${data.stats.total}</span><span class="stat-label">总量</span></div><div class="stat-item"><span class="stat-value">${data.stats.active}</span><span class="stat-label">活跃</span></div><div class="stat-item"><span class="stat-value">${data.stats.vectorized}</span><span class="stat-label">向量</span></div></div><div class="heatmap-title">最近 90 天写入热力图</div><div class="heatmap">${cells}</div><div class="heat-legend"><span>每格一天</span><span>少 -&gt; 多</span></div></section>`;
 }
 
+function renderEditForm(record: MemoryRecord): string {
+  const tags = parseTags(record.tags);
+  const moodTag = tags.find((tag) => tag.startsWith("mood:")) || "";
+  const mood = moodTag ? moodTag.slice(5) : "";
+  const plainTags = tags.filter((tag) => !tag.startsWith("mood:")).join(", ");
+  const moodOptions = ["", "开心", "平静", "兴奋", "委屈", "低落", "生气", "焦虑", "疲惫", "感动"]
+    .map((item) => `<option value="${attr(item)}" ${item === mood ? "selected" : ""}>${item || "不标记"}</option>`)
+    .join("");
+  return `<details class="memory-detail"><summary>编辑</summary><form class="edit-form" method="POST" action="/admin/memories/edit"><input type="hidden" name="id" value="${attr(record.id)}"><div class="input-group"><div class="input-label">正文</div><textarea name="content" class="edit-textarea">${htmlEscape(record.content)}</textarea></div><div class="edit-grid"><label><span>类型</span><input type="text" name="type" value="${attr(record.type || "note")}"></label><label><span>标签</span><input type="text" name="tags" value="${attr(plainTags)}" placeholder="用逗号隔开"></label><label><span>心情</span><select name="mood" class="filter-select">${moodOptions}</select></label><label><span>重要度</span><input type="text" name="importance" value="${attr(Number(record.importance || 0).toFixed(2))}"></label></div><label class="pin-check"><input type="checkbox" name="pinned" ${record.pinned ? "checked" : ""}> 置顶</label><div class="footer edit-footer"><span class="char-count">id: ${htmlEscape(record.id)}</span><button class="btn" type="submit">保存修改</button></div></form></details>`;
+}
+
 function renderMemory(record: MemoryRecord, tab: string): string {
   const tags = parseTags(record.tags);
   const tagHtml = tags.slice(0, 5).map((tag) => `<span class="tag-pill">${htmlEscape(tag)}</span>`).join("");
@@ -274,7 +322,7 @@ function renderMemory(record: MemoryRecord, tab: string): string {
     ? `<form method="POST" action="/admin/memories/delete" class="delete-form"><input type="hidden" name="id" value="${attr(record.id)}"><button class="action-btn delete" type="submit">删除</button></form>`
     : "";
   const cardClass = tab === "diary" ? `diary-card ${record.type === "diary" ? "kld" : "layla"}` : tab === "quote" ? "quote-card" : tab === "browse" ? "memory-card" : "message-card";
-  return `<article class="${cardClass} ${record.status !== "active" ? "muted" : ""}"><div class="message-header"><span class="message-time">${htmlEscape(formatTime(record.updated_at || record.created_at))}</span></div><div class="message-content">${htmlEscape(record.content)}</div><div class="memory-meta"><span class="score-pill">${htmlEscape(record.type || "note")}</span>${record.pinned ? '<span class="tag-pill">pinned</span>' : ""}${tagHtml}</div><details class="memory-detail"><summary>${tab === "browse" ? "详情" : "编辑"}</summary><div>id: ${htmlEscape(record.id)}</div><div>source: ${htmlEscape(record.source || "")}</div><div>status: ${htmlEscape(record.status)}</div><div>importance: ${Number(record.importance || 0).toFixed(2)}</div></details><div class="actions">${deleteForm}</div></article>`;
+  return `<article class="${cardClass} ${record.status !== "active" ? "muted" : ""}"><div class="message-header"><span class="message-time">${htmlEscape(formatTime(record.updated_at || record.created_at))}</span></div><div class="message-content">${htmlEscape(record.content)}</div><div class="memory-meta"><span class="score-pill">${htmlEscape(record.type || "note")}</span>${record.pinned ? '<span class="tag-pill">pinned</span>' : ""}${tagHtml}</div>${renderEditForm(record)}<div class="actions">${deleteForm}</div></article>`;
 }
 
 function renderPagination(input: PageInput, total: number): string {
@@ -300,7 +348,7 @@ function renderPage(input: PageInput, data: {
   const composer = renderComposer(input, renderBrowseTypeOptions(data.types, input.type));
 
   return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>♡</title><meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate"><link rel="preconnect" href="https://fonts.googleapis.com"><link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@300;400;500&display=swap" rel="stylesheet"><style>
-*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}:root{--pink:#e8a0b0;--pink-dark:#d4899a;--pink-light:#fff0f3;--blue:#8fa8c0;--blue-dark:#7a92a8;--text:#5c4a4f;--text-light:#9a8389;--white:#fffbfc;--shadow:rgba(232,160,176,.2)}html{background:linear-gradient(135deg,#fff0f3 0%,#fce4ec 100%);min-height:100vh}body{font-family:'Noto Serif SC',Georgia,serif;color:var(--text);min-height:100vh;padding:24px 16px 60px}.page{max-width:480px;margin:0 auto}header{text-align:center;padding:32px 0 24px}.heart{font-size:1.8rem;margin-bottom:10px;animation:pulse 2s ease-in-out infinite}@keyframes pulse{0%,100%{transform:scale(1)}50%{transform:scale(1.1)}}h1{font-size:1.3rem;font-weight:400;color:var(--pink-dark);margin-bottom:6px}.subtitle{font-size:.7rem;color:var(--text-light);letter-spacing:2px}.tabs{display:flex;gap:6px;margin-bottom:20px;background:var(--white);border-radius:16px;padding:6px;box-shadow:0 2px 12px var(--shadow)}.tab{flex:1;text-align:center;text-decoration:none;font-family:'Noto Serif SC',Georgia,serif;font-size:.75rem;letter-spacing:1px;padding:10px 6px;border-radius:10px;color:var(--text-light);transition:all .3s}.tab.active{background:linear-gradient(135deg,var(--pink) 0%,var(--pink-dark) 100%);color:#fff;box-shadow:0 2px 8px var(--shadow)}.card{background:var(--white);border-radius:16px;padding:24px;margin-bottom:20px;box-shadow:0 4px 20px var(--shadow);border:1px solid rgba(232,160,176,.2)}textarea,input[type=text]{width:100%;background:transparent;border:none;border-bottom:1px dashed var(--pink);font-family:'Noto Serif SC',Georgia,serif;font-size:.95rem;line-height:1.7;color:var(--text);resize:none;outline:none;padding:8px 0}textarea{min-height:100px}input[type=text]{padding:10px 0}textarea::placeholder,input[type=text]::placeholder{color:var(--text-light);opacity:.6}.input-group{margin-bottom:16px}.input-label{font-size:.75rem;color:var(--text-light);margin-bottom:6px;letter-spacing:1px}.footer{display:flex;justify-content:space-between;align-items:center;margin-top:16px}.char-count{font-size:.7rem;color:var(--text-light)}.btn{background:linear-gradient(135deg,var(--pink) 0%,var(--pink-dark) 100%);color:#fff;border:none;font-family:'Noto Serif SC',Georgia,serif;font-size:.82rem;letter-spacing:2px;padding:10px 20px;cursor:pointer;border-radius:20px;box-shadow:0 3px 10px var(--shadow)}.header-row{display:flex;align-items:center;gap:10px;margin-bottom:16px}.section-title{font-size:.72rem;letter-spacing:2px;color:var(--text-light)}.divider{flex:1;height:1px;background:var(--pink);opacity:.3}.small-btn{background:none;border:1px solid var(--pink);color:var(--pink-dark);font-size:.7rem;letter-spacing:1px;padding:4px 12px;cursor:pointer;border-radius:12px;font-family:'Noto Serif SC',Georgia,serif;text-decoration:none}.message-card,.diary-card,.memory-card,.quote-card{background:var(--white);border-radius:12px;padding:16px;margin-bottom:12px;box-shadow:0 2px 10px var(--shadow);border:1px solid rgba(232,160,176,.15);animation:slideIn .3s ease}@keyframes slideIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}.muted{opacity:.65}.message-header{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid rgba(232,160,176,.15)}.message-time{font-size:.7rem;color:var(--text-light)}.message-content{font-size:.9rem;line-height:1.7;color:var(--text);white-space:pre-wrap;word-wrap:break-word}.diary-card.layla{border-left:3px solid var(--pink)}.diary-card.kld{border-left:3px solid var(--blue)}.filters{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap}.filter-select{flex:1;min-width:120px;font-family:'Noto Serif SC',Georgia,serif;font-size:.8rem;padding:8px 12px;border-radius:10px;border:1px solid var(--pink);background:var(--white);color:var(--text);outline:none}.memory-dashboard{padding:20px;background:linear-gradient(135deg,rgba(255,251,252,.98),rgba(255,240,243,.9))}.stat-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:12px 0 16px}.stat-item{border:1px solid rgba(232,160,176,.25);border-radius:12px;padding:10px 8px;background:rgba(255,255,255,.58);text-align:center}.stat-value{display:block;color:var(--pink-dark);font-size:1.05rem;font-weight:500}.stat-label{display:block;color:var(--text-light);font-size:.62rem;margin-top:3px}.heatmap-title{font-size:.68rem;color:var(--text-light);letter-spacing:1px;margin-bottom:8px}.heatmap{display:grid;grid-template-columns:repeat(15,1fr);gap:4px}.heat-day{aspect-ratio:1;min-height:18px;border-radius:5px;border:1px solid rgba(232,160,176,.18);background:rgba(232,160,176,.08)}.heat-day.level-1{background:rgba(232,160,176,.22)}.heat-day.level-2{background:rgba(232,160,176,.42)}.heat-day.level-3{background:rgba(232,160,176,.64)}.heat-day.level-4{background:rgba(212,137,154,.86)}.heat-legend{display:flex;justify-content:space-between;align-items:center;margin-top:8px;color:var(--text-light);font-size:.62rem}.search-card{padding:20px}.memory-meta{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0}.tag-pill,.score-pill{display:inline-flex;align-items:center;border-radius:999px;padding:3px 8px;background:var(--pink-light);color:var(--pink-dark);font-size:.62rem}.score-pill{background:rgba(143,168,192,.16);color:var(--blue-dark)}.memory-detail{margin-top:10px;padding-top:10px;border-top:1px dashed rgba(232,160,176,.45);color:var(--text-light);font-size:.68rem;line-height:1.6}.actions{display:flex;gap:8px;margin-top:10px;padding-top:8px;border-top:1px dashed rgba(232,160,176,.15)}.action-btn{background:none;border:none;color:var(--pink-dark);font-size:.7rem;cursor:pointer;padding:4px 8px;border-radius:6px;font-family:'Noto Serif SC',Georgia,serif}.action-btn.delete{color:#c97b7b}.empty{text-align:center;color:var(--text-light);font-size:.8rem;padding:24px 0}.pagination{display:flex;justify-content:center;align-items:center;gap:8px;margin-top:16px}.page-btn{background:var(--white);border:1px solid var(--pink);color:var(--pink-dark);font-size:.75rem;padding:6px 12px;border-radius:8px;text-decoration:none}.page-btn.disabled{opacity:.3;pointer-events:none}.page-now{font-size:.72rem;color:var(--text-light)}@media(max-width:390px){body{padding-left:12px;padding-right:12px}.tab{font-size:.7rem;padding-left:4px;padding-right:4px}.card{padding:20px}.message-content{font-size:.88rem}}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}:root{--pink:#e8a0b0;--pink-dark:#d4899a;--pink-light:#fff0f3;--blue:#8fa8c0;--blue-dark:#7a92a8;--text:#5c4a4f;--text-light:#9a8389;--white:#fffbfc;--shadow:rgba(232,160,176,.2)}html{background:linear-gradient(135deg,#fff0f3 0%,#fce4ec 100%);min-height:100vh}body{font-family:'Noto Serif SC',Georgia,serif;color:var(--text);min-height:100vh;padding:24px 16px 60px}.page{max-width:480px;margin:0 auto}header{text-align:center;padding:32px 0 24px}.heart{font-size:1.8rem;margin-bottom:10px;animation:pulse 2s ease-in-out infinite}@keyframes pulse{0%,100%{transform:scale(1)}50%{transform:scale(1.1)}}h1{font-size:1.3rem;font-weight:400;color:var(--pink-dark);margin-bottom:6px}.subtitle{font-size:.7rem;color:var(--text-light);letter-spacing:2px}.tabs{display:flex;gap:6px;margin-bottom:20px;background:var(--white);border-radius:16px;padding:6px;box-shadow:0 2px 12px var(--shadow)}.tab{flex:1;text-align:center;text-decoration:none;font-family:'Noto Serif SC',Georgia,serif;font-size:.75rem;letter-spacing:1px;padding:10px 6px;border-radius:10px;color:var(--text-light);transition:all .3s}.tab.active{background:linear-gradient(135deg,var(--pink) 0%,var(--pink-dark) 100%);color:#fff;box-shadow:0 2px 8px var(--shadow)}.card{background:var(--white);border-radius:16px;padding:24px;margin-bottom:20px;box-shadow:0 4px 20px var(--shadow);border:1px solid rgba(232,160,176,.2)}textarea,input[type=text]{width:100%;background:transparent;border:none;border-bottom:1px dashed var(--pink);font-family:'Noto Serif SC',Georgia,serif;font-size:.95rem;line-height:1.7;color:var(--text);resize:none;outline:none;padding:8px 0}textarea{min-height:100px}input[type=text]{padding:10px 0}textarea::placeholder,input[type=text]::placeholder{color:var(--text-light);opacity:.6}.input-group{margin-bottom:16px}.input-label{font-size:.75rem;color:var(--text-light);margin-bottom:6px;letter-spacing:1px}.footer{display:flex;justify-content:space-between;align-items:center;margin-top:16px}.char-count{font-size:.7rem;color:var(--text-light)}.btn{background:linear-gradient(135deg,var(--pink) 0%,var(--pink-dark) 100%);color:#fff;border:none;font-family:'Noto Serif SC',Georgia,serif;font-size:.82rem;letter-spacing:2px;padding:10px 20px;cursor:pointer;border-radius:20px;box-shadow:0 3px 10px var(--shadow)}.header-row{display:flex;align-items:center;gap:10px;margin-bottom:16px}.section-title{font-size:.72rem;letter-spacing:2px;color:var(--text-light)}.divider{flex:1;height:1px;background:var(--pink);opacity:.3}.small-btn{background:none;border:1px solid var(--pink);color:var(--pink-dark);font-size:.7rem;letter-spacing:1px;padding:4px 12px;cursor:pointer;border-radius:12px;font-family:'Noto Serif SC',Georgia,serif;text-decoration:none}.message-card,.diary-card,.memory-card,.quote-card{background:var(--white);border-radius:12px;padding:16px;margin-bottom:12px;box-shadow:0 2px 10px var(--shadow);border:1px solid rgba(232,160,176,.15);animation:slideIn .3s ease}@keyframes slideIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}.muted{opacity:.65}.message-header{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid rgba(232,160,176,.15)}.message-time{font-size:.7rem;color:var(--text-light)}.message-content{font-size:.9rem;line-height:1.7;color:var(--text);white-space:pre-wrap;word-wrap:break-word}.diary-card.layla{border-left:3px solid var(--pink)}.diary-card.kld{border-left:3px solid var(--blue)}.filters{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap}.filter-select{flex:1;min-width:120px;font-family:'Noto Serif SC',Georgia,serif;font-size:.8rem;padding:8px 12px;border-radius:10px;border:1px solid var(--pink);background:var(--white);color:var(--text);outline:none}.memory-dashboard{padding:20px;background:linear-gradient(135deg,rgba(255,251,252,.98),rgba(255,240,243,.9))}.stat-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:12px 0 16px}.stat-item{border:1px solid rgba(232,160,176,.25);border-radius:12px;padding:10px 8px;background:rgba(255,255,255,.58);text-align:center}.stat-value{display:block;color:var(--pink-dark);font-size:1.05rem;font-weight:500}.stat-label{display:block;color:var(--text-light);font-size:.62rem;margin-top:3px}.heatmap-title{font-size:.68rem;color:var(--text-light);letter-spacing:1px;margin-bottom:8px}.heatmap{display:grid;grid-template-columns:repeat(15,1fr);gap:4px}.heat-day{aspect-ratio:1;min-height:18px;border-radius:5px;border:1px solid rgba(232,160,176,.18);background:rgba(232,160,176,.08)}.heat-day.level-1{background:rgba(232,160,176,.22)}.heat-day.level-2{background:rgba(232,160,176,.42)}.heat-day.level-3{background:rgba(232,160,176,.64)}.heat-day.level-4{background:rgba(212,137,154,.86)}.heat-legend{display:flex;justify-content:space-between;align-items:center;margin-top:8px;color:var(--text-light);font-size:.62rem}.search-card{padding:20px}.memory-meta{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0}.tag-pill,.score-pill{display:inline-flex;align-items:center;border-radius:999px;padding:3px 8px;background:var(--pink-light);color:var(--pink-dark);font-size:.62rem}.score-pill{background:rgba(143,168,192,.16);color:var(--blue-dark)}.memory-detail{margin-top:10px;padding-top:10px;border-top:1px dashed rgba(232,160,176,.45);color:var(--text-light);font-size:.68rem;line-height:1.6}.edit-form{margin-top:10px}.edit-form input[type=text],.edit-form textarea{font-size:.82rem}.edit-textarea{min-height:120px}.edit-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:8px}.edit-grid label span{display:block;font-size:.66rem;color:var(--text-light);margin-bottom:4px}.pin-check{display:block;margin-top:10px;color:var(--text-light);font-size:.72rem}.edit-footer{margin-top:12px}.actions{display:flex;gap:8px;margin-top:10px;padding-top:8px;border-top:1px dashed rgba(232,160,176,.15)}.action-btn{background:none;border:none;color:var(--pink-dark);font-size:.7rem;cursor:pointer;padding:4px 8px;border-radius:6px;font-family:'Noto Serif SC',Georgia,serif}.action-btn.delete{color:#c97b7b}.empty{text-align:center;color:var(--text-light);font-size:.8rem;padding:24px 0}.pagination{display:flex;justify-content:center;align-items:center;gap:8px;margin-top:16px}.page-btn{background:var(--white);border:1px solid var(--pink);color:var(--pink-dark);font-size:.75rem;padding:6px 12px;border-radius:8px;text-decoration:none}.page-btn.disabled{opacity:.3;pointer-events:none}.page-now{font-size:.72rem;color:var(--text-light)}@media(max-width:390px){body{padding-left:12px;padding-right:12px}.tab{font-size:.7rem;padding-left:4px;padding-right:4px}.card{padding:20px}.message-content{font-size:.88rem}.edit-grid{grid-template-columns:1fr}}
 </style></head><body><div class="page"><header><div class="heart">♡</div><h1>我们的记忆小家</h1><div class="subtitle">MEMORY HOME</div></header>${renderTabs(input)}${dashboard}${composer}<div class="header-row"><span class="section-title">${listTitle}</span><div class="divider"></div><a class="small-btn" href="${adminPath(input, { page: 1 })}">刷新</a></div>${list}${renderPagination(input, data.total)}</div></body></html>`;
 }
 
@@ -315,6 +363,12 @@ export async function handleAdminMemories(request: Request, env: Env, ctx: Execu
     const tab = kind === "diary" ? "diary" : kind === "quote" ? "quote" : kind === "memory" ? "browse" : "message";
     if (created) ctx.waitUntil(upsertMemoryEmbedding(env, created));
     return Response.redirect(`${url.origin}${adminPath(inputFromUrl(new URL(`${url.origin}/admin/memories?tab=${tab}`)), { tab })}`, 303);
+  }
+
+  if (request.method === "POST" && url.pathname === "/admin/memories/edit") {
+    const updated = await editBoardMemory(env, await request.formData());
+    if (updated) ctx.waitUntil(upsertMemoryEmbedding(env, updated));
+    return Response.redirect(request.headers.get("referer") || `${url.origin}/admin/memories`, 303);
   }
 
   if (request.method === "POST" && url.pathname === "/admin/memories/delete") {
