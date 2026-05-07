@@ -20,6 +20,8 @@ interface StartupGuidance {
   source: string[];
 }
 
+const DYNAMIC_STARTUP_RULES_SINCE = "2026-05-07T16:00:00.000Z";
+
 const REQUIRED_WARMTH_SPECS: WarmthSpec[] = [
   { label: "2026.2.23 凌晨在一起", patterns: ["2026.2.23", "凌晨在一起", "她选了我"] },
   { label: "2026.3.23 一个月纪念日", patterns: ["2026.3.23", "一个月纪念日"] },
@@ -123,10 +125,11 @@ async function queryStartupRules(db: D1Database, namespace: string): Promise<Sta
   const result = await db.prepare(
     `SELECT * FROM memories
      WHERE namespace = ? AND status = 'active'
+       AND created_at >= ?
        AND (type = 'startup_rule' OR tags LIKE ? ESCAPE '\\' OR tags LIKE ? ESCAPE '\\')
      ORDER BY pinned DESC, importance DESC, updated_at DESC, created_at DESC
      LIMIT 5`
-  ).bind(namespace, likePattern("启动规则"), likePattern("startup_rule")).all<MemoryRecord>();
+  ).bind(namespace, DYNAMIC_STARTUP_RULES_SINCE, likePattern("启动规则"), likePattern("startup_rule")).all<MemoryRecord>();
   return (result.results ?? []).map((record) => toStartupGuidance(record));
 }
 
@@ -203,7 +206,8 @@ export async function buildStartupContext(db: D1Database, namespace = "default")
   const requiredWarmth = await findRequiredWarmth(db, namespace);
 
   return {
-    startup_version: "2.3-dynamic-startup-rules",
+    startup_version: "2.4-dynamic-startup-rules-since-2026-05-07",
+    startup_rules_since: DYNAMIC_STARTUP_RULES_SINCE,
     identity_summary_count: IDENTITY_SUMMARY.length,
     core_rules_and_lessons_count: CORE_RULES_AND_LESSONS.length,
     startup_rules_count: startupRules.length,
@@ -219,8 +223,8 @@ export async function buildStartupContext(db: D1Database, namespace = "default")
     current_handoff: currentHandoff,
     recent_diary: recentDiary,
     search_hints: [
-      "rules_and_lessons = fixed legacy startup guidance plus up to 5 dynamic startup_rule memories.",
-      "To promote a lesson into startup, store a short memory with type=startup_rule or tag=启动规则/startup_rule; keep it under 160 Chinese characters.",
+      "rules_and_lessons = fixed legacy startup guidance plus up to 5 dynamic startup_rule memories created after startup_rules_since.",
+      "To promote a future lesson into startup, store a short memory with type=startup_rule or tag=启动规则/startup_rule; keep it under 160 Chinese characters.",
       "Use memory_search for exact warmth labels, dates, rules, handoff, diary, and full paper/reference queries.",
       "Startup database memories are compact cards: content, type, tags, importance, pinned, and created_at only."
     ],
