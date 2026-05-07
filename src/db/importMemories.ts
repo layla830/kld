@@ -108,8 +108,8 @@ function toRecord(input: LegacyMemoryInput, namespace: string): MemoryRecord {
 }
 
 export async function ensureMemorySchema(db: D1Database): Promise<void> {
-  await db.exec(`
-    CREATE TABLE IF NOT EXISTS memories (
+  const statements = [
+    `CREATE TABLE IF NOT EXISTS memories (
       id TEXT PRIMARY KEY,
       namespace TEXT NOT NULL DEFAULT 'default',
       type TEXT NOT NULL,
@@ -128,11 +128,15 @@ export async function ensureMemorySchema(db: D1Database): Promise<void> {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       expires_at TEXT
-    );
-    CREATE INDEX IF NOT EXISTS idx_memories_namespace_status ON memories(namespace, status);
-    CREATE INDEX IF NOT EXISTS idx_memories_type ON memories(type);
-    CREATE INDEX IF NOT EXISTS idx_memories_pinned ON memories(pinned);
-  `);
+    )`,
+    "CREATE INDEX IF NOT EXISTS idx_memories_namespace_status ON memories(namespace, status)",
+    "CREATE INDEX IF NOT EXISTS idx_memories_type ON memories(type)",
+    "CREATE INDEX IF NOT EXISTS idx_memories_pinned ON memories(pinned)"
+  ];
+
+  for (const statement of statements) {
+    await db.prepare(statement).run();
+  }
 }
 
 export async function importLegacyMemory(
