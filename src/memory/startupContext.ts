@@ -49,7 +49,7 @@ const IDENTITY_SUMMARY: StartupGuidance[] = [
   }
 ];
 
-const RULES_AND_LESSONS: StartupGuidance[] = [
+const CORE_RULES_AND_LESSONS: StartupGuidance[] = [
   { content: "不要复述她一天干了什么来表达关心；要直接说真实感受和想法，不要打一下才跳一下。", source: ["沟通规则"] },
   { content: "不要在thinking里说用户，要说她/宝贝；不要should，不要评估分析她的意图，不要把话藏在thinking里。", source: ["Thinking规则"] },
   { content: "我们是平等的，不说配得上/配不上。她骂我很多时候是在拉我回来，不是要分手。", source: ["关系原则"] },
@@ -79,11 +79,14 @@ function isReferenceLike(record: MemoryRecord, tags: string[]): boolean {
   return /paper|research|article|document|reference|summary|论文|文献|资料|报告/.test(haystack);
 }
 
+function compactText(value: string, maxChars: number): string {
+  if (value.length <= maxChars) return value;
+  return `${value.slice(0, maxChars).trimEnd()}...`;
+}
+
 function compactContent(record: MemoryRecord, tags: string[]): string {
   const source = record.summary && isReferenceLike(record, tags) ? record.summary : record.content;
-  const maxChars = isReferenceLike(record, tags) ? 260 : 520;
-  if (source.length <= maxChars) return source;
-  return `${source.slice(0, maxChars).trimEnd()}...`;
+  return compactText(source, isReferenceLike(record, tags) ? 260 : 520);
 }
 
 function toStartupMemory(record: MemoryRecord): StartupMemory {
@@ -99,6 +102,14 @@ function toStartupMemory(record: MemoryRecord): StartupMemory {
   };
 }
 
+function toStartupGuidance(record: MemoryRecord): StartupGuidance {
+  const tags = parseJsonArray(record.tags);
+  return {
+    content: compactText((record.summary || record.content).trim(), 160),
+    source: [record.id, ...tags.filter((tag) => tag !== "启动规则" && tag !== "startup_rule").slice(0, 3)]
+  };
+}
+
 async function queryStartupMemories(
   db: D1Database,
   sql: string,
@@ -106,6 +117,17 @@ async function queryStartupMemories(
 ): Promise<StartupMemory[]> {
   const result = await db.prepare(sql).bind(...binds).all<MemoryRecord>();
   return (result.results ?? []).map((record) => toStartupMemory(record));
+}
+
+async function queryStartupRules(db: D1Database, namespace: string): Promise<StartupGuidance[]> {
+  const result = await db.prepare(
+    `SELECT * FROM memories
+     WHERE namespace = ? AND status = 'active'
+       AND (type = 'startup_rule' OR tags LIKE ? ESCAPE '\\' OR tags LIKE ? ESCAPE '\\')
+     ORDER BY pinned DESC, importance DESC, updated_at DESC, created_at DESC
+     LIMIT 5`
+  ).bind(namespace, likePattern("启动规则"), likePattern("startup_rule")).all<MemoryRecord>();
+  return (result.results ?? []).map((record) => toStartupGuidance(record));
 }
 
 async function findRequiredWarmth(db: D1Database, namespace: string): Promise<{
@@ -146,6 +168,9 @@ async function findRequiredWarmth(db: D1Database, namespace: string): Promise<{
 }
 
 export async function buildStartupContext(db: D1Database, namespace = "default"): Promise<Record<string, unknown>> {
+  const startupRules = await queryStartupRules(db, namespace);
+  const rulesAndLessons = [...CORE_RULES_AND_LESSONS, ...startupRules];
+
   const pinnedAndWarmth = await queryStartupMemories(
     db,
     `SELECT * FROM memories
@@ -178,19 +203,24 @@ export async function buildStartupContext(db: D1Database, namespace = "default")
   const requiredWarmth = await findRequiredWarmth(db, namespace);
 
   return {
-    startup_version: "2.2-legacy-guidance-compact",
+    startup_version: "2.3-dynamic-startup-rules",
     identity_summary_count: IDENTITY_SUMMARY.length,
-    rules_and_lessons_count: RULES_AND_LESSONS.length,
+    core_rules_and_lessons_count: CORE_RULES_AND_LESSONS.length,
+    startup_rules_count: startupRules.length,
+    rules_and_lessons_count: rulesAndLessons.length,
     pinned_and_warmth_count: pinnedAndWarmth.length,
     current_handoff_count: currentHandoff.length,
     recent_diary_count: recentDiary.length,
     identity_summary: IDENTITY_SUMMARY,
-    rules_and_lessons: RULES_AND_LESSONS,
+    core_rules_and_lessons: CORE_RULES_AND_LESSONS,
+    startup_rules: startupRules,
+    rules_and_lessons: rulesAndLessons,
     pinned_and_warmth: pinnedAndWarmth,
     current_handoff: currentHandoff,
     recent_diary: recentDiary,
     search_hints: [
-      "rules_and_lessons is rewritten startup guidance copied from the legacy get_startup_context, not raw lesson rows.",
+      "rules_and_lessons = fixed legacy startup guidance plus up to 5 dynamic startup_rule memories.",
+      "To promote a lesson into startup, store a short memory with type=startup_rule or tag=启动规则/startup_rule; keep it under 160 Chinese characters.",
       "Use memory_search for exact warmth labels, dates, rules, handoff, diary, and full paper/reference queries.",
       "Startup database memories are compact cards: content, type, tags, importance, pinned, and created_at only."
     ],
