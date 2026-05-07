@@ -3,7 +3,7 @@ import { createMemory, listMemories, softDeleteMemory, updateMemory } from "../d
 import { deleteMemoryEmbedding, upsertMemoryEmbedding } from "../memory/embedding";
 import { searchMemories, toMemoryApiRecord } from "../memory/search";
 import { buildStartupContext } from "../memory/startupContext";
-import type { Env, KeyProfile, Scope } from "../types";
+import type { Env, KeyProfile, MemoryRecord, Scope } from "../types";
 import { json } from "../utils/json";
 
 type JsonRpcId = string | number | null;
@@ -53,6 +53,12 @@ function readStringArray(value: unknown): string[] {
   return value.filter((item): item is string => typeof item === "string").map((item) => item.trim()).filter(Boolean);
 }
 
+function readFlexibleStringArray(value: unknown): string[] {
+  if (Array.isArray(value)) return readStringArray(value);
+  if (typeof value === "string") return value.split(/[,，\n]/).map((item) => item.trim()).filter(Boolean);
+  return [];
+}
+
 function readOptionalStringArray(value: unknown): string[] | undefined {
   if (value === undefined) return undefined;
   return readStringArray(value);
@@ -89,6 +95,10 @@ function waitForBackground(ctx: ExecutionContext, task: Promise<unknown>): void 
   ctx.waitUntil(task.catch((error) => console.error("background memory task failed", error)));
 }
 
+function likePattern(value: string): string {
+  return `%${value.replace(/[\\%_]/g, "\\$&")}%`;
+}
+
 function getTools(): Array<Record<string, unknown>> {
   const searchSchema = {
     type: "object",
@@ -101,6 +111,16 @@ function getTools(): Array<Record<string, unknown>> {
     },
     required: ["query"]
   };
+  const tagSearchSchema = {
+    type: "object",
+    properties: {
+      tags: { anyOf: [{ type: "string" }, { type: "array", items: { type: "string" } }] },
+      match_all: { type: "boolean" },
+      limit: { type: "number", minimum: 1, maximum: 100 },
+      namespace: { type: "string" }
+    },
+    required: ["tags"]
+  };
   const createSchema = {
     type: "object",
     properties: {
@@ -112,7 +132,9 @@ function getTools(): Array<Record<string, unknown>> {
       importance: { type: "number" },
       confidence: { type: "number" },
       pinned: { type: "boolean" },
-      tags: { type: "array", items: { type: "string" } },
+      tags: { anyOf: [{ type: "array", items: { type: "string" } }, { type: "string" }] },
+      metadata: { type: "object" },
+      client_hostname: { type: "string" },
       namespace: { type: "string" }
     }
   };
@@ -138,7 +160,11 @@ function getTools(): Array<Record<string, unknown>> {
     type: "object",
     properties: {
       limit: { type: "number", minimum: 1, maximum: 100 },
+      page: { type: "number", minimum: 1 },
+      page_size: { type: "number", minimum: 1, maximum: 100 },
       type: { type: "string" },
+      memory_type: { type: "string" },
+      tag: { type: "string" },
       status: { type: "string" },
       namespace: { type: "string" }
     }
@@ -148,6 +174,7 @@ function getTools(): Array<Record<string, unknown>> {
     properties: {
       id: { type: "string" },
       memory_id: { type: "string" },
+      content_hash: { type: "string" },
       namespace: { type: "string" }
     }
   };
@@ -155,16 +182,96 @@ function getTools(): Array<Record<string, unknown>> {
   return [
     { name: "memory_search", description: "Search the user's long-term memory library.", inputSchema: searchSchema },
     { name: "retrieve_memory", description: "Compatibility alias for memory_search.", inputSchema: searchSchema },
+    { name: "search_by_tag", description: "Legacy compatibility: search active memories by tag(s).", inputSchema: tagSearchSchema },
     { name: "memory_create", description: "Create one long-term memory.", inputSchema: createSchema },
     { name: "store_memory", description: "Compatibility alias for memory_create.", inputSchema: createSchema },
     { name: "memory_update", description: "Update one memory by id. Supports content, type, summary, importance, pinned, and tags.", inputSchema: updateSchema },
     { name: "update_memory", description: "Compatibility alias for memory_update.", inputSchema: updateSchema },
     { name: "memory_list", description: "List memories from the user's memory library.", inputSchema: listSchema },
-    { name: "list_memories", description: "Compatibility alias for memory_list.", inputSchema: listSchema },
-    { name: "memory_delete", description: "Soft-delete one memory by id.", inputSchema: deleteSchema },
+    { name: "list_memories", description: "Compatibility alias for memory_list. Supports page, page_size, tag, and memory_type.", inputSchema: listSchema },
+    { name: "memory_delete", description: "Soft-delete one memory by id or legacy content_hash.", inputSchema: deleteSchema },
     { name: "delete_memory", description: "Compatibility alias for memory_delete.", inputSchema: deleteSchema },
+    { name: "check_database_health", description: "Legacy compatibility: return database memory counts and basic health.", inputSchema: { type: "object", properties: { namespace: { type: "string" } } } },
     { name: "get_startup_context", description: "Return compact startup context with required warmth anchor checks.", inputSchema: { type: "object", properties: { namespace: { type: "string" } } } }
   ];
+}
+
+async function findMemoryByContentHash(db: D1Database, namespace: string, hash: string): Promise<MemoryRecord | null> {
+  const row = await db
+    .prepare("SELECT * FROM memories WHERE namespace = ? AND instr(source_message_ids, ?) > 0 LIMIT 1")
+    .bind(namespace, `hash:${hash}`)
+    .first<MemoryRecord>();
+  return row ?? null;
+}
+
+async function listMemoriesCompat(db: D1Database, args: Record<string, unknown>, namespace: string): Promise<{ memories: ReturnType<typeof toMemoryApiRecord>[]; total: number; page: number; page_size: number }> {
+  const page = Math.max(1, Math.floor(readNumber(args.page, 1)));
+  const pageSize = Math.min(Math.max(Math.floor(readNumber(args.page_size, readNumber(args.limit, 50))), 1), 100);
+  const offset = (page - 1) * pageSize;
+  const status = readString(args.status) || "active";
+  const type = readString(args.type) || readString(args.memory_type);
+  const tag = readString(args.tag);
+
+  let where = "WHERE namespace = ?";
+  const binds: unknown[] = [namespace];
+  if (status !== "all") {
+    where += " AND status = ?";
+    binds.push(status);
+  }
+  if (type) {
+    where += " AND type = ?";
+    binds.push(type);
+  }
+  if (tag) {
+    where += " AND tags LIKE ? ESCAPE '\\'";
+    binds.push(likePattern(tag));
+  }
+
+  const total = await db.prepare(`SELECT COUNT(*) AS count FROM memories ${where}`).bind(...binds).first<{ count: number }>();
+  const rows = await db
+    .prepare(`SELECT * FROM memories ${where} ORDER BY pinned DESC, importance DESC, updated_at DESC LIMIT ? OFFSET ?`)
+    .bind(...binds, pageSize, offset)
+    .all<MemoryRecord>();
+
+  return {
+    memories: (rows.results ?? []).map((record) => toMemoryApiRecord(record)),
+    total: total?.count ?? 0,
+    page,
+    page_size: pageSize
+  };
+}
+
+async function searchByTag(db: D1Database, args: Record<string, unknown>, namespace: string): Promise<{ results: ReturnType<typeof toMemoryApiRecord>[]; total: number }> {
+  const tags = readFlexibleStringArray(args.tags);
+  if (tags.length === 0) return { results: [], total: 0 };
+  const matchAll = readBoolean(args.match_all, false);
+  const limit = Math.min(Math.max(Math.floor(readNumber(args.limit, 50)), 1), 100);
+  const clauses = tags.map(() => "tags LIKE ? ESCAPE '\\'");
+  const where = `WHERE namespace = ? AND status = 'active' AND (${clauses.join(matchAll ? " AND " : " OR ")})`;
+  const binds = [namespace, ...tags.map((tag) => likePattern(tag))];
+  const rows = await db.prepare(`SELECT * FROM memories ${where} ORDER BY created_at DESC, updated_at DESC LIMIT ?`).bind(...binds, limit).all<MemoryRecord>();
+  return { results: (rows.results ?? []).map((record) => toMemoryApiRecord(record)), total: rows.results?.length ?? 0 };
+}
+
+async function databaseHealth(db: D1Database, namespace: string): Promise<Record<string, unknown>> {
+  const counts = await db.prepare(
+    `SELECT
+      COUNT(*) AS total_memories,
+      SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) AS active_memories,
+      SUM(CASE WHEN status = 'deleted' THEN 1 ELSE 0 END) AS deleted_memories,
+      SUM(CASE WHEN vector_id IS NOT NULL AND vector_id != '' THEN 1 ELSE 0 END) AS memories_with_embeddings
+     FROM memories WHERE namespace = ?`
+  ).bind(namespace).first<Record<string, number>>();
+  const byType = await db.prepare(
+    "SELECT type, COUNT(*) AS count FROM memories WHERE namespace = ? AND status = 'active' GROUP BY type ORDER BY count DESC"
+  ).bind(namespace).all<{ type: string; count: number }>();
+  return {
+    status: "healthy",
+    backend: "cloudflare-d1-vectorize",
+    namespace,
+    statistics: counts ?? {},
+    types: byType.results ?? []
+  };
 }
 
 async function callTool(env: Env, ctx: ExecutionContext, profile: KeyProfile, params: ToolCallParams): Promise<Record<string, unknown>> {
@@ -183,6 +290,11 @@ async function callTool(env: Env, ctx: ExecutionContext, profile: KeyProfile, pa
     return textToolResult({ data });
   }
 
+  if (params.name === "search_by_tag") {
+    if (!hasScope(profile, "memory:read")) return toolError("Missing memory:read scope");
+    return textToolResult(await searchByTag(env.DB, args, resolveNamespace(profile, args.namespace)));
+  }
+
   if (params.name === "memory_create" || params.name === "store_memory") {
     if (!hasScope(profile, "memory:write")) return toolError("Missing memory:write scope");
     const content = readString(args.content) || readString(args.memory);
@@ -196,13 +308,14 @@ async function callTool(env: Env, ctx: ExecutionContext, profile: KeyProfile, pa
       confidence: readNumber(args.confidence, 0.8),
       status: "active",
       pinned: readBoolean(args.pinned),
-      tags: readStringArray(args.tags),
+      tags: readFlexibleStringArray(args.tags),
       source: "mcp",
       sourceMessageIds: [],
       expiresAt: null
     });
     waitForBackground(ctx, upsertMemoryEmbedding(env, memory));
-    return textToolResult({ data: toMemoryApiRecord(memory) });
+    const apiRecord = toMemoryApiRecord(memory);
+    return textToolResult({ data: apiRecord, success: true, message: "Memory stored", id: memory.id, content_hash: memory.id });
   }
 
   if (params.name === "memory_update" || params.name === "update_memory") {
@@ -237,23 +350,37 @@ async function callTool(env: Env, ctx: ExecutionContext, profile: KeyProfile, pa
 
   if (params.name === "memory_list" || params.name === "list_memories") {
     if (!hasScope(profile, "memory:read")) return toolError("Missing memory:read scope");
+    if (args.page !== undefined || args.page_size !== undefined || args.tag !== undefined || args.memory_type !== undefined) {
+      return textToolResult(await listMemoriesCompat(env.DB, args, resolveNamespace(profile, args.namespace)));
+    }
     const records = await listMemories(env.DB, {
       namespace: resolveNamespace(profile, args.namespace),
       type: readString(args.type),
       status: readString(args.status) || "active",
       limit: Math.min(Math.max(Math.floor(readNumber(args.limit, 50)), 1), 100)
     });
-    return textToolResult({ data: records.map((record) => toMemoryApiRecord(record)) });
+    return textToolResult({ data: records.map((record) => toMemoryApiRecord(record)), memories: records.map((record) => toMemoryApiRecord(record)) });
   }
 
   if (params.name === "memory_delete" || params.name === "delete_memory") {
     if (!hasScope(profile, "memory:write")) return toolError("Missing memory:write scope");
-    const id = readString(args.id) || readString(args.memory_id);
-    if (!id) return toolError("id is required");
-    const deleted = await softDeleteMemory(env.DB, { namespace: resolveNamespace(profile, args.namespace), id });
+    const namespace = resolveNamespace(profile, args.namespace);
+    let id = readString(args.id) || readString(args.memory_id);
+    const contentHash = readString(args.content_hash);
+    if (!id && contentHash) {
+      const found = await findMemoryByContentHash(env.DB, namespace, contentHash);
+      id = found?.id;
+    }
+    if (!id) return toolError("id or content_hash is required");
+    const deleted = await softDeleteMemory(env.DB, { namespace, id });
     if (!deleted) return toolError("Memory not found");
     waitForBackground(ctx, deleteMemoryEmbedding(env, deleted));
-    return textToolResult({ data: toMemoryApiRecord(deleted) });
+    return textToolResult({ data: toMemoryApiRecord(deleted), success: true, message: "Memory deleted" });
+  }
+
+  if (params.name === "check_database_health") {
+    if (!hasScope(profile, "memory:read")) return toolError("Missing memory:read scope");
+    return textToolResult(await databaseHealth(env.DB, resolveNamespace(profile, args.namespace)));
   }
 
   if (params.name === "get_startup_context") {
