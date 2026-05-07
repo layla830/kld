@@ -3,6 +3,7 @@ import { handleCache } from "./api/cache";
 import { handleCacheHealth } from "./api/debug";
 import { handleChatCompletions } from "./api/chatCompletions";
 import { handleGuideDogChatCompletions } from "./api/guideDog";
+import { handleAdminMemories } from "./api/adminMemories";
 import { handleMemories } from "./api/memories";
 import { handleMcp } from "./api/mcp";
 import { handleMigration } from "./api/migration";
@@ -17,6 +18,10 @@ export default {
 
     if (request.method === "GET" && url.pathname === "/health") {
       return handleHealth(env);
+    }
+
+    if (url.pathname === "/admin/memories" || url.pathname === "/admin/memories/delete") {
+      return handleAdminMemories(request, env, ctx);
     }
 
     if (request.method === "GET" && url.pathname === "/v1/models") {
