@@ -4,6 +4,7 @@ import { createMemory, listMemories } from "../db/memories";
 import { saveIngestMessages } from "../db/messages";
 import { upsertMemoryEmbedding } from "../memory/embedding";
 import { searchMemories, toMemoryApiRecord } from "../memory/search";
+import { buildStartupContext } from "../memory/startupContext";
 import { enqueueMemoryMaintenanceIfNeeded } from "../queue/producer";
 import type { Env, KeyProfile, OpenAIChatMessage, Scope } from "../types";
 import { json } from "../utils/json";
@@ -122,6 +123,21 @@ function getTools(): Array<Record<string, unknown>> {
       }
     },
     {
+      name: "retrieve_memory",
+      description: "Compatibility alias for memory_search.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          query: { type: "string" },
+          n_results: { type: "number", minimum: 1, maximum: 50 },
+          top_k: { type: "number", minimum: 1, maximum: 50 },
+          types: { type: "array", items: { type: "string" } },
+          namespace: { type: "string" }
+        },
+        required: ["query"]
+      }
+    },
+    {
       name: "memory_create",
       description: "Create one long-term memory.",
       inputSchema: {
@@ -129,6 +145,7 @@ function getTools(): Array<Record<string, unknown>> {
         properties: {
           content: { type: "string" },
           type: { type: "string" },
+          memory_type: { type: "string" },
           summary: { type: "string" },
           importance: { type: "number" },
           confidence: { type: "number" },
@@ -140,8 +157,37 @@ function getTools(): Array<Record<string, unknown>> {
       }
     },
     {
+      name: "store_memory",
+      description: "Compatibility alias for memory_create.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          content: { type: "string" },
+          memory: { type: "string" },
+          type: { type: "string" },
+          memory_type: { type: "string" },
+          tags: { type: "array", items: { type: "string" } },
+          pinned: { type: "boolean" },
+          namespace: { type: "string" }
+        }
+      }
+    },
+    {
       name: "memory_list",
       description: "List memories from the user's memory library.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          limit: { type: "number", minimum: 1, maximum: 100 },
+          type: { type: "string" },
+          status: { type: "string" },
+          namespace: { type: "string" }
+        }
+      }
+    },
+    {
+      name: "list_memories",
+      description: "Compatibility alias for memory_list.",
       inputSchema: {
         type: "object",
         properties: {
@@ -176,6 +222,16 @@ function getTools(): Array<Record<string, unknown>> {
         },
         required: ["messages"]
       }
+    },
+    {
+      name: "get_startup_context",
+      description: "Return startup context v2 with required warmth anchor checks.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          namespace: { type: "string" }
+        }
+      }
     }
   ];
 }
@@ -188,26 +244,26 @@ async function callTool(
 ): Promise<Record<string, unknown>> {
   const args = isRecord(params.arguments) ? params.arguments : {};
 
-  if (params.name === "memory_search") {
+  if (params.name === "memory_search" || params.name === "retrieve_memory") {
     if (!hasScope(profile, "memory:read")) return toolError("Missing memory:read scope");
     const query = readString(args.query);
     if (!query) return toolError("query is required");
     const data = await searchMemories(env, {
       namespace: resolveNamespace(profile, args.namespace),
       query,
-      topK: readNumber(args.top_k, Number(env.MEMORY_TOP_K || 8)),
+      topK: readNumber(args.top_k, readNumber(args.n_results, Number(env.MEMORY_TOP_K || 8))),
       types: readStringArray(args.types)
     });
     return textToolResult({ data });
   }
 
-  if (params.name === "memory_create") {
+  if (params.name === "memory_create" || params.name === "store_memory") {
     if (!hasScope(profile, "memory:write")) return toolError("Missing memory:write scope");
-    const content = readString(args.content);
+    const content = readString(args.content) || readString(args.memory);
     if (!content) return toolError("content is required");
     const memory = await createMemory(env.DB, {
       namespace: resolveNamespace(profile, args.namespace),
-      type: readString(args.type) || "note",
+      type: readString(args.type) || readString(args.memory_type) || "note",
       content,
       summary: readString(args.summary) || null,
       importance: readNumber(args.importance, 0.5),
@@ -223,7 +279,7 @@ async function callTool(
     return textToolResult({ data: toMemoryApiRecord(memory) });
   }
 
-  if (params.name === "memory_list") {
+  if (params.name === "memory_list" || params.name === "list_memories") {
     if (!hasScope(profile, "memory:read")) return toolError("Missing memory:read scope");
     const records = await listMemories(env.DB, {
       namespace: resolveNamespace(profile, args.namespace),
@@ -270,6 +326,12 @@ async function callTool(
         auto_extract: args.auto_extract !== false
       }
     });
+  }
+
+  if (params.name === "get_startup_context") {
+    if (!hasScope(profile, "memory:read")) return toolError("Missing memory:read scope");
+    const data = await buildStartupContext(env.DB, resolveNamespace(profile, args.namespace));
+    return textToolResult(data);
   }
 
   return toolError(`Unknown tool: ${String(params.name || "")}`);
