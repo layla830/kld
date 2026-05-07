@@ -20,7 +20,7 @@ export default {
       return handleHealth(env);
     }
 
-    if (url.pathname === "/admin/memories" || url.pathname === "/admin/memories/delete") {
+    if (["/admin/memories", "/admin/memories/create", "/admin/memories/delete"].includes(url.pathname)) {
       return handleAdminMemories(request, env, ctx);
     }
 
