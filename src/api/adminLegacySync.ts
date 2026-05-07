@@ -53,13 +53,7 @@ function isAuthorized(request: Request, env: Env): boolean {
   }
 }
 
-async function findExisting(db: D1Database, content: string, hash: string): Promise<string | null> {
-  const byHash = await db
-    .prepare("SELECT id FROM memories WHERE namespace = 'default' AND source_message_ids LIKE ? LIMIT 1")
-    .bind(`%hash:${hash}%`)
-    .first<{ id: string }>();
-  if (byHash?.id) return byHash.id;
-
+async function findExisting(db: D1Database, content: string): Promise<string | null> {
   const byContent = await db
     .prepare("SELECT id FROM memories WHERE namespace = 'default' AND content = ? LIMIT 1")
     .bind(content)
@@ -77,7 +71,7 @@ export async function handleAdminLegacySync(request: Request, env: Env): Promise
     const skipped: string[] = [];
 
     for (const message of FALLBACK_MESSAGES) {
-      const existing = await findExisting(env.DB, message.content, message.content_hash);
+      const existing = await findExisting(env.DB, message.content);
       if (existing) {
         skipped.push(existing);
         continue;
