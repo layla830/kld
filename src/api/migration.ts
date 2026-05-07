@@ -2,6 +2,7 @@ import { authenticate } from "../auth/apiKey";
 import { requireScope } from "../auth/scopes";
 import { importLegacyMemory, ensureMemorySchema } from "../db/importMemories";
 import { upsertMemoryEmbedding } from "../memory/embedding";
+import { buildStartupContext } from "../memory/startupContext";
 import type { Env, KeyProfile } from "../types";
 import { json, openAiError } from "../utils/json";
 
@@ -29,7 +30,42 @@ async function readBody(request: Request): Promise<ImportRequestBody | null> {
   }
 }
 
+async function handleMigrationStatus(request: Request, env: Env): Promise<Response> {
+  const auth = await authenticate(request, env);
+  if (!auth.ok) return openAiError("Unauthorized", 401, "authentication_error");
+
+  const scopeError = requireScope(auth.profile, "memory:read");
+  if (scopeError) return scopeError;
+
+  await ensureMemorySchema(env.DB);
+  const namespace = auth.profile.namespace;
+  const total = await env.DB
+    .prepare("SELECT COUNT(*) AS count FROM memories WHERE namespace = ? AND status = 'active'")
+    .bind(namespace)
+    .first<{ count: number }>();
+  const legacy = await env.DB
+    .prepare("SELECT COUNT(*) AS count FROM memories WHERE namespace = ? AND status = 'active' AND source = 'vps-mcp-memory'")
+    .bind(namespace)
+    .first<{ count: number }>();
+  const types = await env.DB
+    .prepare("SELECT type, COUNT(*) AS count FROM memories WHERE namespace = ? AND status = 'active' GROUP BY type ORDER BY type")
+    .bind(namespace)
+    .all<{ type: string; count: number }>();
+  const startup = await buildStartupContext(env.DB, namespace);
+
+  return json({
+    data: {
+      namespace,
+      active_count: total?.count ?? 0,
+      legacy_vps_count: legacy?.count ?? 0,
+      types: types.results ?? [],
+      required_warmth: startup.required_warmth
+    }
+  });
+}
+
 export async function handleMigration(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+  if (request.method === "GET") return handleMigrationStatus(request, env);
   if (request.method !== "POST") return openAiError("Method not allowed", 405);
 
   const auth = await authenticate(request, env);
