@@ -3,7 +3,7 @@ import { handleCache } from "./api/cache";
 import { handleCacheHealth } from "./api/debug";
 import { handleChatCompletions } from "./api/chatCompletions";
 import { handleGuideDogChatCompletions } from "./api/guideDog";
-import { handleAdminMemories } from "./api/adminMemories";
+import { handleAdminMemoryHome } from "./api/adminMemoryHome";
 import { handleAdminStartupContext } from "./api/adminStartup";
 import { handleMemories } from "./api/memories";
 import { handleMcp } from "./api/mcp";
@@ -22,7 +22,7 @@ export default {
     }
 
     if (["/admin/memories", "/admin/memories/create", "/admin/memories/edit", "/admin/memories/delete"].includes(url.pathname)) {
-      return handleAdminMemories(request, env, ctx);
+      return handleAdminMemoryHome(request, env, ctx);
     }
 
     if (url.pathname === "/admin/startup-context") {
