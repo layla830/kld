@@ -3,7 +3,6 @@ import {
   deleteOldUsageLogs,
   deleteOldMemoryEvents,
   deleteOldIdempotencyKeys,
-  expireOldMemories,
   listHardDeletableMemories,
   hardDeleteMemoriesBatched,
   readCursor,
@@ -20,7 +19,6 @@ const MESSAGES_RETENTION_DAYS = 14;
 const USAGE_LOGS_RETENTION_DAYS = 30;
 const MEMORY_EVENTS_RETENTION_DAYS = 30;
 const IDEMPOTENCY_KEYS_RETENTION_DAYS = 7;
-const MEMORY_ACTIVE_EXPIRY_DAYS = 180;
 const MEMORY_HARD_DELETE_DAYS = 30;
 const THROTTLE_HOURS = 24;
 
@@ -88,28 +86,11 @@ export async function runMemoryRetention(
   // 4. Delete old idempotency_keys (namespace-agnostic)
   stats.idempotencyKeys = await deleteOldIdempotencyKeys(env.DB, daysAgo(IDEMPOTENCY_KEYS_RETENTION_DAYS));
 
-  // 5. Expire old active memories and sync Vectorize
-  const expireResult = await expireOldMemories(env.DB, namespace, daysAgo(MEMORY_ACTIVE_EXPIRY_DAYS));
-  stats.expiredMemories = expireResult.count;
+  // Active long-term memories should not expire automatically. Manual deletes
+  // still become hard-deletable after the terminal-memory retention window.
+  stats.expiredMemories = 0;
 
-  // 5a. Sync Vectorize: remove vectors for newly expired memories
-  if (env.VECTORIZE && expireResult.expired.length > 0) {
-    const expiredVectorIds = expireResult.expired
-      .map((m) => m.vector_id)
-      .filter((v): v is string => v !== null);
-
-    if (expiredVectorIds.length > 0) {
-      try {
-        await deleteVectorizeBatched(env.VECTORIZE, expiredVectorIds);
-      } catch (error) {
-        // Non-fatal: search layer already filters by status=active in D1,
-        // so expired memories won't be injected even if Vectorize vectors linger.
-        console.error("retention: failed to delete expired vectors from Vectorize", error);
-      }
-    }
-  }
-
-  // 6. Hard delete terminal memories (deleted/superseded/expired > 30 days)
+  // 5. Hard delete terminal memories (deleted/superseded/expired > 30 days)
   const hardCutoff = daysAgo(MEMORY_HARD_DELETE_DAYS);
   const deletable = await listHardDeletableMemories(env.DB, namespace, hardCutoff);
 
@@ -118,7 +99,7 @@ export async function runMemoryRetention(
       .map((m) => m.vector_id)
       .filter((v): v is string => v !== null);
 
-    // 6a. Delete Vectorize vectors first (if available)
+    // 5a. Delete Vectorize vectors first (if available)
     if (env.VECTORIZE && vectorIds.length > 0) {
       try {
         await deleteVectorizeBatched(env.VECTORIZE, vectorIds);
@@ -136,7 +117,7 @@ export async function runMemoryRetention(
       }
     }
 
-    // 6b. If no VECTORIZE, only delete records that have no vector_id
+    // 5b. If no VECTORIZE, only delete records that have no vector_id
     if (!env.VECTORIZE) {
       const safeIds = deletable
         .filter((m) => m.vector_id === null)
@@ -152,7 +133,7 @@ export async function runMemoryRetention(
     stats.hardDeletedMemories = 0;
   }
 
-  // 7. Write throttle cursor
+  // 6. Write throttle cursor
   await writeCursor(env.DB, cursorName, now);
 
   return { ran: true, stats };
