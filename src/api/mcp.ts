@@ -180,18 +180,13 @@ function getTools(): Array<Record<string, unknown>> {
   };
 
   return [
-    { name: "memory_search", description: "Search the user's long-term memory library.", inputSchema: searchSchema },
-    { name: "retrieve_memory", description: "Compatibility alias for memory_search.", inputSchema: searchSchema },
-    { name: "search_by_tag", description: "Legacy compatibility: search active memories by tag(s).", inputSchema: tagSearchSchema },
-    { name: "memory_create", description: "Create one long-term memory.", inputSchema: createSchema },
-    { name: "store_memory", description: "Compatibility alias for memory_create.", inputSchema: createSchema },
-    { name: "memory_update", description: "Update one memory by id. Supports content, type, summary, importance, pinned, and tags.", inputSchema: updateSchema },
-    { name: "update_memory", description: "Compatibility alias for memory_update.", inputSchema: updateSchema },
-    { name: "memory_list", description: "List memories from the user's memory library.", inputSchema: listSchema },
-    { name: "list_memories", description: "Compatibility alias for memory_list. Supports page, page_size, tag, and memory_type.", inputSchema: listSchema },
-    { name: "memory_delete", description: "Soft-delete one memory by id or legacy content_hash.", inputSchema: deleteSchema },
-    { name: "delete_memory", description: "Compatibility alias for memory_delete.", inputSchema: deleteSchema },
-    { name: "check_database_health", description: "Legacy compatibility: return database memory counts and basic health.", inputSchema: { type: "object", properties: { namespace: { type: "string" } } } },
+    { name: "retrieve_memory", description: "Search the user's long-term memory library.", inputSchema: searchSchema },
+    { name: "search_by_tag", description: "Search active memories by tag(s).", inputSchema: tagSearchSchema },
+    { name: "store_memory", description: "Create one long-term memory.", inputSchema: createSchema },
+    { name: "update_memory", description: "Update one memory by id. Supports content, type, summary, importance, pinned, and tags.", inputSchema: updateSchema },
+    { name: "list_memories", description: "List memories. Supports page, page_size, tag, memory_type, limit, type, and status.", inputSchema: listSchema },
+    { name: "delete_memory", description: "Soft-delete one memory by id or legacy content_hash.", inputSchema: deleteSchema },
+    { name: "check_database_health", description: "Return database memory counts and basic health.", inputSchema: { type: "object", properties: { namespace: { type: "string" } } } },
     { name: "get_startup_context", description: "Return compact startup context with required warmth anchor checks.", inputSchema: { type: "object", properties: { namespace: { type: "string" } } } }
   ];
 }
@@ -277,7 +272,7 @@ async function databaseHealth(db: D1Database, namespace: string): Promise<Record
 async function callTool(env: Env, ctx: ExecutionContext, profile: KeyProfile, params: ToolCallParams): Promise<Record<string, unknown>> {
   const args = isRecord(params.arguments) ? params.arguments : {};
 
-  if (params.name === "memory_search" || params.name === "retrieve_memory") {
+  if (params.name === "retrieve_memory" || params.name === "memory_search") {
     if (!hasScope(profile, "memory:read")) return toolError("Missing memory:read scope");
     const query = readString(args.query);
     if (!query) return toolError("query is required");
@@ -295,7 +290,7 @@ async function callTool(env: Env, ctx: ExecutionContext, profile: KeyProfile, pa
     return textToolResult(await searchByTag(env.DB, args, resolveNamespace(profile, args.namespace)));
   }
 
-  if (params.name === "memory_create" || params.name === "store_memory") {
+  if (params.name === "store_memory" || params.name === "memory_create") {
     if (!hasScope(profile, "memory:write")) return toolError("Missing memory:write scope");
     const content = readString(args.content) || readString(args.memory);
     if (!content) return toolError("content is required");
@@ -318,7 +313,7 @@ async function callTool(env: Env, ctx: ExecutionContext, profile: KeyProfile, pa
     return textToolResult({ data: apiRecord, success: true, message: "Memory stored", id: memory.id, content_hash: memory.id });
   }
 
-  if (params.name === "memory_update" || params.name === "update_memory") {
+  if (params.name === "update_memory" || params.name === "memory_update") {
     if (!hasScope(profile, "memory:write")) return toolError("Missing memory:write scope");
     const id = readString(args.id) || readString(args.memory_id);
     if (!id) return toolError("id is required");
@@ -348,7 +343,7 @@ async function callTool(env: Env, ctx: ExecutionContext, profile: KeyProfile, pa
     return textToolResult({ data: toMemoryApiRecord(updated) });
   }
 
-  if (params.name === "memory_list" || params.name === "list_memories") {
+  if (params.name === "list_memories" || params.name === "memory_list") {
     if (!hasScope(profile, "memory:read")) return toolError("Missing memory:read scope");
     if (args.page !== undefined || args.page_size !== undefined || args.tag !== undefined || args.memory_type !== undefined) {
       return textToolResult(await listMemoriesCompat(env.DB, args, resolveNamespace(profile, args.namespace)));
@@ -362,7 +357,7 @@ async function callTool(env: Env, ctx: ExecutionContext, profile: KeyProfile, pa
     return textToolResult({ data: records.map((record) => toMemoryApiRecord(record)), memories: records.map((record) => toMemoryApiRecord(record)) });
   }
 
-  if (params.name === "memory_delete" || params.name === "delete_memory") {
+  if (params.name === "delete_memory" || params.name === "memory_delete") {
     if (!hasScope(profile, "memory:write")) return toolError("Missing memory:write scope");
     const namespace = resolveNamespace(profile, args.namespace);
     let id = readString(args.id) || readString(args.memory_id);
