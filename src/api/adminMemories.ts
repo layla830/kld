@@ -59,9 +59,7 @@ function parseTagInput(value: string): string[] {
   if (normalized.startsWith("[") && normalized.endsWith("]")) {
     try {
       const parsed = JSON.parse(normalized) as unknown;
-      if (Array.isArray(parsed)) {
-        return [...new Set(parsed.map((item) => String(item).trim()).filter(Boolean))];
-      }
+      if (Array.isArray(parsed)) return [...new Set(parsed.map((item) => String(item).trim()).filter(Boolean))];
     } catch {
       // Fall through to loose parsing for hand-edited text.
     }
@@ -100,8 +98,7 @@ function formatTime(value: string | null): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   const now = new Date();
-  const diff = now.getTime() - date.getTime();
-  const days = Math.floor(diff / 86400000);
+  const days = Math.floor((now.getTime() - date.getTime()) / 86400000);
   const time = date.toLocaleTimeString("zh-CN", { timeZone: "Asia/Shanghai", hour: "2-digit", minute: "2-digit", hour12: false });
   if (days === 0) return time;
   if (days === 1) return `昨天 ${time}`;
@@ -110,10 +107,7 @@ function formatTime(value: string | null): string {
 }
 
 function unauthorized(): Response {
-  return new Response("Authentication required", {
-    status: 401,
-    headers: { "www-authenticate": 'Basic realm="Aelios memories"' }
-  });
+  return new Response("Authentication required", { status: 401, headers: { "www-authenticate": 'Basic realm="Aelios memories"' } });
 }
 
 function adminPassword(env: Env): string | null {
@@ -236,17 +230,12 @@ async function editBoardMemory(env: Env, form: FormData): Promise<MemoryRecord |
 }
 
 async function fetchTypes(env: Env): Promise<Array<{ type: string; count: number }>> {
-  const result = await env.DB
-    .prepare("SELECT type, COUNT(*) AS count FROM memories WHERE namespace = 'default' AND status = 'active' GROUP BY type ORDER BY type")
-    .all<{ type: string; count: number }>();
+  const result = await env.DB.prepare("SELECT type, COUNT(*) AS count FROM memories WHERE namespace = 'default' AND status = 'active' GROUP BY type ORDER BY type").all<{ type: string; count: number }>();
   return result.results ?? [];
 }
 
 async function fetchQuoteCategories(env: Env): Promise<string[]> {
-  const result = await env.DB
-    .prepare("SELECT tags FROM memories WHERE namespace = 'default' AND status = 'active' AND tags LIKE ? ESCAPE '\\' ORDER BY updated_at DESC LIMIT 300")
-    .bind(like("语录"))
-    .all<{ tags: string | null }>();
+  const result = await env.DB.prepare("SELECT tags FROM memories WHERE namespace = 'default' AND status = 'active' AND tags LIKE ? ESCAPE '\\' ORDER BY updated_at DESC LIMIT 300").bind(like("语录")).all<{ tags: string | null }>();
   const categories = new Set<string>();
   for (const row of result.results ?? []) {
     for (const tag of parseTags(row.tags)) {
@@ -257,19 +246,14 @@ async function fetchQuoteCategories(env: Env): Promise<string[]> {
 }
 
 async function fetchStats(env: Env): Promise<{ active: number; deleted: number; total: number; vectorized: number }> {
-  const result = await env.DB
-    .prepare("SELECT COUNT(*) AS total, SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) AS active, SUM(CASE WHEN status = 'deleted' THEN 1 ELSE 0 END) AS deleted, SUM(CASE WHEN vector_id IS NOT NULL AND vector_id != '' THEN 1 ELSE 0 END) AS vectorized FROM memories WHERE namespace = 'default'")
-    .first<{ total: number; active: number; deleted: number; vectorized: number }>();
+  const result = await env.DB.prepare("SELECT COUNT(*) AS total, SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) AS active, SUM(CASE WHEN status = 'deleted' THEN 1 ELSE 0 END) AS deleted, SUM(CASE WHEN vector_id IS NOT NULL AND vector_id != '' THEN 1 ELSE 0 END) AS vectorized FROM memories WHERE namespace = 'default'").first<{ total: number; active: number; deleted: number; vectorized: number }>();
   return { active: result?.active ?? 0, deleted: result?.deleted ?? 0, total: result?.total ?? 0, vectorized: result?.vectorized ?? 0 };
 }
 
 async function fetchHeatmap(env: Env): Promise<HeatDay[]> {
   const since = new Date();
   since.setUTCDate(since.getUTCDate() - 89);
-  const rows = await env.DB
-    .prepare("SELECT created_at, tags FROM memories WHERE namespace = 'default' AND status = 'active' AND created_at >= ?")
-    .bind(since.toISOString().slice(0, 10))
-    .all<{ created_at: string | null; tags: string | null }>();
+  const rows = await env.DB.prepare("SELECT created_at, tags FROM memories WHERE namespace = 'default' AND status = 'active' AND created_at >= ?").bind(since.toISOString().slice(0, 10)).all<{ created_at: string | null; tags: string | null }>();
   const counts = new Map<string, number>();
   const moods = new Map<string, Map<string, number>>();
   for (const row of rows.results ?? []) {
@@ -296,8 +280,8 @@ async function fetchHeatmap(env: Env): Promise<HeatDay[]> {
 
 function applyTabWhere(input: PageInput, binds: unknown[]): string {
   if (input.tab === "message") {
-    binds.push(like("留言"), like("unread"), "message", "board", "admin-board");
-    return " AND (tags LIKE ? ESCAPE '\\' OR tags LIKE ? ESCAPE '\\' OR type = ? OR source IN (?, ?))";
+    binds.push(like("留言"), like("unread"), "message");
+    return " AND (tags LIKE ? ESCAPE '\\' OR tags LIKE ? ESCAPE '\\' OR type = ?)";
   }
   if (input.tab === "diary") {
     binds.push("diary", "layla_diary", like("日记"));
@@ -313,6 +297,12 @@ function applyTabWhere(input: PageInput, binds: unknown[]): string {
     return clause;
   }
   return "";
+}
+
+function orderByForTab(tab: string): string {
+  return tab === "message" || tab === "diary" || tab === "quote"
+    ? "ORDER BY created_at DESC, updated_at DESC"
+    : "ORDER BY pinned DESC, updated_at DESC, created_at DESC";
 }
 
 async function fetchMemories(env: Env, input: PageInput): Promise<{ total: number; records: MemoryRecord[] }> {
@@ -348,9 +338,10 @@ async function fetchMemories(env: Env, input: PageInput): Promise<{ total: numbe
   }
 
   const offset = (input.page - 1) * PAGE_SIZE;
+  const orderBy = orderByForTab(input.tab);
   const [total, result] = await Promise.all([
     env.DB.prepare(`SELECT COUNT(*) AS count FROM memories ${where}`).bind(...binds).first<{ count: number }>(),
-    env.DB.prepare(`SELECT * FROM memories ${where} ORDER BY pinned DESC, updated_at DESC, created_at DESC LIMIT ? OFFSET ?`).bind(...binds, PAGE_SIZE, offset).all<MemoryRecord>()
+    env.DB.prepare(`SELECT * FROM memories ${where} ${orderBy} LIMIT ? OFFSET ?`).bind(...binds, PAGE_SIZE, offset).all<MemoryRecord>()
   ]);
 
   return { total: total?.count ?? 0, records: result.results ?? [] };
@@ -418,11 +409,9 @@ function renderEditForm(record: MemoryRecord): string {
 function renderMemory(record: MemoryRecord, tab: string): string {
   const tags = parseTags(record.tags);
   const tagHtml = tags.slice(0, 6).map((tag) => `<span class="tag-pill ${moodClass(tag.replace("mood:", ""))}">${htmlEscape(tag)}</span>`).join("");
-  const deleteForm = record.status === "active"
-    ? `<form method="POST" action="/admin/memories/delete" class="delete-form" onsubmit="return confirm('确认删除吗？这会软删除，不会立刻物理清空。')"><input type="hidden" name="id" value="${attr(record.id)}"><button class="action-btn delete" type="submit">删除</button></form>`
-    : "";
+  const deleteForm = record.status === "active" ? `<form method="POST" action="/admin/memories/delete" class="delete-form" onsubmit="return confirm('确认删除吗？这会软删除，不会立刻物理清空。')"><input type="hidden" name="id" value="${attr(record.id)}"><button class="action-btn delete" type="submit">删除</button></form>` : "";
   const cardClass = tab === "diary" ? `diary-card ${record.type === "diary" ? "kld" : "layla"}` : tab === "quote" ? "quote-card" : tab === "browse" ? "memory-card" : "message-card";
-  return `<article class="${cardClass} ${record.status !== "active" ? "muted" : ""}"><div class="message-header"><span class="message-time">${htmlEscape(formatTime(record.updated_at || record.created_at))}</span></div><div class="message-content">${htmlEscape(record.content)}</div><div class="memory-meta"><span class="score-pill">${htmlEscape(record.type || "note")}</span>${record.pinned ? '<span class="tag-pill">pinned</span>' : ""}${tagHtml}</div>${renderEditForm(record)}<div class="actions">${deleteForm}</div></article>`;
+  return `<article class="${cardClass} ${record.status !== "active" ? "muted" : ""}"><div class="message-header"><span class="message-time">${htmlEscape(formatTime(record.created_at || record.updated_at))}</span></div><div class="message-content">${htmlEscape(record.content)}</div><div class="memory-meta"><span class="score-pill">${htmlEscape(record.type || "note")}</span>${record.pinned ? '<span class="tag-pill">pinned</span>' : ""}${tagHtml}</div>${renderEditForm(record)}<div class="actions">${deleteForm}</div></article>`;
 }
 
 function renderPagination(input: PageInput, total: number): string {
@@ -441,14 +430,7 @@ function renderQuoteFilter(input: PageInput, categories: string[]): string {
   return `<form class="quote-filter" method="GET"><input type="hidden" name="tab" value="quote"><select class="filter-select" name="category">${options}</select><button class="small-btn" type="submit">筛选</button></form>`;
 }
 
-function renderPage(input: PageInput, data: {
-  stats: { active: number; deleted: number; total: number; vectorized: number };
-  types: Array<{ type: string; count: number }>;
-  quoteCategories: string[];
-  total: number;
-  records: MemoryRecord[];
-  heatmap: HeatDay[];
-}): string {
+function renderPage(input: PageInput, data: { stats: { active: number; deleted: number; total: number; vectorized: number }; types: Array<{ type: string; count: number }>; quoteCategories: string[]; total: number; records: MemoryRecord[]; heatmap: HeatDay[] }): string {
   const listTitle = input.tab === "message" ? "历史留言" : input.tab === "diary" ? "我们的日记" : input.tab === "quote" ? "我的语录" : input.date ? `${input.date} 的记忆` : input.q ? `搜索：${input.q}` : "记忆列表";
   const list = data.records.length ? data.records.map((record) => renderMemory(record, input.tab)).join("") : '<div class="empty">这里还没有内容</div>';
   const dashboard = input.tab === "browse" ? renderDashboard(input, data) : "";
@@ -506,14 +488,7 @@ export async function handleAdminMemories(request: Request, env: Env, ctx: Execu
     needsDashboard ? fetchHeatmap(env) : Promise.resolve([])
   ]);
 
-  return new Response(renderPage(input, {
-    stats,
-    types,
-    quoteCategories,
-    total: memories.total,
-    records: memories.records,
-    heatmap
-  }), {
+  return new Response(renderPage(input, { stats, types, quoteCategories, total: memories.total, records: memories.records, heatmap }), {
     headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" }
   });
 }
