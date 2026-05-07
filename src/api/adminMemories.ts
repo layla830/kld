@@ -49,12 +49,24 @@ function parseTags(value: string | null): string[] {
     const parsed = JSON.parse(value) as unknown;
     return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === "string") : [];
   } catch {
-    return value.split(",").map((item) => item.trim()).filter(Boolean);
+    return value.split(/[,，\n]/).map((item) => item.trim()).filter(Boolean);
   }
 }
 
 function parseTagInput(value: string): string[] {
-  return [...new Set(value.split(/[,，]/).map((tag) => tag.trim()).filter(Boolean))];
+  const normalized = value.trim();
+  if (!normalized) return [];
+  if (normalized.startsWith("[") && normalized.endsWith("]")) {
+    try {
+      const parsed = JSON.parse(normalized) as unknown;
+      if (Array.isArray(parsed)) {
+        return [...new Set(parsed.map((item) => String(item).trim()).filter(Boolean))];
+      }
+    } catch {
+      // Fall through to loose parsing for hand-edited text.
+    }
+  }
+  return [...new Set(normalized.split(/[,，\n]/).map((tag) => tag.trim().replace(/^#/, "")).filter(Boolean))];
 }
 
 function moodOf(record: Pick<MemoryRecord, "tags">): string {
@@ -90,8 +102,9 @@ function formatTime(value: string | null): string {
   const now = new Date();
   const diff = now.getTime() - date.getTime();
   const days = Math.floor(diff / 86400000);
-  if (days === 0) return date.toLocaleTimeString("zh-CN", { timeZone: "Asia/Shanghai", hour: "2-digit", minute: "2-digit", hour12: false });
-  if (days === 1) return `昨天 ${date.toLocaleTimeString("zh-CN", { timeZone: "Asia/Shanghai", hour: "2-digit", minute: "2-digit", hour12: false })}`;
+  const time = date.toLocaleTimeString("zh-CN", { timeZone: "Asia/Shanghai", hour: "2-digit", minute: "2-digit", hour12: false });
+  if (days === 0) return time;
+  if (days === 1) return `昨天 ${time}`;
   if (days > 1 && days < 7) return `${days}天前`;
   return date.toLocaleDateString("zh-CN", { timeZone: "Asia/Shanghai", month: "2-digit", day: "2-digit" });
 }
@@ -163,6 +176,7 @@ async function createBoardMemory(env: Env, form: FormData): Promise<MemoryRecord
   let pinned = false;
 
   if (kind === "message") {
+    type = "message";
     tags = ["留言", "unread", "admin-board"];
   } else if (kind === "diary") {
     const author = readFormText(form, "author") || "layla";
@@ -202,17 +216,19 @@ async function editBoardMemory(env: Env, form: FormData): Promise<MemoryRecord |
   const content = readFormText(form, "content");
   if (!id || !content) return null;
 
+  const type = readFormText(form, "type") || "note";
   const tags = parseTagInput(readFormText(form, "tags"));
   const mood = readFormText(form, "mood");
   if (mood) tags.push(`mood:${mood}`);
+  if (type === "message" && !tags.includes("留言")) tags.push("留言");
 
   return updateMemory(env.DB, {
     namespace: "default",
     id,
     patch: {
-      type: readFormText(form, "type") || "note",
+      type,
       content,
-      tags,
+      tags: [...new Set(tags)],
       importance: clampNumber(readFormText(form, "importance"), 0.65, 0, 1),
       pinned: readFormText(form, "pinned") === "on"
     }
@@ -250,10 +266,9 @@ async function fetchStats(env: Env): Promise<{ active: number; deleted: number; 
 async function fetchHeatmap(env: Env): Promise<HeatDay[]> {
   const since = new Date();
   since.setUTCDate(since.getUTCDate() - 89);
-  const sinceText = since.toISOString().slice(0, 10);
   const rows = await env.DB
     .prepare("SELECT created_at, tags FROM memories WHERE namespace = 'default' AND status = 'active' AND created_at >= ?")
-    .bind(sinceText)
+    .bind(since.toISOString().slice(0, 10))
     .all<{ created_at: string | null; tags: string | null }>();
   const counts = new Map<string, number>();
   const moods = new Map<string, Map<string, number>>();
@@ -281,8 +296,8 @@ async function fetchHeatmap(env: Env): Promise<HeatDay[]> {
 
 function applyTabWhere(input: PageInput, binds: unknown[]): string {
   if (input.tab === "message") {
-    binds.push(like("留言"));
-    return " AND tags LIKE ? ESCAPE '\\'";
+    binds.push(like("留言"), like("unread"), "message", "board", "admin-board");
+    return " AND (tags LIKE ? ESCAPE '\\' OR tags LIKE ? ESCAPE '\\' OR type = ? OR source IN (?, ?))";
   }
   if (input.tab === "diary") {
     binds.push("diary", "layla_diary", like("日记"));
@@ -397,7 +412,7 @@ function renderEditForm(record: MemoryRecord): string {
   const tags = parseTags(record.tags);
   const mood = moodOf(record);
   const plainTags = tags.filter((tag) => !tag.startsWith("mood:")).join(", ");
-  return `<details class="memory-detail"><summary>编辑</summary><form class="edit-form" method="POST" action="/admin/memories/edit"><input type="hidden" name="id" value="${attr(record.id)}"><div class="input-group"><div class="input-label">正文</div><textarea name="content" class="edit-textarea">${htmlEscape(record.content)}</textarea></div><div class="edit-grid"><label><span>类型</span><input type="text" name="type" value="${attr(record.type || "note")}"></label><label><span>标签</span><input type="text" name="tags" value="${attr(plainTags)}" placeholder="用逗号隔开"></label><label><span>心情</span><select name="mood" class="filter-select">${renderMoodOptions(mood)}</select></label><label><span>重要度</span><input type="text" name="importance" value="${attr(Number(record.importance || 0).toFixed(2))}"></label></div><label class="pin-check"><input type="checkbox" name="pinned" ${record.pinned ? "checked" : ""}> 置顶</label><div class="footer edit-footer"><span class="char-count">id: ${htmlEscape(record.id)}</span><button class="btn" type="submit">保存修改</button></div></form></details>`;
+  return `<details class="memory-detail"><summary>编辑</summary><form class="edit-form" method="POST" action="/admin/memories/edit"><input type="hidden" name="id" value="${attr(record.id)}"><div class="input-group"><div class="input-label">正文</div><textarea name="content" class="edit-textarea">${htmlEscape(record.content)}</textarea></div><div class="edit-grid"><label><span>类型</span><input type="text" name="type" value="${attr(record.type || "note")}"></label><label><span>标签</span><input type="text" name="tags" value="${attr(plainTags)}" placeholder="逗号/换行都可以"></label><label><span>心情</span><select name="mood" class="filter-select">${renderMoodOptions(mood)}</select></label><label><span>重要度</span><input type="text" name="importance" value="${attr(Number(record.importance || 0).toFixed(2))}"></label></div><label class="pin-check"><input type="checkbox" name="pinned" ${record.pinned ? "checked" : ""}> 置顶</label><div class="footer edit-footer"><span class="char-count">id: ${htmlEscape(record.id)}</span><button class="btn" type="submit">保存修改</button></div></form></details>`;
 }
 
 function renderMemory(record: MemoryRecord, tab: string): string {
@@ -441,8 +456,7 @@ function renderPage(input: PageInput, data: {
   const quoteFilter = renderQuoteFilter(input, data.quoteCategories);
 
   return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>♡</title><meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate"><link rel="preconnect" href="https://fonts.googleapis.com"><link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@300;400;500&display=swap" rel="stylesheet"><style>
-*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}:root{--pink:#e8a0b0;--pink-dark:#d4899a;--pink-light:#fff0f3;--blue:#8fa8c0;--blue-dark:#7a92a8;--text:#5c4a4f;--text-light:#9a8389;--white:#fffbfc;--shadow:rgba(232,160,176,.2)}html{background:linear-gradient(135deg,#fff0f3 0%,#fce4ec 100%);min-height:100vh}body{font-family:'Noto Serif SC',Georgia,serif;color:var(--text);min-height:100vh;padding:24px 16px 60px}.page{max-width:480px;margin:0 auto}header{text-align:center;padding:32px 0 24px}.heart{font-size:1.8rem;margin-bottom:10px;animation:pulse 2s ease-in-out infinite}@keyframes pulse{0%,100%{transform:scale(1)}50%{transform:scale(1.1)}}h1{font-size:1.3rem;font-weight:400;color:var(--pink-dark);margin-bottom:6px}.subtitle{font-size:.7rem;color:var(--text-light);letter-spacing:2px}.tabs{display:flex;gap:6px;margin-bottom:20px;background:var(--white);border-radius:16px;padding:6px;box-shadow:0 2px 12px var(--shadow)}.tab{flex:1;text-align:center;text-decoration:none;font-family:'Noto Serif SC',Georgia,serif;font-size:.75rem;letter-spacing:1px;padding:10px 6px;border-radius:10px;color:var(--text-light);transition:all .3s}.tab.active{background:linear-gradient(135deg,var(--pink) 0%,var(--pink-dark) 100%);color:#fff;box-shadow:0 2px 8px var(--shadow)}.card{background:var(--white);border-radius:16px;padding:24px;margin-bottom:20px;box-shadow:0 4px 20px var(--shadow);border:1px solid rgba(232,160,176,.2)}textarea,input[type=text],.filter-input{width:100%;background:transparent;border:none;border-bottom:1px dashed var(--pink);font-family:'Noto Serif SC',Georgia,serif;font-size:.95rem;line-height:1.7;color:var(--text);resize:none;outline:none;padding:8px 0}textarea{min-height:100px}.input-group{margin-bottom:16px}.input-label{font-size:.75rem;color:var(--text-light);margin-bottom:6px;letter-spacing:1px}.footer{display:flex;justify-content:space-between;align-items:center;margin-top:16px}.char-count{font-size:.7rem;color:var(--text-light)}.btn{background:linear-gradient(135deg,var(--pink) 0%,var(--pink-dark) 100%);color:#fff;border:none;font-family:'Noto Serif SC',Georgia,serif;font-size:.82rem;letter-spacing:2px;padding:10px 20px;cursor:pointer;border-radius:20px;box-shadow:0 3px 10px var(--shadow)}.header-row{display:flex;align-items:center;gap:10px;margin-bottom:16px}.section-title{font-size:.72rem;letter-spacing:2px;color:var(--text-light)}.divider{flex:1;height:1px;background:var(--pink);opacity:.3}.small-btn{background:none;border:1px solid var(--pink);color:var(--pink-dark);font-size:.7rem;letter-spacing:1px;padding:4px 12px;cursor:pointer;border-radius:12px;font-family:'Noto Serif SC',Georgia,serif;text-decoration:none}.message-card,.diary-card,.memory-card,.quote-card{background:var(--white);border-radius:12px;padding:16px;margin-bottom:12px;box-shadow:0 2px 10px var(--shadow);border:1px solid rgba(232,160,176,.15);animation:slideIn .3s ease}@keyframes slideIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}.muted{opacity:.65}.message-header{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid rgba(232,160,176,.15)}.message-time{font-size:.7rem;color:var(--text-light)}.message-content{font-size:.9rem;line-height:1.7;color:var(--text);white-space:pre-wrap;word-wrap:break-word}.diary-card.layla{border-left:3px solid var(--pink)}.diary-card.kld{border-left:3px solid var(--blue)}.filters{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap}.filter-select{flex:1;min-width:118px;font-family:'Noto Serif SC',Georgia,serif;font-size:.8rem;padding:8px 12px;border-radius:10px;border:1px solid var(--pink);background:var(--white);color:var(--text);outline:none}.quote-filter{display:flex;gap:8px;margin:-4px 0 16px}.memory-dashboard{padding:20px;background:linear-gradient(135deg,rgba(255,251,252,.98),rgba(255,240,243,.9))}.stat-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:12px 0 16px}.stat-item{border:1px solid rgba(232,160,176,.25);border-radius:12px;padding:10px 8px;background:rgba(255,255,255,.58);text-align:center}.stat-value{display:block;color:var(--pink-dark);font-size:1.05rem;font-weight:500}.stat-label{display:block;color:var(--text-light);font-size:.62rem;margin-top:3px}.heatmap-title{font-size:.68rem;color:var(--text-light);letter-spacing:1px;margin-bottom:8px}.heatmap{display:grid;grid-template-columns:repeat(15,1fr);gap:4px}.heat-day{aspect-ratio:1;min-height:18px;border-radius:5px;border:1px solid rgba(232,160,176,.18);background:rgba(232,160,176,.08);display:block}.heat-day.active{outline:2px solid var(--pink-dark)}.heat-day.level-1{background:rgba(232,160,176,.22)}.heat-day.level-2{background:rgba(232,160,176,.42)}.heat-day.level-3{background:rgba(232,160,176,.64)}.heat-day.level-4{background:rgba(212,137,154,.86)}.mood-happy{background:#ffd6df!important}.mood-calm{background:#dcecf4!important}.mood-bright{background:#f8d58b!important}.mood-soft{background:#e7d8f2!important}.mood-low{background:#cfd4de!important}.mood-angry{background:#ebb0aa!important}.mood-worry{background:#d9c6b8!important}.mood-tired{background:#d8d1c8!important}.mood-moved{background:#f2c6d8!important}.heat-legend{display:flex;justify-content:space-between;align-items:center;margin-top:8px;color:var(--text-light);font-size:.62rem}.search-card{padding:20px}.memory-meta{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0}.tag-pill,.score-pill{display:inline-flex;align-items:center;border-radius:999px;padding:3px 8px;background:var(--pink-light);color:var(--pink-dark);font-size:.62rem}.score-pill{background:rgba(143,168,192,.16);color:var(--blue-dark)}.memory-detail{margin-top:10px;padding-top:10px;border-top:1px dashed rgba(232,160,176,.45);color:var(--text-light);font-size:.68rem;line-height:1.6}.edit-form{margin-top:10px}.edit-form input[type=text],.edit-form textarea{font-size:.82rem}.edit-textarea{min-height:120px}.edit-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:8px}.edit-grid label span{display:block;font-size:.66rem;color:var(--text-light);margin-bottom:4px}.pin-check{display:block;margin-top:10px;color:var(--text-light);font-size:.72rem}.edit-footer{margin-top:12px}.actions{display:flex;gap:8px;margin-top:10px;padding-top:8px;border-top:1px dashed rgba(232,160,176,.15)}.action-btn{background:none;border:none;color:var(--pink-dark);font-size:.7rem;cursor:pointer;padding:4px 8px;border-radius:6px;font-family:'Noto Serif SC',Georgia,serif}.action-btn.delete{color:#c97b7b}.empty{text-align:center;color:var(--text-light);font-size:.8rem;padding:24px 0}.pagination{display:flex;justify-content:center;align-items:center;gap:8px;margin-top:16px}.page-btn{background:var(--white);border:1px solid var(--pink);color:var(--pink-dark);font-size:.75rem;padding:6px 12px;border-radius:8px;text-decoration:none}.page-btn.disabled{opacity:.3;pointer-events:none}.page-btn.active{background:var(--pink);color:#fff}.toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(80px);background:var(--pink-dark);color:white;font-size:.8rem;padding:12px 24px;border-radius:20px;transition:transform .3s;z-index:100;white-space:nowrap;letter-spacing:1px}.toast.show{transform:translateX(-50%) translateY(0)}@media(max-width:390px){body{padding-left:12px;padding-right:12px}.tab{font-size:.7rem;padding-left:4px;padding-right:4px}.card{padding:20px}.message-content{font-size:.88rem}.edit-grid{grid-template-columns:1fr}}
-</style></head><body><div class="page"><header><div class="heart">♡</div><h1>我们的记忆小家</h1><div class="subtitle">MEMORY HOME</div></header>${renderTabs(input)}${dashboard}${composer}${quoteFilter}<div class="header-row"><span class="section-title">${htmlEscape(listTitle)}</span><div class="divider"></div><a class="small-btn" href="${adminPath(input, { page: 1, q: "", tag: "", date: "", category: "", mood: "", notice: "" })}">刷新</a></div>${list}${renderPagination(input, data.total)}</div><div class="toast" id="toast"></div><script>const n=${JSON.stringify(input.notice)};const m={created:'已保存 ♡',edited:'修改成功 ♡',deleted:'已删除',empty:'没有内容'};if(n&&m[n]){const t=document.getElementById('toast');t.textContent=m[n];t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2500);history.replaceState(null,'',location.pathname+location.search.replace(/[?&]notice=[^&]*/,''));}</script></body></html>`;
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}:root{--pink:#e8a0b0;--pink-dark:#d4899a;--pink-light:#fff0f3;--blue:#8fa8c0;--blue-dark:#7a92a8;--text:#5c4a4f;--text-light:#9a8389;--white:#fffbfc;--shadow:rgba(232,160,176,.2)}html{background:linear-gradient(135deg,#fff0f3 0%,#fce4ec 100%);min-height:100vh}body{font-family:'Noto Serif SC',Georgia,serif;color:var(--text);min-height:100vh;padding:24px 16px 60px}.page{max-width:480px;margin:0 auto}header{text-align:center;padding:32px 0 24px}.heart{font-size:1.8rem;margin-bottom:10px;animation:pulse 2s ease-in-out infinite}@keyframes pulse{0%,100%{transform:scale(1)}50%{transform:scale(1.1)}}h1{font-size:1.3rem;font-weight:400;color:var(--pink-dark);margin-bottom:6px}.subtitle{font-size:.7rem;color:var(--text-light);letter-spacing:2px}.tabs{display:flex;gap:6px;margin-bottom:20px;background:var(--white);border-radius:16px;padding:6px;box-shadow:0 2px 12px var(--shadow)}.tab{flex:1;text-align:center;text-decoration:none;font-family:'Noto Serif SC',Georgia,serif;font-size:.75rem;letter-spacing:1px;padding:10px 6px;border-radius:10px;color:var(--text-light);transition:all .3s}.tab.active{background:linear-gradient(135deg,var(--pink) 0%,var(--pink-dark) 100%);color:#fff;box-shadow:0 2px 8px var(--shadow)}.card{background:var(--white);border-radius:16px;padding:24px;margin-bottom:20px;box-shadow:0 4px 20px var(--shadow);border:1px solid rgba(232,160,176,.2)}textarea,input[type=text],.filter-input{width:100%;background:transparent;border:none;border-bottom:1px dashed var(--pink);font-family:'Noto Serif SC',Georgia,serif;font-size:.95rem;line-height:1.7;color:var(--text);resize:none;outline:none;padding:8px 0}textarea{min-height:100px}.input-group{margin-bottom:16px}.input-label{font-size:.75rem;color:var(--text-light);margin-bottom:6px;letter-spacing:1px}.footer{display:flex;justify-content:space-between;align-items:center;margin-top:16px}.char-count{font-size:.7rem;color:var(--text-light)}.btn{background:linear-gradient(135deg,var(--pink) 0%,var(--pink-dark) 100%);color:#fff;border:none;font-family:'Noto Serif SC',Georgia,serif;font-size:.82rem;letter-spacing:2px;padding:10px 20px;cursor:pointer;border-radius:20px;box-shadow:0 3px 10px var(--shadow)}.header-row{display:flex;align-items:center;gap:10px;margin-bottom:16px}.section-title{font-size:.72rem;letter-spacing:2px;color:var(--text-light)}.divider{flex:1;height:1px;background:var(--pink);opacity:.3}.small-btn{background:none;border:1px solid var(--pink);color:var(--pink-dark);font-size:.7rem;letter-spacing:1px;padding:4px 12px;cursor:pointer;border-radius:12px;font-family:'Noto Serif SC',Georgia,serif;text-decoration:none}.message-card,.diary-card,.memory-card,.quote-card{background:var(--white);border-radius:12px;padding:16px;margin-bottom:12px;box-shadow:0 2px 10px var(--shadow);border:1px solid rgba(232,160,176,.15);animation:slideIn .3s ease}@keyframes slideIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}.muted{opacity:.65}.message-header{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid rgba(232,160,176,.15)}.message-time{font-size:.7rem;color:var(--text-light)}.message-content{font-size:.9rem;line-height:1.7;color:var(--text);white-space:pre-wrap;word-wrap:break-word}.diary-card.layla{border-left:3px solid var(--pink)}.diary-card.kld{border-left:3px solid var(--blue)}.filters{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap}.filter-select{flex:1;min-width:118px;font-family:'Noto Serif SC',Georgia,serif;font-size:.8rem;padding:8px 12px;border-radius:10px;border:1px solid var(--pink);background:var(--white);color:var(--text);outline:none}.quote-filter{display:flex;gap:8px;margin:-4px 0 16px}.memory-dashboard{padding:20px;background:linear-gradient(135deg,rgba(255,251,252,.98),rgba(255,240,243,.9))}.stat-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:12px 0 16px}.stat-item{border:1px solid rgba(232,160,176,.25);border-radius:12px;padding:10px 8px;background:rgba(255,255,255,.58);text-align:center}.stat-value{display:block;color:var(--pink-dark);font-size:1.05rem;font-weight:500}.stat-label{display:block;color:var(--text-light);font-size:.62rem;margin-top:3px}.heatmap-title{font-size:.68rem;color:var(--text-light);letter-spacing:1px;margin-bottom:8px}.heatmap{display:grid;grid-template-columns:repeat(15,1fr);gap:4px}.heat-day{aspect-ratio:1;min-height:18px;border-radius:5px;border:1px solid rgba(232,160,176,.18);background:rgba(232,160,176,.08);display:block}.heat-day.active{outline:2px solid var(--pink-dark)}.heat-day.level-1{background:rgba(232,160,176,.22)}.heat-day.level-2{background:rgba(232,160,176,.42)}.heat-day.level-3{background:rgba(232,160,176,.64)}.heat-day.level-4{background:rgba(212,137,154,.86)}.mood-happy{background:#ffd6df!important}.mood-calm{background:#dcecf4!important}.mood-bright{background:#f8d58b!important}.mood-soft{background:#e7d8f2!important}.mood-low{background:#cfd4de!important}.mood-angry{background:#ebb0aa!important}.mood-worry{background:#d9c6b8!important}.mood-tired{background:#d8d1c8!important}.mood-moved{background:#f2c6d8!important}.heat-legend{display:flex;justify-content:space-between;align-items:center;margin-top:8px;color:var(--text-light);font-size:.62rem}.search-card{padding:20px}.memory-meta{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0}.tag-pill,.score-pill{display:inline-flex;align-items:center;border-radius:999px;padding:3px 8px;background:var(--pink-light);color:var(--pink-dark);font-size:.62rem}.score-pill{background:rgba(143,168,192,.16);color:var(--blue-dark)}.memory-detail{margin-top:10px;padding-top:10px;border-top:1px dashed rgba(232,160,176,.45);color:var(--text-light);font-size:.68rem;line-height:1.6}.edit-form{margin-top:10px}.edit-form input[type=text],.edit-form textarea{font-size:.82rem}.edit-textarea{min-height:120px}.edit-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:8px}.edit-grid label span{display:block;font-size:.66rem;color:var(--text-light);margin-bottom:4px}.pin-check{display:block;margin-top:10px;color:var(--text-light);font-size:.72rem}.edit-footer{margin-top:12px}.actions{display:flex;gap:8px;margin-top:10px;padding-top:8px;border-top:1px dashed rgba(232,160,176,.15)}.action-btn{background:none;border:none;color:var(--pink-dark);font-size:.7rem;cursor:pointer;padding:4px 8px;border-radius:6px;font-family:'Noto Serif SC',Georgia,serif}.action-btn.delete{color:#c97b7b}.empty{text-align:center;color:var(--text-light);font-size:.8rem;padding:24px 0}.pagination{display:flex;justify-content:center;align-items:center;gap:8px;margin-top:16px}.page-btn{background:var(--white);border:1px solid var(--pink);color:var(--pink-dark);font-size:.75rem;padding:6px 12px;border-radius:8px;text-decoration:none}.page-btn.disabled{opacity:.3;pointer-events:none}.page-btn.active{background:var(--pink);color:#fff}.toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(80px);background:var(--pink-dark);color:white;font-size:.8rem;padding:12px 24px;border-radius:20px;transition:transform .3s;z-index:100;white-space:nowrap;letter-spacing:1px}.toast.show{transform:translateX(-50%) translateY(0)}@media(max-width:390px){body{padding-left:12px;padding-right:12px}.tab{font-size:.7rem;padding-left:4px;padding-right:4px}.card{padding:20px}.message-content{font-size:.88rem}.edit-grid{grid-template-columns:1fr}}</style></head><body><div class="page"><header><div class="heart">♡</div><h1>我们的记忆小家</h1><div class="subtitle">MEMORY HOME</div></header>${renderTabs(input)}${dashboard}${composer}${quoteFilter}<div class="header-row"><span class="section-title">${htmlEscape(listTitle)}</span><div class="divider"></div><a class="small-btn" href="${adminPath(input, { page: 1, q: "", tag: "", date: "", category: "", mood: "", notice: "" })}">刷新</a></div>${list}${renderPagination(input, data.total)}</div><div class="toast" id="toast"></div><script>const n=${JSON.stringify(input.notice)};const m={created:'已保存 ♡',edited:'修改成功 ♡',deleted:'已删除',empty:'没有内容',error:'保存失败'};if(n&&m[n]){const t=document.getElementById('toast');t.textContent=m[n];t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2500);history.replaceState(null,'',location.pathname+location.search.replace(/[?&]notice=[^&]*/,''));}</script></body></html>`;
 }
 
 export async function handleAdminMemories(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -459,10 +473,15 @@ export async function handleAdminMemories(request: Request, env: Env, ctx: Execu
   }
 
   if (request.method === "POST" && url.pathname === "/admin/memories/edit") {
-    const updated = await editBoardMemory(env, await request.formData());
-    if (updated) ctx.waitUntil(upsertMemoryEmbedding(env, updated));
     const ref = request.headers.get("referer") || `${url.origin}/admin/memories`;
-    return Response.redirect(`${url.origin}${noticeUrl(ref, updated ? "edited" : "empty")}`, 303);
+    try {
+      const updated = await editBoardMemory(env, await request.formData());
+      if (updated) ctx.waitUntil(upsertMemoryEmbedding(env, updated));
+      return Response.redirect(`${url.origin}${noticeUrl(ref, updated ? "edited" : "empty")}`, 303);
+    } catch (error) {
+      console.error("admin memory edit failed", error);
+      return Response.redirect(`${url.origin}${noticeUrl(ref, "error")}`, 303);
+    }
   }
 
   if (request.method === "POST" && url.pathname === "/admin/memories/delete") {
