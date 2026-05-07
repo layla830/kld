@@ -5,6 +5,7 @@ import { handleChatCompletions } from "./api/chatCompletions";
 import { handleGuideDogChatCompletions } from "./api/guideDog";
 import { handleAdminMemories } from "./api/adminMemories";
 import { handleAdminStartupContext } from "./api/adminStartup";
+import { handleAdminDateRepair } from "./api/adminDateRepair";
 import { handleMemories } from "./api/memories";
 import { handleMcp } from "./api/mcp";
 import { handleMigration } from "./api/migration";
@@ -27,6 +28,10 @@ export default {
 
     if (url.pathname === "/admin/startup-context") {
       return handleAdminStartupContext(request, env);
+    }
+
+    if (url.pathname === "/admin/repair-legacy-dates") {
+      return handleAdminDateRepair(request, env);
     }
 
     if (request.method === "GET" && url.pathname === "/v1/models") {
@@ -61,7 +66,7 @@ export default {
     }
 
     if (request.method === "GET" && url.pathname === "/v1/debug/cache_health") {
-      return handleCacheHealth(request, env);
+      return handleCacheHealth(env);
     }
 
     return openAiError("Not found", 404);
