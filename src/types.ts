@@ -11,6 +11,7 @@ export interface Env {
   IM_API_KEY?: string;
   DEBUG_API_KEY?: string;
   MEMORY_MCP_API_KEY?: string;
+  ADMIN_PASSWORD?: string;
   GUIDE_DOG_API_KEY?: string;
   CF_AIG_TOKEN?: string;
   ENABLE_AUTO_MEMORY?: string;
