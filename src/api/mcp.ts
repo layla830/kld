@@ -1,6 +1,6 @@
 import { authenticate } from "../auth/apiKey";
-import { createMemory, listMemories } from "../db/memories";
-import { upsertMemoryEmbedding } from "../memory/embedding";
+import { createMemory, listMemories, softDeleteMemory } from "../db/memories";
+import { deleteMemoryEmbedding, upsertMemoryEmbedding } from "../memory/embedding";
 import { searchMemories, toMemoryApiRecord } from "../memory/search";
 import { buildStartupContext } from "../memory/startupContext";
 import type { Env, KeyProfile, Scope } from "../types";
@@ -103,6 +103,14 @@ function getTools(): Array<Record<string, unknown>> {
       namespace: { type: "string" }
     }
   };
+  const deleteSchema = {
+    type: "object",
+    properties: {
+      id: { type: "string" },
+      memory_id: { type: "string" },
+      namespace: { type: "string" }
+    }
+  };
 
   return [
     { name: "memory_search", description: "Search the user's long-term memory library.", inputSchema: searchSchema },
@@ -111,6 +119,8 @@ function getTools(): Array<Record<string, unknown>> {
     { name: "store_memory", description: "Compatibility alias for memory_create.", inputSchema: createSchema },
     { name: "memory_list", description: "List memories from the user's memory library.", inputSchema: listSchema },
     { name: "list_memories", description: "Compatibility alias for memory_list.", inputSchema: listSchema },
+    { name: "memory_delete", description: "Soft-delete one memory by id.", inputSchema: deleteSchema },
+    { name: "delete_memory", description: "Compatibility alias for memory_delete.", inputSchema: deleteSchema },
     { name: "get_startup_context", description: "Return startup context v2 with required warmth anchor checks.", inputSchema: { type: "object", properties: { namespace: { type: "string" } } } }
   ];
 }
@@ -162,6 +172,16 @@ async function callTool(env: Env, ctx: ExecutionContext, profile: KeyProfile, pa
       limit: Math.min(Math.max(Math.floor(readNumber(args.limit, 50)), 1), 100)
     });
     return textToolResult({ data: records.map((record) => toMemoryApiRecord(record)) });
+  }
+
+  if (params.name === "memory_delete" || params.name === "delete_memory") {
+    if (!hasScope(profile, "memory:write")) return toolError("Missing memory:write scope");
+    const id = readString(args.id) || readString(args.memory_id);
+    if (!id) return toolError("id is required");
+    const deleted = await softDeleteMemory(env.DB, { namespace: resolveNamespace(profile, args.namespace), id });
+    if (!deleted) return toolError("Memory not found");
+    ctx.waitUntil(deleteMemoryEmbedding(env, deleted));
+    return textToolResult({ data: toMemoryApiRecord(deleted) });
   }
 
   if (params.name === "get_startup_context") {
