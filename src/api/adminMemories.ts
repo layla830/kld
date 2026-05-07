@@ -1,5 +1,5 @@
-import { softDeleteMemory } from "../db/memories";
-import { deleteMemoryEmbedding } from "../memory/embedding";
+import { createMemory, softDeleteMemory } from "../db/memories";
+import { deleteMemoryEmbedding, upsertMemoryEmbedding } from "../memory/embedding";
 import { buildStartupContext } from "../memory/startupContext";
 import type { Env, MemoryRecord } from "../types";
 
@@ -82,6 +82,51 @@ function like(value: string): string {
   return `%${value.replace(/[\\%_]/g, "\\$&")}%`;
 }
 
+function readFormText(form: FormData, name: string): string {
+  return String(form.get(name) || "").trim();
+}
+
+async function createBoardMemory(env: Env, form: FormData): Promise<MemoryRecord | null> {
+  const kind = readFormText(form, "kind");
+  const content = readFormText(form, "content");
+  if (!content) return null;
+
+  let type = "note";
+  let tags = ["admin-board"];
+  let pinned = false;
+
+  if (kind === "message") {
+    tags = ["留言", "admin-board"];
+  } else if (kind === "diary") {
+    const author = readFormText(form, "author") || "layla";
+    type = author === "kld" ? "diary" : "layla_diary";
+    tags = ["日记", author, "admin-board"];
+  } else if (kind === "quote") {
+    const category = readFormText(form, "category") || "语录";
+    tags = ["语录", category, "admin-board"];
+  } else if (kind === "memory") {
+    type = readFormText(form, "memory_type") || "note";
+    tags = readFormText(form, "tags").split(",").map((tag) => tag.trim()).filter(Boolean);
+    tags.push("admin-board");
+    pinned = readFormText(form, "pinned") === "on";
+  }
+
+  return createMemory(env.DB, {
+    namespace: "default",
+    type,
+    content,
+    summary: null,
+    importance: pinned ? 1 : 0.65,
+    confidence: 0.95,
+    status: "active",
+    pinned,
+    tags: [...new Set(tags)],
+    source: "admin-board",
+    sourceMessageIds: [],
+    expiresAt: null
+  });
+}
+
 async function fetchTypes(env: Env): Promise<Array<{ type: string; count: number }>> {
   const result = await env.DB
     .prepare("SELECT type, COUNT(*) AS count FROM memories WHERE status = 'active' GROUP BY type ORDER BY type")
@@ -117,11 +162,7 @@ async function fetchMemories(env: Env, input: PageInput): Promise<{ total: numbe
     binds.push(pattern, pattern, pattern, pattern, pattern);
   }
 
-  const total = await env.DB
-    .prepare(`SELECT COUNT(*) AS count FROM memories ${where}`)
-    .bind(...binds)
-    .first<{ count: number }>();
-
+  const total = await env.DB.prepare(`SELECT COUNT(*) AS count FROM memories ${where}`).bind(...binds).first<{ count: number }>();
   const offset = (input.page - 1) * PAGE_SIZE;
   const result = await env.DB
     .prepare(`SELECT * FROM memories ${where} ORDER BY pinned DESC, updated_at DESC, created_at DESC LIMIT ? OFFSET ?`)
@@ -142,30 +183,52 @@ function qs(input: PageInput, patch: Partial<PageInput>): string {
   return text ? `?${text}` : "";
 }
 
+function renderComposer(): string {
+  return `<section class="card composer-grid">
+    <form class="mini-form" method="POST" action="/admin/memories/create">
+      <input type="hidden" name="kind" value="message">
+      <div class="form-title">写留言</div>
+      <textarea name="content" placeholder="给未来的我留一句话"></textarea>
+      <button class="btn" type="submit">存下</button>
+    </form>
+    <form class="mini-form" method="POST" action="/admin/memories/create">
+      <input type="hidden" name="kind" value="diary">
+      <div class="form-title">写日记</div>
+      <select name="author"><option value="layla">Layla</option><option value="kld">KLD</option></select>
+      <textarea name="content" placeholder="今天发生了什么"></textarea>
+      <button class="btn" type="submit">保存</button>
+    </form>
+    <form class="mini-form" method="POST" action="/admin/memories/create">
+      <input type="hidden" name="kind" value="quote">
+      <div class="form-title">存语录</div>
+      <input name="category" placeholder="分类，例如：她说的">
+      <textarea name="content" placeholder="那句想留下来的话"></textarea>
+      <button class="btn" type="submit">收藏</button>
+    </form>
+    <form class="mini-form" method="POST" action="/admin/memories/create">
+      <input type="hidden" name="kind" value="memory">
+      <div class="form-title">普通记忆</div>
+      <input name="memory_type" placeholder="type，例如：note / warmth">
+      <input name="tags" placeholder="tags，用逗号分隔">
+      <label class="check"><input type="checkbox" name="pinned"> pinned</label>
+      <textarea name="content" placeholder="完整记忆内容"></textarea>
+      <button class="btn" type="submit">写入</button>
+    </form>
+  </section>`;
+}
+
 function renderMemory(record: MemoryRecord): string {
   const tags = parseTags(record.tags);
   const tagHtml = tags.map((tag) => `<span class="tag-pill">${htmlEscape(tag)}</span>`).join("");
+  const deleteForm = record.status === "active"
+    ? `<form method="POST" action="/admin/memories/delete" class="delete-form"><input type="hidden" name="id" value="${attr(record.id)}"><button class="action-btn delete" type="submit">删除</button></form>`
+    : "";
   return `<article class="memory-card ${record.status !== "active" ? "muted" : ""}">
-    <div class="memory-head">
-      <span class="type-pill">${htmlEscape(record.type || "note")}</span>
-      <span class="memory-time">${htmlEscape(formatDate(record.updated_at || record.created_at))}</span>
-    </div>
+    <div class="memory-head"><span class="type-pill">${htmlEscape(record.type || "note")}</span><span class="memory-time">${htmlEscape(formatDate(record.updated_at || record.created_at))}</span></div>
     <div class="memory-content">${htmlEscape(record.content)}</div>
-    <div class="memory-meta">
-      ${record.pinned ? '<span class="score-pill">pinned</span>' : ""}
-      <span class="score-pill">${htmlEscape(record.id)}</span>
-      <span class="score-pill">importance ${Number(record.importance || 0).toFixed(2)}</span>
-      <span class="score-pill">recall ${record.recall_count || 0}</span>
-      ${tagHtml}
-    </div>
-    <details class="memory-detail">
-      <summary>展开详情</summary>
-      <div>created: ${htmlEscape(formatDate(record.created_at))}</div>
-      <div>updated: ${htmlEscape(formatDate(record.updated_at))}</div>
-      <div>source: ${htmlEscape(record.source || "")}</div>
-      <div>vector: ${htmlEscape(record.vector_id || "")}</div>
-      <div>status: ${htmlEscape(record.status)}</div>
-    </details>
+    <div class="memory-meta">${record.pinned ? '<span class="score-pill">pinned</span>' : ""}<span class="score-pill">${htmlEscape(record.id)}</span><span class="score-pill">importance ${Number(record.importance || 0).toFixed(2)}</span><span class="score-pill">recall ${record.recall_count || 0}</span>${tagHtml}</div>
+    <details class="memory-detail"><summary>展开详情</summary><div>created: ${htmlEscape(formatDate(record.created_at))}</div><div>updated: ${htmlEscape(formatDate(record.updated_at))}</div><div>source: ${htmlEscape(record.source || "")}</div><div>vector: ${htmlEscape(record.vector_id || "")}</div><div>status: ${htmlEscape(record.status)}</div></details>
+    <div class="actions">${deleteForm}</div>
   </article>`;
 }
 
@@ -175,9 +238,7 @@ function renderPagination(input: PageInput, total: number): string {
   buttons.push(`<a class="page-btn ${input.page <= 1 ? "disabled" : ""}" href="${input.page <= 1 ? "#" : qs(input, { page: input.page - 1 })}">上一页</a>`);
   const start = Math.max(1, input.page - 2);
   const end = Math.min(pages, input.page + 2);
-  for (let page = start; page <= end; page += 1) {
-    buttons.push(`<a class="page-btn ${page === input.page ? "active" : ""}" href="${qs(input, { page })}">${page}</a>`);
-  }
+  for (let page = start; page <= end; page += 1) buttons.push(`<a class="page-btn ${page === input.page ? "active" : ""}" href="${qs(input, { page })}">${page}</a>`);
   buttons.push(`<a class="page-btn ${input.page >= pages ? "disabled" : ""}" href="${input.page >= pages ? "#" : qs(input, { page: input.page + 1 })}">下一页</a>`);
   return `<div class="pagination">${buttons.join("")}</div>`;
 }
@@ -189,17 +250,16 @@ function renderPage(input: PageInput, data: {
   records: MemoryRecord[];
   warmth: { found_count?: number; required_count?: number; missing_count?: number };
 }): string {
-  const typeOptions = ['<option value="">全部类型</option>']
-    .concat(data.types.map((item) => `<option value="${attr(item.type)}" ${item.type === input.type ? "selected" : ""}>${htmlEscape(item.type || "note")} (${item.count})</option>`))
-    .join("");
+  const typeOptions = ['<option value="">全部类型</option>'].concat(data.types.map((item) => `<option value="${attr(item.type)}" ${item.type === input.type ? "selected" : ""}>${htmlEscape(item.type || "note")} (${item.count})</option>`)).join("");
   const statusOptions = ["active", "deleted", "all"].map((status) => `<option value="${status}" ${status === input.status ? "selected" : ""}>${status}</option>`).join("");
   const list = data.records.length ? data.records.map(renderMemory).join("") : '<div class="empty">没有找到记忆</div>';
 
   return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>记忆浏览</title>
 <style>
-*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}:root{--pink:#e8a0b0;--pink-dark:#d4899a;--pink-light:#fff0f3;--blue:#8fa8c0;--blue-dark:#7a92a8;--text:#5c4a4f;--text-light:#9a8389;--white:#fffbfc;--shadow:rgba(232,160,176,.2)}html{background:linear-gradient(135deg,#fff0f3 0%,#fce4ec 100%);min-height:100vh}body{font-family:Georgia,'Noto Serif SC','Songti SC',serif;color:var(--text);min-height:100vh;padding:24px 16px 60px}.page{max-width:760px;margin:0 auto}header{text-align:center;padding:28px 0 22px}.heart{font-size:1.8rem;margin-bottom:10px}h1{font-size:1.35rem;font-weight:400;color:var(--pink-dark);margin-bottom:6px}.subtitle{font-size:.72rem;color:var(--text-light);letter-spacing:2px}.card,.memory-card{background:var(--white);border-radius:16px;padding:20px;margin-bottom:16px;box-shadow:0 4px 20px var(--shadow);border:1px solid rgba(232,160,176,.2)}.stat-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}.stat-item{border:1px solid rgba(232,160,176,.25);border-radius:12px;padding:10px 8px;background:rgba(255,255,255,.58);text-align:center}.stat-value{display:block;color:var(--pink-dark);font-size:1.05rem;font-weight:500}.stat-label{display:block;color:var(--text-light);font-size:.62rem;margin-top:3px}.filters{display:grid;grid-template-columns:1fr 150px 120px auto;gap:8px}input,select{width:100%;font-family:inherit;font-size:.86rem;padding:10px 12px;border-radius:10px;border:1px solid var(--pink);background:var(--white);color:var(--text);outline:none}.btn{background:linear-gradient(135deg,var(--pink) 0%,var(--pink-dark) 100%);color:#fff;border:none;font-family:inherit;font-size:.82rem;letter-spacing:2px;padding:10px 18px;cursor:pointer;border-radius:20px;box-shadow:0 3px 10px var(--shadow)}.header-row{display:flex;align-items:center;gap:10px;margin-bottom:14px}.section-title{font-size:.72rem;letter-spacing:2px;color:var(--text-light)}.divider{flex:1;height:1px;background:var(--pink);opacity:.3}.small-link{color:var(--pink-dark);font-size:.72rem;text-decoration:none}.memory-card{border-radius:12px;padding:16px;animation:slideIn .25s ease}.memory-card.muted{opacity:.72}.memory-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid rgba(232,160,176,.15)}.type-pill,.tag-pill,.score-pill{display:inline-flex;align-items:center;border-radius:999px;padding:3px 8px;background:var(--pink-light);color:var(--pink-dark);font-size:.68rem}.score-pill{background:rgba(143,168,192,.16);color:var(--blue-dark)}.memory-time{font-size:.7rem;color:var(--text-light)}.memory-content{font-size:.92rem;line-height:1.75;white-space:pre-wrap;word-wrap:break-word}.memory-meta{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0}.memory-detail{margin-top:10px;padding-top:10px;border-top:1px dashed rgba(232,160,176,.45);color:var(--text-light);font-size:.7rem;line-height:1.7}.pagination{display:flex;justify-content:center;gap:8px;margin-top:18px;flex-wrap:wrap}.page-btn{background:var(--white);border:1px solid var(--pink);color:var(--pink-dark);font-size:.75rem;padding:7px 12px;border-radius:8px;text-decoration:none}.page-btn.active{background:var(--pink);color:#fff}.page-btn.disabled{opacity:.35;pointer-events:none}.empty{text-align:center;color:var(--text-light);font-size:.85rem;padding:24px 0}@keyframes slideIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}@media(max-width:640px){.page{max-width:480px}.stat-grid{grid-template-columns:repeat(2,1fr)}.filters{grid-template-columns:1fr}.card{padding:18px}.memory-card{padding:15px}}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}:root{--pink:#e8a0b0;--pink-dark:#d4899a;--pink-light:#fff0f3;--blue:#8fa8c0;--blue-dark:#7a92a8;--text:#5c4a4f;--text-light:#9a8389;--white:#fffbfc;--shadow:rgba(232,160,176,.2)}html{background:linear-gradient(135deg,#fff0f3 0%,#fce4ec 100%);min-height:100vh}body{font-family:Georgia,'Noto Serif SC','Songti SC',serif;color:var(--text);min-height:100vh;padding:24px 16px 60px}.page{max-width:860px;margin:0 auto}header{text-align:center;padding:28px 0 22px}.heart{font-size:1.8rem;margin-bottom:10px}h1{font-size:1.35rem;font-weight:400;color:var(--pink-dark);margin-bottom:6px}.subtitle{font-size:.72rem;color:var(--text-light);letter-spacing:2px}.card,.memory-card{background:var(--white);border-radius:16px;padding:20px;margin-bottom:16px;box-shadow:0 4px 20px var(--shadow);border:1px solid rgba(232,160,176,.2)}.stat-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}.stat-item{border:1px solid rgba(232,160,176,.25);border-radius:12px;padding:10px 8px;background:rgba(255,255,255,.58);text-align:center}.stat-value{display:block;color:var(--pink-dark);font-size:1.05rem;font-weight:500}.stat-label{display:block;color:var(--text-light);font-size:.62rem;margin-top:3px}.composer-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}.mini-form{border:1px solid rgba(232,160,176,.22);border-radius:12px;padding:14px;background:rgba(255,255,255,.5)}.form-title{font-size:.76rem;color:var(--pink-dark);letter-spacing:1px;margin-bottom:8px}.filters{display:grid;grid-template-columns:1fr 150px 120px auto;gap:8px}input,select,textarea{width:100%;font-family:inherit;font-size:.86rem;padding:10px 12px;border-radius:10px;border:1px solid var(--pink);background:var(--white);color:var(--text);outline:none;margin-bottom:8px}textarea{min-height:92px;resize:vertical;line-height:1.6}.check{display:block;font-size:.72rem;color:var(--text-light);margin:2px 0 8px}.check input{width:auto;margin-right:6px}.btn{background:linear-gradient(135deg,var(--pink) 0%,var(--pink-dark) 100%);color:#fff;border:none;font-family:inherit;font-size:.82rem;letter-spacing:2px;padding:10px 18px;cursor:pointer;border-radius:20px;box-shadow:0 3px 10px var(--shadow)}.header-row{display:flex;align-items:center;gap:10px;margin-bottom:14px}.section-title{font-size:.72rem;letter-spacing:2px;color:var(--text-light)}.divider{flex:1;height:1px;background:var(--pink);opacity:.3}.small-link{color:var(--pink-dark);font-size:.72rem;text-decoration:none}.memory-card{border-radius:12px;padding:16px;animation:slideIn .25s ease}.memory-card.muted{opacity:.72}.memory-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid rgba(232,160,176,.15)}.type-pill,.tag-pill,.score-pill{display:inline-flex;align-items:center;border-radius:999px;padding:3px 8px;background:var(--pink-light);color:var(--pink-dark);font-size:.68rem}.score-pill{background:rgba(143,168,192,.16);color:var(--blue-dark)}.memory-time{font-size:.7rem;color:var(--text-light)}.memory-content{font-size:.92rem;line-height:1.75;white-space:pre-wrap;word-wrap:break-word}.memory-meta{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0}.memory-detail{margin-top:10px;padding-top:10px;border-top:1px dashed rgba(232,160,176,.45);color:var(--text-light);font-size:.7rem;line-height:1.7}.actions{display:flex;gap:8px;margin-top:8px}.delete-form{display:inline}.action-btn{background:none;border:none;color:var(--pink-dark);font-size:.72rem;cursor:pointer;padding:4px 8px;border-radius:6px;font-family:inherit}.action-btn.delete{color:#c97b7b}.pagination{display:flex;justify-content:center;gap:8px;margin-top:18px;flex-wrap:wrap}.page-btn{background:var(--white);border:1px solid var(--pink);color:var(--pink-dark);font-size:.75rem;padding:7px 12px;border-radius:8px;text-decoration:none}.page-btn.active{background:var(--pink);color:#fff}.page-btn.disabled{opacity:.35;pointer-events:none}.empty{text-align:center;color:var(--text-light);font-size:.85rem;padding:24px 0}@keyframes slideIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}@media(max-width:700px){.page{max-width:480px}.stat-grid,.composer-grid{grid-template-columns:1fr 1fr}.filters{grid-template-columns:1fr}.card{padding:18px}.memory-card{padding:15px}}@media(max-width:480px){.stat-grid,.composer-grid{grid-template-columns:1fr}}
 </style></head><body><div class="page"><header><div class="heart">♡</div><h1>记忆浏览</h1><div class="subtitle">AELIOS MEMORY</div></header>
 <section class="card"><div class="stat-grid"><div class="stat-item"><span class="stat-value">${data.stats.active}</span><span class="stat-label">active</span></div><div class="stat-item"><span class="stat-value">${data.stats.deleted}</span><span class="stat-label">deleted</span></div><div class="stat-item"><span class="stat-value">${data.total}</span><span class="stat-label">当前结果</span></div><div class="stat-item"><span class="stat-value">${data.warmth.found_count ?? 0}/${data.warmth.required_count ?? 11}</span><span class="stat-label">warmth</span></div></div></section>
+${renderComposer()}
 <section class="card"><form class="filters" method="GET"><input name="q" value="${attr(input.q)}" placeholder="搜一句话：brat / 复述 / 穿普拉达..."><select name="type">${typeOptions}</select><select name="status">${statusOptions}</select><button class="btn" type="submit">搜索</button></form></section>
 <div class="header-row"><span class="section-title">记忆列表</span><div class="divider"></div><a class="small-link" href="/admin/memories">清除筛选</a></div>
 ${list}${renderPagination(input, data.total)}</div></body></html>`;
@@ -207,11 +267,16 @@ ${list}${renderPagination(input, data.total)}</div></body></html>`;
 
 export async function handleAdminMemories(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   if (!isAuthorized(request, env)) return unauthorized();
-
   const url = new URL(request.url);
+
+  if (request.method === "POST" && url.pathname === "/admin/memories/create") {
+    const created = await createBoardMemory(env, await request.formData());
+    if (created) ctx.waitUntil(upsertMemoryEmbedding(env, created));
+    return Response.redirect(`${url.origin}/admin/memories`, 303);
+  }
+
   if (request.method === "POST" && url.pathname === "/admin/memories/delete") {
-    const form = await request.formData();
-    const id = String(form.get("id") || "").trim();
+    const id = readFormText(await request.formData(), "id");
     if (id) {
       const deleted = await softDeleteMemory(env.DB, { namespace: "default", id });
       if (deleted) ctx.waitUntil(deleteMemoryEmbedding(env, deleted));
@@ -228,6 +293,7 @@ export async function handleAdminMemories(request: Request, env: Env, ctx: Execu
     fetchMemories(env, input),
     buildStartupContext(env.DB, "default")
   ]);
+
   return new Response(renderPage(input, {
     stats,
     types,
