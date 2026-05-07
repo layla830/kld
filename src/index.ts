@@ -5,7 +5,6 @@ import { handleChatCompletions } from "./api/chatCompletions";
 import { handleGuideDogChatCompletions } from "./api/guideDog";
 import { handleAdminMemories } from "./api/adminMemories";
 import { handleAdminStartupContext } from "./api/adminStartup";
-import { handleAdminLegacySync } from "./api/adminLegacySync";
 import { handleMemories } from "./api/memories";
 import { handleMcp } from "./api/mcp";
 import { handleMigration } from "./api/migration";
@@ -28,10 +27,6 @@ export default {
 
     if (url.pathname === "/admin/startup-context") {
       return handleAdminStartupContext(request, env);
-    }
-
-    if (url.pathname === "/admin/sync-legacy-messages") {
-      return handleAdminLegacySync(request, env, ctx);
     }
 
     if (request.method === "GET" && url.pathname === "/v1/models") {
