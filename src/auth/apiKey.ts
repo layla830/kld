@@ -6,7 +6,12 @@ function getBearerToken(request: Request): string | null {
   if (auth?.toLowerCase().startsWith("bearer ")) {
     return auth.slice("bearer ".length).trim();
   }
-  return request.headers.get("x-api-key");
+
+  const apiKey = request.headers.get("x-api-key");
+  if (apiKey) return apiKey;
+
+  const token = new URL(request.url).searchParams.get("token");
+  return token?.trim() || null;
 }
 
 export async function authenticate(request: Request, env: Env): Promise<AuthResult | { ok: false }> {
