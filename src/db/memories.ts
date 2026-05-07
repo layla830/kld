@@ -1,6 +1,7 @@
 import type { MemoryRecord } from "../types";
 import { newId } from "../utils/ids";
 import { nowIso } from "../utils/time";
+import { buildVectorId } from "../utils/vectorId";
 
 export interface CreateMemoryInput {
   namespace: string;
@@ -40,7 +41,7 @@ export interface UpdateMemoryInput {
 export async function createMemory(db: D1Database, input: CreateMemoryInput): Promise<MemoryRecord> {
   const id = newId("mem");
   const now = nowIso();
-  const vectorId = `mem_${id}`;
+  const vectorId = buildVectorId(id);
   const record: MemoryRecord = {
     id,
     namespace: input.namespace,
