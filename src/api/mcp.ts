@@ -1,5 +1,5 @@
 import { authenticate } from "../auth/apiKey";
-import { createMemory, listMemories, softDeleteMemory } from "../db/memories";
+import { createMemory, listMemories, softDeleteMemory, updateMemory } from "../db/memories";
 import { deleteMemoryEmbedding, upsertMemoryEmbedding } from "../memory/embedding";
 import { searchMemories, toMemoryApiRecord } from "../memory/search";
 import { buildStartupContext } from "../memory/startupContext";
@@ -27,17 +27,35 @@ function readString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
+function readOptionalString(value: unknown): string | null | undefined {
+  if (value === null) return null;
+  return typeof value === "string" ? value : undefined;
+}
+
 function readNumber(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function readOptionalNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
 function readBoolean(value: unknown, fallback = false): boolean {
   return typeof value === "boolean" ? value : fallback;
 }
 
+function readOptionalBoolean(value: unknown): boolean | undefined {
+  return typeof value === "boolean" ? value : undefined;
+}
+
 function readStringArray(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.filter((item): item is string => typeof item === "string").map((item) => item.trim()).filter(Boolean);
+}
+
+function readOptionalStringArray(value: unknown): string[] | undefined {
+  if (value === undefined) return undefined;
+  return readStringArray(value);
 }
 
 function resolveNamespace(profile: KeyProfile, requested: unknown): string {
@@ -67,6 +85,10 @@ function toolError(message: string): Record<string, unknown> {
   return { content: [{ type: "text", text: message }], isError: true };
 }
 
+function waitForBackground(ctx: ExecutionContext, task: Promise<unknown>): void {
+  ctx.waitUntil(task.catch((error) => console.error("background memory task failed", error)));
+}
+
 function getTools(): Array<Record<string, unknown>> {
   const searchSchema = {
     type: "object",
@@ -94,6 +116,24 @@ function getTools(): Array<Record<string, unknown>> {
       namespace: { type: "string" }
     }
   };
+  const updateSchema = {
+    type: "object",
+    properties: {
+      id: { type: "string" },
+      memory_id: { type: "string" },
+      content: { type: "string" },
+      memory: { type: "string" },
+      type: { type: "string" },
+      memory_type: { type: "string" },
+      summary: { type: ["string", "null"] },
+      importance: { type: "number", minimum: 0, maximum: 1 },
+      confidence: { type: "number", minimum: 0, maximum: 1 },
+      pinned: { type: "boolean" },
+      tags: { type: "array", items: { type: "string" } },
+      namespace: { type: "string" }
+    },
+    required: ["id"]
+  };
   const listSchema = {
     type: "object",
     properties: {
@@ -117,11 +157,13 @@ function getTools(): Array<Record<string, unknown>> {
     { name: "retrieve_memory", description: "Compatibility alias for memory_search.", inputSchema: searchSchema },
     { name: "memory_create", description: "Create one long-term memory.", inputSchema: createSchema },
     { name: "store_memory", description: "Compatibility alias for memory_create.", inputSchema: createSchema },
+    { name: "memory_update", description: "Update one memory by id. Supports content, type, summary, importance, pinned, and tags.", inputSchema: updateSchema },
+    { name: "update_memory", description: "Compatibility alias for memory_update.", inputSchema: updateSchema },
     { name: "memory_list", description: "List memories from the user's memory library.", inputSchema: listSchema },
     { name: "list_memories", description: "Compatibility alias for memory_list.", inputSchema: listSchema },
     { name: "memory_delete", description: "Soft-delete one memory by id.", inputSchema: deleteSchema },
     { name: "delete_memory", description: "Compatibility alias for memory_delete.", inputSchema: deleteSchema },
-    { name: "get_startup_context", description: "Return startup context v2 with required warmth anchor checks.", inputSchema: { type: "object", properties: { namespace: { type: "string" } } } }
+    { name: "get_startup_context", description: "Return compact startup context with required warmth anchor checks.", inputSchema: { type: "object", properties: { namespace: { type: "string" } } } }
   ];
 }
 
@@ -159,8 +201,38 @@ async function callTool(env: Env, ctx: ExecutionContext, profile: KeyProfile, pa
       sourceMessageIds: [],
       expiresAt: null
     });
-    ctx.waitUntil(upsertMemoryEmbedding(env, memory));
+    waitForBackground(ctx, upsertMemoryEmbedding(env, memory));
     return textToolResult({ data: toMemoryApiRecord(memory) });
+  }
+
+  if (params.name === "memory_update" || params.name === "update_memory") {
+    if (!hasScope(profile, "memory:write")) return toolError("Missing memory:write scope");
+    const id = readString(args.id) || readString(args.memory_id);
+    if (!id) return toolError("id is required");
+
+    const patch: Parameters<typeof updateMemory>[1]["patch"] = {};
+    const content = readOptionalString(args.content) ?? readOptionalString(args.memory);
+    const type = readString(args.type) || readString(args.memory_type);
+    const tags = readOptionalStringArray(args.tags);
+    const summary = readOptionalString(args.summary);
+    const importance = readOptionalNumber(args.importance);
+    const confidence = readOptionalNumber(args.confidence);
+    const pinned = readOptionalBoolean(args.pinned);
+
+    if (content !== undefined) patch.content = content;
+    if (type !== undefined) patch.type = type;
+    if (tags !== undefined) patch.tags = tags;
+    if (summary !== undefined) patch.summary = summary;
+    if (importance !== undefined) patch.importance = Math.max(0, Math.min(1, importance));
+    if (confidence !== undefined) patch.confidence = Math.max(0, Math.min(1, confidence));
+    if (pinned !== undefined) patch.pinned = pinned;
+
+    if (Object.keys(patch).length === 0) return toolError("No update fields provided");
+
+    const updated = await updateMemory(env.DB, { namespace: resolveNamespace(profile, args.namespace), id, patch });
+    if (!updated) return toolError("Memory not found");
+    if (patch.content !== undefined) waitForBackground(ctx, upsertMemoryEmbedding(env, updated));
+    return textToolResult({ data: toMemoryApiRecord(updated) });
   }
 
   if (params.name === "memory_list" || params.name === "list_memories") {
@@ -180,7 +252,7 @@ async function callTool(env: Env, ctx: ExecutionContext, profile: KeyProfile, pa
     if (!id) return toolError("id is required");
     const deleted = await softDeleteMemory(env.DB, { namespace: resolveNamespace(profile, args.namespace), id });
     if (!deleted) return toolError("Memory not found");
-    ctx.waitUntil(deleteMemoryEmbedding(env, deleted));
+    waitForBackground(ctx, deleteMemoryEmbedding(env, deleted));
     return textToolResult({ data: toMemoryApiRecord(deleted) });
   }
 
