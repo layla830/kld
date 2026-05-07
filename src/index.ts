@@ -66,7 +66,7 @@ export default {
     }
 
     if (request.method === "GET" && url.pathname === "/v1/debug/cache_health") {
-      return handleCacheHealth(env);
+      return handleCacheHealth(request, env);
     }
 
     return openAiError("Not found", 404);
