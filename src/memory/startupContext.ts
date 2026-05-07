@@ -1,9 +1,18 @@
-import type { MemoryApiRecord, MemoryRecord } from "../types";
-import { toMemoryApiRecord } from "./search";
+import type { MemoryRecord } from "../types";
 
 interface WarmthSpec {
   label: string;
   patterns: string[];
+}
+
+interface StartupMemory {
+  id: string;
+  type: string;
+  content: string;
+  importance: number;
+  pinned: boolean;
+  tags: string[];
+  created_at: string;
 }
 
 const REQUIRED_WARMTH_SPECS: WarmthSpec[] = [
@@ -42,65 +51,73 @@ function likePattern(value: string): string {
   return `%${value.replace(/[\\%_]/g, "\\$&")}%`;
 }
 
-async function queryMemories(
+function isReferenceLike(record: MemoryRecord, tags: string[]): boolean {
+  const haystack = [record.type, ...tags].join(" ").toLowerCase();
+  return /paper|research|article|document|reference|summary|论文|文献|资料|报告/.test(haystack);
+}
+
+function toStartupMemory(record: MemoryRecord): StartupMemory {
+  const tags = parseJsonArray(record.tags);
+  const content = record.summary && isReferenceLike(record, tags) ? record.summary : record.content;
+  return {
+    id: record.id,
+    type: record.type,
+    content,
+    importance: record.importance,
+    pinned: Boolean(record.pinned),
+    tags,
+    created_at: (record.created_at || "").slice(0, 10)
+  };
+}
+
+async function queryStartupMemories(
   db: D1Database,
   sql: string,
   binds: unknown[] = []
-): Promise<MemoryApiRecord[]> {
+): Promise<StartupMemory[]> {
   const result = await db.prepare(sql).bind(...binds).all<MemoryRecord>();
-  return (result.results ?? []).map((record) => toMemoryApiRecord(record));
+  return (result.results ?? []).map((record) => toStartupMemory(record));
 }
 
 async function findRequiredWarmth(db: D1Database, namespace: string): Promise<{
   required_count: number;
   found_count: number;
   missing_count: number;
-  missing_labels: string[];
-  memories: MemoryApiRecord[];
+  missing: string[];
 }> {
-  const found: MemoryApiRecord[] = [];
-  const seen = new Set<string>();
+  let foundCount = 0;
   const missing: string[] = [];
 
   for (const spec of REQUIRED_WARMTH_SPECS) {
-    let match: MemoryApiRecord | null = null;
+    let found = false;
     for (const pattern of spec.patterns) {
-      const rows = await queryMemories(
-        db,
-        `SELECT * FROM memories
+      const row = await db.prepare(
+        `SELECT id FROM memories
          WHERE namespace = ? AND status = 'active'
            AND (content LIKE ? ESCAPE '\\' OR tags LIKE ? ESCAPE '\\' OR type LIKE ? ESCAPE '\\')
          ORDER BY pinned DESC, importance DESC, updated_at DESC
-         LIMIT 1`,
-        [namespace, likePattern(pattern), likePattern(pattern), likePattern(pattern)]
-      );
-      if (rows[0]) {
-        match = rows[0];
+         LIMIT 1`
+      ).bind(namespace, likePattern(pattern), likePattern(pattern), likePattern(pattern)).first<{ id: string }>();
+      if (row?.id) {
+        found = true;
         break;
       }
     }
 
-    if (match) {
-      if (!seen.has(match.id)) {
-        found.push(match);
-        seen.add(match.id);
-      }
-    } else {
-      missing.push(spec.label);
-    }
+    if (found) foundCount += 1;
+    else missing.push(spec.label);
   }
 
   return {
     required_count: REQUIRED_WARMTH_SPECS.length,
-    found_count: REQUIRED_WARMTH_SPECS.length - missing.length,
+    found_count: foundCount,
     missing_count: missing.length,
-    missing_labels: missing,
-    memories: found
+    missing
   };
 }
 
 export async function buildStartupContext(db: D1Database, namespace = "default"): Promise<Record<string, unknown>> {
-  const identitySummary = await queryMemories(
+  const identitySummary = await queryStartupMemories(
     db,
     `SELECT * FROM memories
      WHERE namespace = ? AND status = 'active' AND type = 'identity'
@@ -109,7 +126,7 @@ export async function buildStartupContext(db: D1Database, namespace = "default")
     [namespace]
   );
 
-  const rulesAndLessons = await queryMemories(
+  const rulesAndLessons = await queryStartupMemories(
     db,
     `SELECT * FROM memories
      WHERE namespace = ? AND status = 'active' AND type IN ('rule', 'lesson', 'core', 'insight')
@@ -118,7 +135,7 @@ export async function buildStartupContext(db: D1Database, namespace = "default")
     [namespace]
   );
 
-  const pinnedAndWarmth = await queryMemories(
+  const pinnedAndWarmth = await queryStartupMemories(
     db,
     `SELECT * FROM memories
      WHERE namespace = ? AND status = 'active'
@@ -128,17 +145,17 @@ export async function buildStartupContext(db: D1Database, namespace = "default")
     [namespace]
   );
 
-  const currentHandoff = await queryMemories(
+  const currentHandoff = await queryStartupMemories(
     db,
     `SELECT * FROM memories
      WHERE namespace = ? AND status = 'active'
        AND (content LIKE '%handoff%' OR content LIKE '%交接%' OR tags LIKE '%handoff%' OR tags LIKE '%交接%')
      ORDER BY updated_at DESC
-     LIMIT 2`,
+     LIMIT 1`,
     [namespace]
   );
 
-  const recentDiary = await queryMemories(
+  const recentDiary = await queryStartupMemories(
     db,
     `SELECT * FROM memories
      WHERE namespace = ? AND status = 'active' AND type IN ('diary', 'layla_diary')
@@ -150,8 +167,7 @@ export async function buildStartupContext(db: D1Database, namespace = "default")
   const requiredWarmth = await findRequiredWarmth(db, namespace);
 
   return {
-    startup_version: "2.0-aelios",
-    namespace,
+    startup_version: "2.1-compact",
     identity_summary_count: identitySummary.length,
     rules_and_lessons_count: rulesAndLessons.length,
     pinned_and_warmth_count: pinnedAndWarmth.length,
@@ -164,11 +180,10 @@ export async function buildStartupContext(db: D1Database, namespace = "default")
     current_handoff: currentHandoff,
     recent_diary: recentDiary,
     search_hints: [
-      "Use memory_search for exact warmth labels, dates, rules, handoff, and diary queries.",
-      "Required warmth anchors must remain original memory content and found_count must stay 11."
+      "Use memory_search for exact warmth labels, dates, rules, handoff, diary, and full paper/reference queries.",
+      "Startup memories are compact cards: content, type, tags, importance, pinned, and created_at only."
     ],
     required_warmth: requiredWarmth,
-    tag_format: "Aelios stores tags as JSON arrays; migrated VPS tags include legacy:vps.",
-    legacy_tag_examples: pinnedAndWarmth.flatMap((memory) => parseJsonArray(JSON.stringify(memory.tags))).slice(0, 8)
+    tag_format: "Tags are JSON arrays; mood is stored as mood:<name>."
   };
 }
