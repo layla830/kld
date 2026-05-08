@@ -27,8 +27,8 @@ function sanitizeTitle(value: unknown, fallback: string): string {
   return title || fallback;
 }
 
-function isUploadedFile(value: FormDataEntryValue | null): value is UploadedFileLike {
-  return typeof value !== "string" && value !== null && typeof (value as UploadedFileLike).text === "function";
+function isUploadedFile(value: unknown): value is UploadedFileLike {
+  return typeof value !== "string" && value !== null && typeof value === "object" && typeof (value as UploadedFileLike).text === "function";
 }
 
 function splitPages(text: string, pageSize: number): string[] {
