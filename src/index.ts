@@ -8,6 +8,7 @@ import { handleAdminMaintenance } from "./api/adminMaintenance";
 import { handleAdminStartupContext } from "./api/adminStartup";
 import { handleBooks } from "./api/books";
 import { handleBooksReaderPage } from "./api/booksReader";
+import { handleBooksUpload } from "./api/booksUpload";
 import { handleMemories } from "./api/memories";
 import { handleMcp } from "./api/mcp";
 import { handleMigration } from "./api/migration";
@@ -38,6 +39,10 @@ export default {
 
     if (url.pathname === "/books") {
       return handleBooksReaderPage(request, env);
+    }
+
+    if (url.pathname === "/books/upload" || url.pathname === "/books/api/upload") {
+      return handleBooksUpload(request, env);
     }
 
     if (url.pathname.startsWith("/books/api/") || url.pathname === "/admin/books/import") {
