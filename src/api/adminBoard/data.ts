@@ -1,5 +1,5 @@
 import type { Env, MemoryRecord } from "../../types";
-import { like, moodOf, PAGE_SIZE, type PageInput } from "./utils";
+import { like, moodOf, PAGE_SIZE, parseTags, type PageInput } from "./utils";
 
 export interface HeatDay {
   day: string;
@@ -23,10 +23,7 @@ export async function fetchQuoteCategories(env: Env): Promise<string[]> {
   const result = await env.DB.prepare("SELECT tags FROM memories WHERE namespace = 'default' AND status = 'active' AND tags LIKE ? ESCAPE '\\' ORDER BY updated_at DESC LIMIT 300").bind(like("语录")).all<{ tags: string | null }>();
   const categories = new Set<string>();
   for (const row of result.results ?? []) {
-    const tags = row.tags ? JSON.parse(row.tags) as unknown : [];
-    if (!Array.isArray(tags)) continue;
-    for (const tag of tags) {
-      if (typeof tag !== "string") continue;
+    for (const tag of parseTags(row.tags)) {
       if (tag && tag !== "语录" && tag !== "admin-board" && !tag.startsWith("mood:")) categories.add(tag);
     }
   }
