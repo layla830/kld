@@ -70,60 +70,7 @@ export async function deleteOldIdempotencyKeys(
 }
 
 // ---------------------------------------------------------------------------
-// memories: mark expired — active, non-pinned, non-identity/persona memories
-//           whose updated_at is older than cutoff become status=expired.
-//           Returns the id/vector_id of newly expired records so caller
-//           can sync Vectorize deletion.
-// ---------------------------------------------------------------------------
-
-export interface ExpiredMemoryRef {
-  id: string;
-  vector_id: string | null;
-}
-
-export async function expireOldMemories(
-  db: D1Database,
-  namespace: string,
-  cutoff: string
-): Promise<{ count: number; expired: ExpiredMemoryRef[] }> {
-  const now = nowIso();
-
-  // First, select the records that will be expired
-  const toExpire = await db
-    .prepare(
-      `SELECT id, vector_id
-       FROM memories
-       WHERE namespace = ?
-         AND status = 'active'
-         AND pinned = 0
-         AND type NOT IN ('identity', 'persona')
-         AND updated_at < ?`
-    )
-    .bind(namespace, cutoff)
-    .all<ExpiredMemoryRef>();
-
-  const expired = toExpire.results ?? [];
-  if (expired.length === 0) return { count: 0, expired: [] };
-
-  // Then mark them expired
-  await db
-    .prepare(
-      `UPDATE memories
-       SET status = 'expired', updated_at = ?
-       WHERE namespace = ?
-         AND status = 'active'
-         AND pinned = 0
-         AND type NOT IN ('identity', 'persona')
-         AND updated_at < ?`
-    )
-    .bind(now, namespace, cutoff)
-    .run();
-
-  return { count: expired.length, expired };
-}
-
-// ---------------------------------------------------------------------------
-// memories: list hard-deletable rows — status in (deleted, superseded, expired)
+// memories: list hard-deletable rows, status in (deleted, superseded, expired)
 //           and updated_at older than cutoff
 // ---------------------------------------------------------------------------
 
