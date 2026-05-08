@@ -196,6 +196,26 @@ async function addComment(env: Env, request: Request): Promise<Response> {
   return json({ success: true, comment: { id: comment.id, page: comment.page, author, content, time: comment.created_at } });
 }
 
+async function deleteBook(env: Env, request: Request): Promise<Response> {
+  await ensureBooksSchema(env.DB);
+  const body = await request.json().catch(() => null) as Record<string, unknown> | null;
+  if (!body) return json({ error: "Invalid JSON" }, { status: 400 });
+  const bookId = String(body.book_id || "").trim();
+  if (!bookId) return json({ error: "book_id is required" }, { status: 400 });
+
+  const book = await env.DB.prepare("SELECT id FROM books WHERE id = ?").bind(bookId).first<{ id: string }>();
+  if (!book) return json({ error: "Book not found" }, { status: 404 });
+
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM book_comments WHERE book_id = ?").bind(bookId),
+    env.DB.prepare("DELETE FROM book_progress WHERE book_id = ?").bind(bookId),
+    env.DB.prepare("DELETE FROM book_pages WHERE book_id = ?").bind(bookId),
+    env.DB.prepare("DELETE FROM books WHERE id = ?").bind(bookId)
+  ]);
+
+  return json({ success: true, deleted_book_id: bookId });
+}
+
 async function importBooks(env: Env, request: Request): Promise<Response> {
   await ensureBooksSchema(env.DB);
   const body = await request.json().catch(() => null) as { books?: ImportBook[] } | null;
@@ -263,6 +283,8 @@ export async function handleBooks(request: Request, env: Env): Promise<Response>
   if (request.method === "GET" && url.pathname === "/books/api/page") return getBookPage(env, url);
   if (request.method === "POST" && url.pathname === "/books/api/progress") return saveProgress(env, request);
   if (request.method === "POST" && url.pathname === "/books/api/comments") return addComment(env, request);
+  if (request.method === "POST" && url.pathname === "/books/api/delete") return deleteBook(env, request);
+  if (request.method === "DELETE" && url.pathname === "/books/api/delete") return deleteBook(env, request);
   if (request.method === "POST" && url.pathname === "/admin/books/import") return importBooks(env, request);
 
   return json({ error: "Not found" }, { status: 404 });
