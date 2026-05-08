@@ -6,6 +6,7 @@ import { handleGuideDogChatCompletions } from "./api/guideDog";
 import { handleAdminBoard } from "./api/adminBoard";
 import { handleAdminMaintenance } from "./api/adminMaintenance";
 import { handleAdminStartupContext } from "./api/adminStartup";
+import { handleBooks } from "./api/books";
 import { handleMemories } from "./api/memories";
 import { handleMcp } from "./api/mcp";
 import { handleMigration } from "./api/migration";
@@ -32,6 +33,10 @@ export default {
 
     if (url.pathname === "/admin/startup-context") {
       return handleAdminStartupContext(request, env);
+    }
+
+    if (url.pathname === "/books" || url.pathname.startsWith("/books/api/") || url.pathname === "/admin/books/import") {
+      return handleBooks(request, env);
     }
 
     if (request.method === "GET" && url.pathname === "/v1/models") {
