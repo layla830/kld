@@ -307,7 +307,7 @@ async function callTool(env: Env, ctx: ExecutionContext, profile: KeyProfile, pa
     const confidence = readOptionalNumber(args.confidence);
     const pinned = readOptionalBoolean(args.pinned);
 
-    if (content !== undefined) patch.content = content;
+    if (content !== undefined && content !== null) patch.content = content;
     if (type !== undefined) patch.type = type;
     if (tags !== undefined) patch.tags = tags;
     if (summary !== undefined) patch.summary = summary;
