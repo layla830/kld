@@ -70,8 +70,9 @@ async function readUploadBody(request: Request): Promise<UploadBody> {
   if (contentType.includes("multipart/form-data")) {
     const form = await request.formData();
     const file = form.get("file");
-    const content = typeof file === "object" && file && "text" in file ? await file.text() : String(form.get("content") || "");
-    const fallbackTitle = typeof file === "object" && file && "name" in file ? String(file.name).replace(/\.[^.]+$/, "") : "未命名的书";
+    const textFile = file instanceof File ? file : null;
+    const content = textFile ? await textFile.text() : String(form.get("content") || "");
+    const fallbackTitle = textFile ? textFile.name.replace(/\.[^.]+$/, "") : "未命名的书";
     return {
       title: sanitizeTitle(form.get("title"), fallbackTitle),
       author: typeof form.get("author") === "string" ? String(form.get("author")).trim() : "",
