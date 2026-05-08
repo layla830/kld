@@ -9,6 +9,11 @@ interface UploadBody {
   page_size?: number;
 }
 
+interface UploadedFileLike {
+  name: string;
+  text(): Promise<string>;
+}
+
 function nowIso(): string {
   return new Date().toISOString();
 }
@@ -20,6 +25,10 @@ function newId(prefix: string): string {
 function sanitizeTitle(value: unknown, fallback: string): string {
   const title = typeof value === "string" ? value.trim() : "";
   return title || fallback;
+}
+
+function isUploadedFile(value: FormDataEntryValue | null): value is UploadedFileLike {
+  return typeof value !== "string" && value !== null && typeof (value as UploadedFileLike).text === "function";
 }
 
 function splitPages(text: string, pageSize: number): string[] {
@@ -70,7 +79,7 @@ async function readUploadBody(request: Request): Promise<UploadBody> {
   if (contentType.includes("multipart/form-data")) {
     const form = await request.formData();
     const file = form.get("file");
-    const textFile = file instanceof File ? file : null;
+    const textFile = isUploadedFile(file) ? file : null;
     const content = textFile ? await textFile.text() : String(form.get("content") || "");
     const fallbackTitle = textFile ? textFile.name.replace(/\.[^.]+$/, "") : "未命名的书";
     return {
