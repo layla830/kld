@@ -3,7 +3,7 @@ import { handleCache } from "./api/cache";
 import { handleCacheHealth } from "./api/debug";
 import { handleChatCompletions } from "./api/chatCompletions";
 import { handleGuideDogChatCompletions } from "./api/guideDog";
-import { handleAdminMemoryHome } from "./api/adminMemoryHome";
+import { handleAdminBoard } from "./api/adminBoard";
 import { handleAdminMaintenance } from "./api/adminMaintenance";
 import { handleAdminStartupContext } from "./api/adminStartup";
 import { handleMemories } from "./api/memories";
@@ -23,7 +23,7 @@ export default {
     }
 
     if (["/admin/memories", "/admin/memories/create", "/admin/memories/edit", "/admin/memories/delete"].includes(url.pathname)) {
-      return handleAdminMemoryHome(request, env, ctx);
+      return handleAdminBoard(request, env, ctx);
     }
 
     if (url.pathname === "/admin/maintenance") {
