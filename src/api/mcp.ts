@@ -19,6 +19,28 @@ interface ToolCallParams {
   arguments?: unknown;
 }
 
+interface BookRow {
+  id: string;
+  title: string;
+  author: string | null;
+  total_pages: number;
+  created_at: string;
+  updated_at: string;
+}
+
+interface ProgressRow {
+  reader: string;
+  page: number;
+}
+
+interface CommentRow {
+  id: string;
+  page: number;
+  author: string;
+  content: string;
+  created_at: string;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
@@ -99,6 +121,24 @@ function likePattern(value: string): string {
   return `%${value.replace(/[\\%_]/g, "\\$&")}%`;
 }
 
+function clampPage(value: unknown, fallback = 1): number {
+  const parsed = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(1, Math.floor(parsed));
+}
+
+function cleanReader(value: unknown): "layla" | "kld" {
+  return value === "kld" ? "kld" : "layla";
+}
+
+function newId(prefix: string): string {
+  return `${prefix}_${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
+}
+
+function nowIso(): string {
+  return new Date().toISOString();
+}
+
 function getTools(): Array<Record<string, unknown>> {
   const searchSchema = {
     type: "object",
@@ -151,12 +191,33 @@ function getTools(): Array<Record<string, unknown>> {
       status: { type: "string" }
     }
   };
-  const deleteSchema = {
+  const deleteSchema = { type: "object", properties: { id: { type: "string" } }, required: ["id"] };
+  const bookPageSchema = {
     type: "object",
     properties: {
-      id: { type: "string" }
+      book_id: { type: "string" },
+      page: { type: "number", minimum: 1 }
     },
-    required: ["id"]
+    required: ["book_id", "page"]
+  };
+  const bookProgressSchema = {
+    type: "object",
+    properties: {
+      book_id: { type: "string" },
+      reader: { type: "string", enum: ["layla", "kld"] },
+      page: { type: "number", minimum: 1 }
+    },
+    required: ["book_id", "page"]
+  };
+  const bookCommentSchema = {
+    type: "object",
+    properties: {
+      book_id: { type: "string" },
+      page: { type: "number", minimum: 1 },
+      author: { type: "string", enum: ["layla", "kld"] },
+      content: { type: "string" }
+    },
+    required: ["book_id", "page", "content"]
   };
 
   return [
@@ -166,16 +227,103 @@ function getTools(): Array<Record<string, unknown>> {
     { name: "update_memory", description: "Edit one memory by id.", inputSchema: updateSchema },
     { name: "list_memories", description: "List memories with simple filters.", inputSchema: listSchema },
     { name: "delete_memory", description: "Soft-delete one memory by id.", inputSchema: deleteSchema },
+    { name: "list_books", description: "List shared-reading books.", inputSchema: { type: "object", properties: {} } },
+    { name: "get_book_page", description: "Read one book page with comments.", inputSchema: bookPageSchema },
+    { name: "save_book_progress", description: "Save shared-reading progress.", inputSchema: bookProgressSchema },
+    { name: "add_book_comment", description: "Add a page comment.", inputSchema: bookCommentSchema },
     { name: "check_database_health", description: "Show memory database counts.", inputSchema: { type: "object", properties: {} } },
     { name: "get_startup_context", description: "Get compact startup context.", inputSchema: { type: "object", properties: {} } }
   ];
 }
 
+async function ensureBooksSchema(db: D1Database): Promise<void> {
+  await db.batch([
+    db.prepare("CREATE TABLE IF NOT EXISTS books (id TEXT PRIMARY KEY, title TEXT NOT NULL, author TEXT, total_pages INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)"),
+    db.prepare("CREATE TABLE IF NOT EXISTS book_pages (book_id TEXT NOT NULL, page INTEGER NOT NULL, content TEXT NOT NULL, PRIMARY KEY (book_id, page))"),
+    db.prepare("CREATE TABLE IF NOT EXISTS book_progress (book_id TEXT NOT NULL, reader TEXT NOT NULL, page INTEGER NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (book_id, reader))"),
+    db.prepare("CREATE TABLE IF NOT EXISTS book_comments (id TEXT PRIMARY KEY, book_id TEXT NOT NULL, page INTEGER NOT NULL, author TEXT NOT NULL, content TEXT NOT NULL, created_at TEXT NOT NULL)"),
+    db.prepare("CREATE INDEX IF NOT EXISTS idx_book_comments_page ON book_comments(book_id, page, created_at)")
+  ]);
+}
+
+async function readBookProgress(db: D1Database, bookId: string): Promise<Record<string, number>> {
+  const rows = await db.prepare("SELECT reader, page FROM book_progress WHERE book_id = ?").bind(bookId).all<ProgressRow>();
+  const progress: Record<string, number> = { layla: 1, kld: 1 };
+  for (const row of rows.results ?? []) progress[row.reader] = row.page;
+  return progress;
+}
+
+async function listBooksForMcp(db: D1Database): Promise<Record<string, unknown>> {
+  await ensureBooksSchema(db);
+  const rows = await db.prepare("SELECT * FROM books ORDER BY updated_at DESC, created_at DESC").all<BookRow>();
+  const books = [];
+  for (const book of rows.results ?? []) {
+    books.push({
+      id: book.id,
+      title: book.title,
+      author: book.author || "",
+      total_pages: book.total_pages,
+      progress: await readBookProgress(db, book.id),
+      updated_at: book.updated_at
+    });
+  }
+  return { books };
+}
+
+async function getBookPageForMcp(db: D1Database, args: Record<string, unknown>): Promise<Record<string, unknown>> {
+  await ensureBooksSchema(db);
+  const bookId = readString(args.book_id) || readString(args.id);
+  if (!bookId) return { error: "book_id is required" };
+  const requestedPage = clampPage(args.page);
+  const book = await db.prepare("SELECT * FROM books WHERE id = ?").bind(bookId).first<BookRow>();
+  if (!book) return { error: "Book not found" };
+  const page = Math.min(requestedPage, Math.max(1, book.total_pages));
+  const pageRow = await db.prepare("SELECT content FROM book_pages WHERE book_id = ? AND page = ?").bind(bookId, page).first<{ content: string }>();
+  const comments = await db.prepare("SELECT id, page, author, content, created_at FROM book_comments WHERE book_id = ? AND page = ? ORDER BY created_at ASC").bind(bookId, page).all<CommentRow>();
+  return {
+    id: book.id,
+    title: book.title,
+    author: book.author || "",
+    page,
+    total_pages: book.total_pages,
+    content: pageRow?.content || "",
+    progress: await readBookProgress(db, book.id),
+    comments: (comments.results ?? []).map((item) => ({ id: item.id, page: item.page, author: item.author, content: item.content, time: item.created_at }))
+  };
+}
+
+async function saveBookProgressForMcp(db: D1Database, args: Record<string, unknown>): Promise<Record<string, unknown>> {
+  await ensureBooksSchema(db);
+  const bookId = readString(args.book_id) || readString(args.id);
+  if (!bookId) return { error: "book_id is required" };
+  const reader = cleanReader(args.reader);
+  const page = clampPage(args.page);
+  const book = await db.prepare("SELECT total_pages FROM books WHERE id = ?").bind(bookId).first<{ total_pages: number }>();
+  if (!book) return { error: "Book not found" };
+  const safePage = Math.min(page, Math.max(1, book.total_pages));
+  const updatedAt = nowIso();
+  await db.prepare("INSERT INTO book_progress (book_id, reader, page, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(book_id, reader) DO UPDATE SET page = excluded.page, updated_at = excluded.updated_at").bind(bookId, reader, safePage, updatedAt).run();
+  await db.prepare("UPDATE books SET updated_at = ? WHERE id = ?").bind(updatedAt, bookId).run();
+  return { success: true, progress: await readBookProgress(db, bookId) };
+}
+
+async function addBookCommentForMcp(db: D1Database, args: Record<string, unknown>): Promise<Record<string, unknown>> {
+  await ensureBooksSchema(db);
+  const bookId = readString(args.book_id) || readString(args.id);
+  const content = readString(args.content);
+  if (!bookId || !content) return { error: "book_id and content are required" };
+  const book = await db.prepare("SELECT total_pages FROM books WHERE id = ?").bind(bookId).first<{ total_pages: number }>();
+  if (!book) return { error: "Book not found" };
+  const page = Math.min(clampPage(args.page), Math.max(1, book.total_pages));
+  const createdAt = nowIso();
+  const comment = { id: newId("comment"), page, author: cleanReader(args.author), content, time: createdAt };
+  await db.prepare("INSERT INTO book_comments (id, book_id, page, author, content, created_at) VALUES (?, ?, ?, ?, ?, ?)").bind(comment.id, bookId, page, comment.author, content, createdAt).run();
+  await db.prepare("UPDATE books SET updated_at = ? WHERE id = ?").bind(createdAt, bookId).run();
+  return { success: true, comment };
+}
+
 async function findMemoryByContentHash(db: D1Database, namespace: string, hash: string): Promise<MemoryRecord | null> {
-  const row = await db
-    .prepare("SELECT * FROM memories WHERE namespace = ? AND instr(source_message_ids, ?) > 0 LIMIT 1")
-    .bind(namespace, `hash:${hash}`)
-    .first<MemoryRecord>();
+  const row = await db.prepare("SELECT * FROM memories WHERE namespace = ? AND instr(source_message_ids, ?) > 0 LIMIT 1").bind(namespace, `hash:${hash}`).first<MemoryRecord>();
   return row ?? null;
 }
 
@@ -203,10 +351,7 @@ async function listMemoriesCompat(db: D1Database, args: Record<string, unknown>,
   }
 
   const total = await db.prepare(`SELECT COUNT(*) AS count FROM memories ${where}`).bind(...binds).first<{ count: number }>();
-  const rows = await db
-    .prepare(`SELECT * FROM memories ${where} ORDER BY pinned DESC, importance DESC, updated_at DESC LIMIT ? OFFSET ?`)
-    .bind(...binds, pageSize, offset)
-    .all<MemoryRecord>();
+  const rows = await db.prepare(`SELECT * FROM memories ${where} ORDER BY pinned DESC, importance DESC, updated_at DESC LIMIT ? OFFSET ?`).bind(...binds, pageSize, offset).all<MemoryRecord>();
 
   return {
     memories: (rows.results ?? []).map((record) => toMemoryApiRecord(record)),
@@ -237,16 +382,8 @@ async function databaseHealth(db: D1Database, namespace: string): Promise<Record
       SUM(CASE WHEN vector_id IS NOT NULL AND vector_id != '' THEN 1 ELSE 0 END) AS memories_with_embeddings
      FROM memories WHERE namespace = ?`
   ).bind(namespace).first<Record<string, number>>();
-  const byType = await db.prepare(
-    "SELECT type, COUNT(*) AS count FROM memories WHERE namespace = ? AND status = 'active' GROUP BY type ORDER BY count DESC"
-  ).bind(namespace).all<{ type: string; count: number }>();
-  return {
-    status: "healthy",
-    backend: "cloudflare-d1-vectorize",
-    namespace,
-    statistics: counts ?? {},
-    types: byType.results ?? []
-  };
+  const byType = await db.prepare("SELECT type, COUNT(*) AS count FROM memories WHERE namespace = ? AND status = 'active' GROUP BY type ORDER BY count DESC").bind(namespace).all<{ type: string; count: number }>();
+  return { status: "healthy", backend: "cloudflare-d1-vectorize", namespace, statistics: counts ?? {}, types: byType.results ?? [] };
 }
 
 async function callTool(env: Env, ctx: ExecutionContext, profile: KeyProfile, params: ToolCallParams): Promise<Record<string, unknown>> {
@@ -256,12 +393,7 @@ async function callTool(env: Env, ctx: ExecutionContext, profile: KeyProfile, pa
     if (!hasScope(profile, "memory:read")) return toolError("Missing memory:read scope");
     const query = readString(args.query);
     if (!query) return toolError("query is required");
-    const data = await searchMemories(env, {
-      namespace: resolveNamespace(profile, args.namespace),
-      query,
-      topK: readNumber(args.top_k, readNumber(args.n_results, Number(env.MEMORY_TOP_K || 8))),
-      types: readStringArray(args.types)
-    });
+    const data = await searchMemories(env, { namespace: resolveNamespace(profile, args.namespace), query, topK: readNumber(args.top_k, readNumber(args.n_results, Number(env.MEMORY_TOP_K || 8))), types: readStringArray(args.types) });
     return textToolResult({ data });
   }
 
@@ -314,7 +446,6 @@ async function callTool(env: Env, ctx: ExecutionContext, profile: KeyProfile, pa
     if (importance !== undefined) patch.importance = Math.max(0, Math.min(1, importance));
     if (confidence !== undefined) patch.confidence = Math.max(0, Math.min(1, confidence));
     if (pinned !== undefined) patch.pinned = pinned;
-
     if (Object.keys(patch).length === 0) return toolError("No update fields provided");
 
     const updated = await updateMemory(env.DB, { namespace: resolveNamespace(profile, args.namespace), id, patch });
@@ -328,12 +459,7 @@ async function callTool(env: Env, ctx: ExecutionContext, profile: KeyProfile, pa
     if (args.page !== undefined || args.page_size !== undefined || args.tag !== undefined || args.memory_type !== undefined) {
       return textToolResult(await listMemoriesCompat(env.DB, args, resolveNamespace(profile, args.namespace)));
     }
-    const records = await listMemories(env.DB, {
-      namespace: resolveNamespace(profile, args.namespace),
-      type: readString(args.type),
-      status: readString(args.status) || "active",
-      limit: Math.min(Math.max(Math.floor(readNumber(args.limit, 50)), 1), 100)
-    });
+    const records = await listMemories(env.DB, { namespace: resolveNamespace(profile, args.namespace), type: readString(args.type), status: readString(args.status) || "active", limit: Math.min(Math.max(Math.floor(readNumber(args.limit, 50)), 1), 100) });
     return textToolResult({ data: records.map((record) => toMemoryApiRecord(record)), memories: records.map((record) => toMemoryApiRecord(record)) });
   }
 
@@ -342,15 +468,32 @@ async function callTool(env: Env, ctx: ExecutionContext, profile: KeyProfile, pa
     const namespace = resolveNamespace(profile, args.namespace);
     let id = readString(args.id) || readString(args.memory_id);
     const contentHash = readString(args.content_hash);
-    if (!id && contentHash) {
-      const found = await findMemoryByContentHash(env.DB, namespace, contentHash);
-      id = found?.id;
-    }
+    if (!id && contentHash) id = (await findMemoryByContentHash(env.DB, namespace, contentHash))?.id;
     if (!id) return toolError("id or content_hash is required");
     const deleted = await softDeleteMemory(env.DB, { namespace, id });
     if (!deleted) return toolError("Memory not found");
     waitForBackground(ctx, deleteMemoryEmbedding(env, deleted));
     return textToolResult({ data: toMemoryApiRecord(deleted), success: true, message: "Memory deleted" });
+  }
+
+  if (params.name === "list_books") {
+    if (!hasScope(profile, "memory:read")) return toolError("Missing memory:read scope");
+    return textToolResult(await listBooksForMcp(env.DB));
+  }
+
+  if (params.name === "get_book_page") {
+    if (!hasScope(profile, "memory:read")) return toolError("Missing memory:read scope");
+    return textToolResult(await getBookPageForMcp(env.DB, args));
+  }
+
+  if (params.name === "save_book_progress") {
+    if (!hasScope(profile, "memory:write")) return toolError("Missing memory:write scope");
+    return textToolResult(await saveBookProgressForMcp(env.DB, args));
+  }
+
+  if (params.name === "add_book_comment") {
+    if (!hasScope(profile, "memory:write")) return toolError("Missing memory:write scope");
+    return textToolResult(await addBookCommentForMcp(env.DB, args));
   }
 
   if (params.name === "check_database_health") {
@@ -368,20 +511,11 @@ async function callTool(env: Env, ctx: ExecutionContext, profile: KeyProfile, pa
 
 async function handleRpc(request: JsonRpcRequest, env: Env, ctx: ExecutionContext, profile: KeyProfile): Promise<Record<string, unknown> | null> {
   if (!request.id && request.method?.startsWith("notifications/")) return null;
-  if (request.method === "initialize") {
-    return rpcResult(request.id, {
-      protocolVersion: "2025-06-18",
-      capabilities: { tools: { listChanged: false } },
-      serverInfo: { name: "companion-memory-mcp", version: "0.1.0" }
-    });
-  }
+  if (request.method === "initialize") return rpcResult(request.id, { protocolVersion: "2025-06-18", capabilities: { tools: { listChanged: false } }, serverInfo: { name: "companion-memory-mcp", version: "0.1.0" } });
   if (request.method === "tools/list") return rpcResult(request.id, { tools: getTools() });
   if (request.method === "resources/list") return rpcResult(request.id, { resources: [] });
   if (request.method === "prompts/list") return rpcResult(request.id, { prompts: [] });
-  if (request.method === "tools/call") {
-    const params = isRecord(request.params) ? (request.params as ToolCallParams) : {};
-    return rpcResult(request.id, await callTool(env, ctx, profile, params));
-  }
+  if (request.method === "tools/call") return rpcResult(request.id, await callTool(env, ctx, profile, isRecord(request.params) ? request.params as ToolCallParams : {}));
   if (request.method === "ping") return rpcResult(request.id, {});
   return rpcError(request.id, -32601, "Method not found");
 }
@@ -389,12 +523,7 @@ async function handleRpc(request: JsonRpcRequest, env: Env, ctx: ExecutionContex
 export async function handleMcp(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   if (request.method === "OPTIONS") return new Response(null, { status: 204 });
   if (request.method === "GET") {
-    return json({
-      name: "companion-memory-mcp",
-      transport: "streamable-http",
-      endpoint: new URL(request.url).pathname,
-      tools: getTools().map((tool) => tool.name)
-    });
+    return json({ name: "companion-memory-mcp", transport: "streamable-http", endpoint: new URL(request.url).pathname, tools: getTools().map((tool) => tool.name) });
   }
   if (request.method !== "POST") return json({ error: "Method not allowed" }, { status: 405 });
 
