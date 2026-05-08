@@ -105,9 +105,7 @@ function getTools(): Array<Record<string, unknown>> {
     properties: {
       query: { type: "string" },
       top_k: { type: "number", minimum: 1, maximum: 50 },
-      n_results: { type: "number", minimum: 1, maximum: 50 },
-      types: { type: "array", items: { type: "string" } },
-      namespace: { type: "string" }
+      types: { type: "array", items: { type: "string" } }
     },
     required: ["query"]
   };
@@ -116,8 +114,7 @@ function getTools(): Array<Record<string, unknown>> {
     properties: {
       tags: { anyOf: [{ type: "string" }, { type: "array", items: { type: "string" } }] },
       match_all: { type: "boolean" },
-      limit: { type: "number", minimum: 1, maximum: 100 },
-      namespace: { type: "string" }
+      limit: { type: "number", minimum: 1, maximum: 100 }
     },
     required: ["tags"]
   };
@@ -125,69 +122,52 @@ function getTools(): Array<Record<string, unknown>> {
     type: "object",
     properties: {
       content: { type: "string" },
-      memory: { type: "string" },
       type: { type: "string" },
-      memory_type: { type: "string" },
-      summary: { type: "string" },
-      importance: { type: "number" },
-      confidence: { type: "number" },
-      pinned: { type: "boolean" },
       tags: { anyOf: [{ type: "array", items: { type: "string" } }, { type: "string" }] },
-      metadata: { type: "object" },
-      client_hostname: { type: "string" },
-      namespace: { type: "string" }
-    }
+      importance: { type: "number", minimum: 0, maximum: 1 },
+      pinned: { type: "boolean" }
+    },
+    required: ["content"]
   };
   const updateSchema = {
     type: "object",
     properties: {
       id: { type: "string" },
-      memory_id: { type: "string" },
       content: { type: "string" },
-      memory: { type: "string" },
       type: { type: "string" },
-      memory_type: { type: "string" },
-      summary: { type: ["string", "null"] },
-      importance: { type: "number", minimum: 0, maximum: 1 },
-      confidence: { type: "number", minimum: 0, maximum: 1 },
-      pinned: { type: "boolean" },
       tags: { type: "array", items: { type: "string" } },
-      namespace: { type: "string" }
+      importance: { type: "number", minimum: 0, maximum: 1 },
+      pinned: { type: "boolean" }
     },
     required: ["id"]
   };
   const listSchema = {
     type: "object",
     properties: {
-      limit: { type: "number", minimum: 1, maximum: 100 },
       page: { type: "number", minimum: 1 },
       page_size: { type: "number", minimum: 1, maximum: 100 },
       type: { type: "string" },
-      memory_type: { type: "string" },
       tag: { type: "string" },
-      status: { type: "string" },
-      namespace: { type: "string" }
+      status: { type: "string" }
     }
   };
   const deleteSchema = {
     type: "object",
     properties: {
-      id: { type: "string" },
-      memory_id: { type: "string" },
-      content_hash: { type: "string" },
-      namespace: { type: "string" }
-    }
+      id: { type: "string" }
+    },
+    required: ["id"]
   };
 
   return [
-    { name: "retrieve_memory", description: "Search the user's long-term memory library.", inputSchema: searchSchema },
-    { name: "search_by_tag", description: "Search active memories by tag(s).", inputSchema: tagSearchSchema },
-    { name: "store_memory", description: "Create one long-term memory.", inputSchema: createSchema },
-    { name: "update_memory", description: "Update one memory by id. Supports content, type, summary, importance, pinned, and tags.", inputSchema: updateSchema },
-    { name: "list_memories", description: "List memories. Supports page, page_size, tag, memory_type, limit, type, and status.", inputSchema: listSchema },
-    { name: "delete_memory", description: "Soft-delete one memory by id or legacy content_hash.", inputSchema: deleteSchema },
-    { name: "check_database_health", description: "Return database memory counts and basic health.", inputSchema: { type: "object", properties: { namespace: { type: "string" } } } },
-    { name: "get_startup_context", description: "Return compact startup context with required warmth anchor checks.", inputSchema: { type: "object", properties: { namespace: { type: "string" } } } }
+    { name: "retrieve_memory", description: "Search long-term memories.", inputSchema: searchSchema },
+    { name: "search_by_tag", description: "Find active memories by tag.", inputSchema: tagSearchSchema },
+    { name: "store_memory", description: "Save one memory.", inputSchema: createSchema },
+    { name: "update_memory", description: "Edit one memory by id.", inputSchema: updateSchema },
+    { name: "list_memories", description: "List memories with simple filters.", inputSchema: listSchema },
+    { name: "delete_memory", description: "Soft-delete one memory by id.", inputSchema: deleteSchema },
+    { name: "check_database_health", description: "Show memory database counts.", inputSchema: { type: "object", properties: {} } },
+    { name: "get_startup_context", description: "Get compact startup context.", inputSchema: { type: "object", properties: {} } }
   ];
 }
 
