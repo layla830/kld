@@ -199,7 +199,7 @@ export async function buildStartupContext(db: D1Database, namespace = "default")
     db,
     `SELECT * FROM memories
      WHERE namespace = ? AND status = 'active'
-       AND (content LIKE '%handoff%' OR content LIKE '%交接%' OR tags LIKE '%handoff%' OR tags LIKE '%交接%')
+       AND (tags LIKE '%handoff%' OR tags LIKE '%交接%')
      ORDER BY updated_at DESC
      LIMIT 2`,
     [namespace]
