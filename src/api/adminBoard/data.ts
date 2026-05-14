@@ -1,5 +1,16 @@
-import type { Env, MemoryRecord } from "../../types";
-import { like, moodOf, PAGE_SIZE, parseTags, type PageInput } from "./utils";
+import { searchMemories } from "../../memory/search";
+import type { Env, MemoryApiRecord, MemoryRecord } from "../../types";
+import {
+  formatShanghaiDateKey,
+  like,
+  moodOf,
+  PAGE_SIZE,
+  parseStoredDate,
+  parseTags,
+  shanghaiDayUtcRange,
+  storedDateToShanghaiDay,
+  type PageInput
+} from "./utils";
 
 export interface HeatDay {
   day: string;
@@ -36,14 +47,14 @@ export async function fetchStats(env: Env): Promise<BoardStats> {
 }
 
 export async function fetchHeatmap(env: Env): Promise<HeatDay[]> {
-  const since = new Date();
-  since.setUTCDate(since.getUTCDate() - 89);
-  const rows = await env.DB.prepare("SELECT created_at, tags FROM memories WHERE namespace = 'default' AND status = 'active' AND created_at >= ?").bind(since.toISOString().slice(0, 10)).all<{ created_at: string | null; tags: string | null }>();
+  const since = new Date(Date.now() - 90 * 86400000).toISOString().slice(0, 19).replace("T", " ");
+  const rows = await env.DB.prepare("SELECT created_at, tags FROM memories WHERE namespace = 'default' AND status = 'active' AND created_at >= ?").bind(since).all<{ created_at: string | null; tags: string | null }>();
   const counts = new Map<string, number>();
   const moods = new Map<string, Map<string, number>>();
   for (const row of rows.results ?? []) {
-    if (!row.created_at) continue;
-    const day = row.created_at.slice(0, 10);
+    const date = parseStoredDate(row.created_at);
+    if (!date) continue;
+    const day = formatShanghaiDateKey(date);
     counts.set(day, (counts.get(day) || 0) + 1);
     const mood = moodOf(row.tags);
     if (!mood) continue;
@@ -53,9 +64,8 @@ export async function fetchHeatmap(env: Env): Promise<HeatDay[]> {
   }
   const days: HeatDay[] = [];
   for (let i = 89; i >= 0; i -= 1) {
-    const date = new Date();
-    date.setUTCDate(date.getUTCDate() - i);
-    const day = date.toISOString().slice(0, 10);
+    const date = new Date(Date.now() - i * 86400000);
+    const day = formatShanghaiDateKey(date);
     const moodCounts = moods.get(day);
     const mood = moodCounts ? [...moodCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || "" : "";
     days.push({ day, count: counts.get(day) ?? 0, mood });
@@ -90,7 +100,61 @@ function orderByForTab(tab: string): string {
     : "ORDER BY pinned DESC, updated_at DESC, created_at DESC";
 }
 
+function apiRecordToMemoryRecord(record: MemoryApiRecord): MemoryRecord {
+  return {
+    id: record.id,
+    namespace: record.namespace,
+    type: record.type,
+    content: record.content,
+    summary: record.summary,
+    importance: record.importance,
+    confidence: record.confidence,
+    status: record.status,
+    pinned: record.pinned ? 1 : 0,
+    tags: JSON.stringify(record.tags ?? []),
+    source: record.source,
+    source_message_ids: JSON.stringify(record.source_message_ids ?? []),
+    vector_id: record.vector_id,
+    last_recalled_at: record.last_recalled_at,
+    recall_count: record.recall_count,
+    created_at: record.created_at,
+    updated_at: record.updated_at,
+    expires_at: record.expires_at
+  };
+}
+
+function matchesBrowseFilters(record: MemoryRecord, input: PageInput): boolean {
+  if (input.status !== "all" && record.status !== input.status) return false;
+  if (input.type && record.type !== input.type) return false;
+
+  const tags = parseTags(record.tags);
+  if (input.tag && !tags.some((tag) => tag.includes(input.tag))) return false;
+  if (input.mood && !tags.includes(`mood:${input.mood}`)) return false;
+  if (input.date && storedDateToShanghaiDay(record.created_at) !== input.date) return false;
+
+  return true;
+}
+
+async function fetchSemanticMemories(env: Env, input: PageInput): Promise<{ total: number; records: MemoryRecord[] }> {
+  if (!input.q || input.tab !== "browse") return { total: 0, records: [] };
+  if (input.status !== "active" && input.status !== "all") return { total: 0, records: [] };
+
+  const apiRecords = await searchMemories(env, {
+    namespace: "default",
+    query: input.q,
+    types: input.type ? [input.type] : undefined,
+    topK: 50
+  });
+  const records = apiRecords.map(apiRecordToMemoryRecord).filter((record) => matchesBrowseFilters(record, input));
+  const offset = (input.page - 1) * PAGE_SIZE;
+  return { total: records.length, records: records.slice(offset, offset + PAGE_SIZE) };
+}
+
 export async function fetchMemories(env: Env, input: PageInput): Promise<{ total: number; records: MemoryRecord[] }> {
+  if (input.tab === "browse" && input.q && input.searchMode === "semantic") {
+    return fetchSemanticMemories(env, input);
+  }
+
   let where = "WHERE namespace = 'default'";
   const binds: unknown[] = [];
 
@@ -113,8 +177,11 @@ export async function fetchMemories(env: Env, input: PageInput): Promise<{ total
     binds.push(like(`mood:${input.mood}`));
   }
   if (input.date && input.tab === "browse") {
-    where += " AND substr(created_at, 1, 10) = ?";
-    binds.push(input.date);
+    const range = shanghaiDayUtcRange(input.date);
+    if (range) {
+      where += " AND created_at >= ? AND created_at < ?";
+      binds.push(range.start, range.end);
+    }
   }
   if (input.q) {
     const pattern = like(input.q);
