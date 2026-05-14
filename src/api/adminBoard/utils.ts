@@ -1,3 +1,5 @@
+export type SearchMode = "keyword" | "semantic";
+
 export interface PageInput {
   q: string;
   type: string;
@@ -9,6 +11,7 @@ export interface PageInput {
   category: string;
   mood: string;
   notice: string;
+  searchMode: SearchMode;
 }
 
 export const PAGE_SIZE = 8;
@@ -19,6 +22,8 @@ export const TABS = [
   { id: "browse", label: "记忆浏览" }
 ] as const;
 export const MOODS = ["", "开心", "平静", "兴奋", "委屈", "低落", "生气", "焦虑", "疲惫", "感动"];
+
+const SHANGHAI_TIME_ZONE = "Asia/Shanghai";
 
 export function htmlEscape(value: unknown): string {
   return String(value ?? "")
@@ -83,23 +88,73 @@ export function clampNumber(value: string, fallback: number, min: number, max: n
   return Math.max(min, Math.min(max, parsed));
 }
 
+export function parseStoredDate(value: string | null): Date | null {
+  if (!value) return null;
+  const normalized = value.trim();
+  if (!normalized) return null;
+
+  if (/^\d{4}-\d{2}-\d{2}$/.test(normalized)) {
+    const dateOnly = new Date(`${normalized}T00:00:00Z`);
+    return Number.isNaN(dateOnly.getTime()) ? null : dateOnly;
+  }
+
+  if (/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2}(\.\d{1,6})?)?$/.test(normalized)) {
+    const utcDate = new Date(`${normalized.replace(" ", "T")}Z`);
+    return Number.isNaN(utcDate.getTime()) ? null : utcDate;
+  }
+
+  const parsed = new Date(normalized);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+export function formatShanghaiDateKey(date: Date): string {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: SHANGHAI_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(date);
+  const get = (type: string) => parts.find((part) => part.type === type)?.value || "";
+  return `${get("year")}-${get("month")}-${get("day")}`;
+}
+
+function shanghaiDayIndex(date: Date): number {
+  const [year, month, day] = formatShanghaiDateKey(date).split("-").map(Number);
+  return Math.floor(Date.UTC(year, month - 1, day) / 86400000);
+}
+
+export function storedDateToShanghaiDay(value: string | null): string {
+  const date = parseStoredDate(value);
+  return date ? formatShanghaiDateKey(date) : "";
+}
+
+export function shanghaiDayUtcRange(day: string): { start: string; end: string } | null {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return null;
+  const start = new Date(`${day}T00:00:00+08:00`);
+  if (Number.isNaN(start.getTime())) return null;
+  const end = new Date(start.getTime() + 86400000);
+  const toSql = (date: Date) => date.toISOString().slice(0, 19).replace("T", " ");
+  return { start: toSql(start), end: toSql(end) };
+}
+
 export function formatTime(value: string | null): string {
   if (!value) return "";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
+  const date = parseStoredDate(value);
+  if (!date) return value;
   const now = new Date();
-  const days = Math.floor((now.getTime() - date.getTime()) / 86400000);
-  const time = date.toLocaleTimeString("zh-CN", { timeZone: "Asia/Shanghai", hour: "2-digit", minute: "2-digit", hour12: false });
-  if (days === 0) return time;
+  const days = shanghaiDayIndex(now) - shanghaiDayIndex(date);
+  const time = date.toLocaleTimeString("zh-CN", { timeZone: SHANGHAI_TIME_ZONE, hour: "2-digit", minute: "2-digit", hour12: false });
+  if (days <= 0) return time;
   if (days === 1) return `昨天 ${time}`;
-  if (days > 1 && days < 7) return `${days}天前`;
-  return date.toLocaleDateString("zh-CN", { timeZone: "Asia/Shanghai", month: "2-digit", day: "2-digit" });
+  if (days > 1 && days < 7) return `${days}天前 ${time}`;
+  return `${date.toLocaleDateString("zh-CN", { timeZone: SHANGHAI_TIME_ZONE, month: "2-digit", day: "2-digit" })} ${time}`;
 }
 
 export function inputFromUrl(url: URL): PageInput {
   const page = Math.max(1, Math.floor(Number(url.searchParams.get("page") || "1") || 1));
   const status = url.searchParams.get("status") || "active";
   const tab = url.searchParams.get("tab") || "message";
+  const mode = url.searchParams.get("mode") || "keyword";
   return {
     q: (url.searchParams.get("q") || "").trim().slice(0, 200),
     type: (url.searchParams.get("type") || "").trim().slice(0, 80),
@@ -110,7 +165,8 @@ export function inputFromUrl(url: URL): PageInput {
     notice: (url.searchParams.get("notice") || "").trim().slice(0, 30),
     status: ["active", "deleted", "superseded", "all"].includes(status) ? status : "active",
     tab: TABS.some((item) => item.id === tab) ? tab : "message",
-    page
+    page,
+    searchMode: mode === "semantic" ? "semantic" : "keyword"
   };
 }
 
@@ -133,6 +189,7 @@ export function qs(input: PageInput, patch: Partial<PageInput>): string {
   const params = new URLSearchParams();
   if (next.tab !== "message") params.set("tab", next.tab);
   if (next.q) params.set("q", next.q);
+  if (next.searchMode === "semantic" && next.tab === "browse") params.set("mode", "semantic");
   if (next.type && next.tab === "browse") params.set("type", next.type);
   if (next.tag && next.tab === "browse") params.set("tag", next.tag);
   if (next.date && next.tab === "browse") params.set("date", next.date);
