@@ -25,11 +25,15 @@ interface PageData {
 }
 
 function renderTabs(input: PageInput): string {
-  return `<nav class="tabs">${TABS.map((tab) => `<a class="tab ${input.tab === tab.id ? "active" : ""}" href="${adminPath(input, { tab: tab.id, page: 1, q: "", type: "", tag: "", date: "", category: "", mood: "", notice: "" })}">${tab.label}</a>`).join("")}</nav>`;
+  return `<nav class="tabs">${TABS.map((tab) => `<a class="tab ${input.tab === tab.id ? "active" : ""}" href="${adminPath(input, { tab: tab.id, page: 1, q: "", type: "", tag: "", date: "", category: "", mood: "", notice: "", searchMode: "keyword" })}">${tab.label}</a>`).join("")}</nav>`;
 }
 
 function renderMoodOptions(selected: string, empty = "不标记"): string {
   return MOODS.map((item) => `<option value="${attr(item)}" ${item === selected ? "selected" : ""}>${item || empty}</option>`).join("");
+}
+
+function renderSearchModeOptions(input: PageInput): string {
+  return `<select class="filter-select" name="mode"><option value="keyword" ${input.searchMode === "keyword" ? "selected" : ""}>关键词</option><option value="semantic" ${input.searchMode === "semantic" ? "selected" : ""}>语义</option></select>`;
 }
 
 function renderComposer(input: PageInput, typeOptions = ""): string {
@@ -42,7 +46,8 @@ function renderComposer(input: PageInput, typeOptions = ""): string {
   if (input.tab === "quote") {
     return `<section class="card"><form method="POST" action="/admin/memories/create"><input type="hidden" name="kind" value="quote"><div class="input-group"><div class="input-label">语录内容</div><textarea name="content" placeholder="粘贴或输入语录..."></textarea></div><div class="input-group"><div class="input-label">分类</div><input type="text" name="category" placeholder="例如: 关于爱 / 哲学 / 让我哭的 / 骚话"></div><div class="footer"><span class="char-count">0</span><button class="btn" type="submit">保存</button></div></form></section>`;
   }
-  return `<section class="card search-card"><form method="GET"><input type="hidden" name="tab" value="browse"><div class="input-group"><div class="input-label">全局搜索</div><input type="text" name="q" value="${attr(input.q)}" placeholder="搜一句话：brat / 复述 / 穿普拉达..."></div><div class="filters"><select class="filter-select" name="type">${typeOptions}</select><select class="filter-select" name="status"><option value="active" ${input.status === "active" ? "selected" : ""}>active</option><option value="deleted" ${input.status === "deleted" ? "selected" : ""}>deleted</option><option value="all" ${input.status === "all" ? "selected" : ""}>all</option></select><select class="filter-select" name="mood">${renderMoodOptions(input.mood, "所有心情")}</select><input class="filter-input" name="tag" value="${attr(input.tag)}" placeholder="按标签筛选"><input type="hidden" name="date" value="${attr(input.date)}"></div><div class="footer"><span class="char-count">${input.q ? `搜索：${htmlEscape(input.q)}` : input.date ? `${htmlEscape(input.date)} 的记忆` : "分页浏览"}</span><button class="btn" type="submit">搜索</button></div></form></section>`;
+  const searchLabel = input.q ? `${input.searchMode === "semantic" ? "语义" : "关键词"}搜索：${htmlEscape(input.q)}` : input.date ? `${htmlEscape(input.date)} 的记忆` : "分页浏览";
+  return `<section class="card search-card"><form method="GET"><input type="hidden" name="tab" value="browse"><div class="input-group"><div class="input-label">全局搜索</div><input type="text" name="q" value="${attr(input.q)}" placeholder="搜一个意思：brat / 复述 / 穿普拉达..."></div><div class="filters">${renderSearchModeOptions(input)}<select class="filter-select" name="type">${typeOptions}</select><select class="filter-select" name="status"><option value="active" ${input.status === "active" ? "selected" : ""}>active</option><option value="deleted" ${input.status === "deleted" ? "selected" : ""}>deleted</option><option value="all" ${input.status === "all" ? "selected" : ""}>all</option></select><select class="filter-select" name="mood">${renderMoodOptions(input.mood, "所有心情")}</select><input class="filter-input" name="tag" value="${attr(input.tag)}" placeholder="按标签筛选"><input type="hidden" name="date" value="${attr(input.date)}"></div><div class="footer"><span class="char-count">${searchLabel}</span><button class="btn" type="submit">搜索</button></div></form></section>`;
 }
 
 function renderDashboard(input: PageInput, data: { stats: BoardStats; heatmap: HeatDay[] }): string {
@@ -87,11 +92,12 @@ function renderQuoteFilter(input: PageInput, categories: string[]): string {
 }
 
 export function renderPage(input: PageInput, data: PageData): string {
-  const listTitle = input.tab === "message" ? "历史留言" : input.tab === "diary" ? "我们的日记" : input.tab === "quote" ? "我的语录" : input.date ? `${input.date} 的记忆` : input.q ? `搜索：${input.q}` : "记忆列表";
+  const searchPrefix = input.searchMode === "semantic" ? "语义搜索" : "搜索";
+  const listTitle = input.tab === "message" ? "历史留言" : input.tab === "diary" ? "我们的日记" : input.tab === "quote" ? "我的语录" : input.date ? `${input.date} 的记忆` : input.q ? `${searchPrefix}：${input.q}` : "记忆列表";
   const list = data.records.length ? data.records.map((record) => renderMemory(record, input.tab)).join("") : '<div class="empty">这里还没有内容</div>';
   const dashboard = input.tab === "browse" ? renderDashboard(input, data) : "";
   const composer = renderComposer(input, renderBrowseTypeOptions(data.types, input.type));
   const quoteFilter = renderQuoteFilter(input, data.quoteCategories);
 
-  return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>♡</title><meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate"><link rel="preconnect" href="https://fonts.googleapis.com"><link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@300;400;500&display=swap" rel="stylesheet"><style>${ADMIN_BOARD_CSS}</style></head><body><div class="page"><header><div class="heart">♡</div><h1>我们的记忆小家</h1><div class="subtitle">MEMORY HOME</div></header>${renderTabs(input)}${dashboard}${composer}${quoteFilter}<div class="header-row"><span class="section-title">${htmlEscape(listTitle)}</span><div class="divider"></div><a class="small-btn" href="${adminPath(input, { page: 1, q: "", tag: "", date: "", category: "", mood: "", notice: "" })}">刷新</a></div>${list}${renderPagination(input, data.total)}</div><div class="toast" id="toast"></div><script>const n=${JSON.stringify(input.notice)};const m={created:'已保存 ♡',edited:'修改成功 ♡',deleted:'已删除',empty:'没有内容',error:'保存失败'};if(n&&m[n]){const t=document.getElementById('toast');t.textContent=m[n];t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2500);history.replaceState(null,'',location.pathname+location.search.replace(/[?&]notice=[^&]*/,''));}</script></body></html>`;
+  return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>♡</title><meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate"><link rel="preconnect" href="https://fonts.googleapis.com"><link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@300;400;500&display=swap" rel="stylesheet"><style>${ADMIN_BOARD_CSS}</style></head><body><div class="page"><header><div class="heart">♡</div><h1>我们的记忆小家</h1><div class="subtitle">MEMORY HOME</div></header>${renderTabs(input)}${dashboard}${composer}${quoteFilter}<div class="header-row"><span class="section-title">${htmlEscape(listTitle)}</span><div class="divider"></div><a class="small-btn" href="${adminPath(input, { page: 1, q: "", tag: "", date: "", category: "", mood: "", notice: "", searchMode: "keyword" })}">刷新</a></div>${list}${renderPagination(input, data.total)}</div><div class="toast" id="toast"></div><script>const n=${JSON.stringify(input.notice)};const m={created:'已保存 ♡',edited:'修改成功 ♡',deleted:'已删除',empty:'没有内容',error:'保存失败'};if(n&&m[n]){const t=document.getElementById('toast');t.textContent=m[n];t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2500);history.replaceState(null,'',location.pathname+location.search.replace(/[?&]notice=[^&]*/,''));}</script></body></html>`;
 }
