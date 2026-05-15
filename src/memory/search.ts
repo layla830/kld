@@ -6,8 +6,8 @@ type MetadataMap = Record<string, unknown>;
 type ScoredMemoryRecord = MemoryRecord & { score: number; vectorScore?: number; keywordScore?: number };
 
 const STRONG_KEYWORD_SCORE = 0.62;
-const WEAK_KEYWORD_SCORE = 0.45;
-const VECTOR_ONLY_SCORE_WITH_STRONG_KEYWORDS = 0.62;
+const WEAK_KEYWORD_SCORE = 0.55;
+const VECTOR_ONLY_SCORE_WITH_STRONG_KEYWORDS = 0.68;
 
 function parseJsonArray(value: string | null): string[] {
   if (!value) return [];
