@@ -86,7 +86,8 @@ Deploy command:     npm run deploy:cloudflare
 | 变量名 | 默认值 | 干嘛的 |
 |--------|--------|--------|
 | `CHAT_MODEL` | `deepseek/deepseek-v4-pro` | 主聊天模型 |
-| `MEMORY_FILTER_MODEL` | `google-ai-studio/gemini-2.5-flash` | 记忆筛选压缩（快且便宜） |
+| `MEMORY_FILTER_PROVIDER` | `workers-ai` | 记忆筛选压缩提供方 |
+| `MEMORY_FILTER_MODEL` | `@cf/meta/llama-3.3-70b-instruct-fp8-fast` | 记忆筛选压缩（Cloudflare Workers AI） |
 | `MEMORY_MODEL` | `deepseek/deepseek-v4-flash` | 记忆抽取 + 摘要（快且便宜） |
 | `VISION_MODEL` | `google-ai-studio/gemini-3-flash-preview` | 看图 |
 | `SUMMARY_MODEL` | 不填，用 `MEMORY_MODEL` | 长期摘要生成（可选覆盖） |
@@ -95,7 +96,7 @@ Deploy command:     npm run deploy:cloudflare
 
 模型名格式是 `provider/model`，比如：
 - `deepseek/deepseek-v4-pro`
-- `google-ai-studio/gemini-2.5-flash`
+- `@cf/meta/llama-3.3-70b-instruct-fp8-fast`
 - `anthropic/claude-sonnet-4-6`
 - `openai/gpt-4o`
 
@@ -192,7 +193,8 @@ https://<你的 Worker 地址>/health
 | 变量名 | 默认值 | 说明 |
 |--------|--------|------|
 | `CHAT_MODEL` | `deepseek/deepseek-v4-pro` | 主聊天 |
-| `MEMORY_FILTER_MODEL` | `google-ai-studio/gemini-2.5-flash` | 记忆筛选 |
+| `MEMORY_FILTER_PROVIDER` | `workers-ai` | 记忆筛选提供方 |
+| `MEMORY_FILTER_MODEL` | `@cf/meta/llama-3.3-70b-instruct-fp8-fast` | 记忆筛选 |
 | `MEMORY_MODEL` | `deepseek/deepseek-v4-flash` | 记忆抽取 |
 | `VISION_MODEL` | `google-ai-studio/gemini-3-flash-preview` | 看图 |
 | `SUMMARY_MODEL` | 空（用 MEMORY_MODEL） | 摘要生成 |
@@ -345,7 +347,7 @@ Embedding:   workers-ai/@cf/google/embeddinggemma-300m (默认值，不建议普
 
 ### 模型路由
 
-所有模型调用走 Cloudflare AI Gateway，不绕开。
+聊天、视觉、抽取、摘要与嵌入默认走 Cloudflare AI Gateway；记忆筛选压缩默认走 Cloudflare Workers AI。
 
 ```
 用户传 model=companion
@@ -422,7 +424,7 @@ dash_to_comma:      —、——、– 改成 ，
   -> Vectorize 搜索 memo-kb
   -> 若 Vectorize 命中但 D1 无 active 记录，不注入
   -> 若 Vectorize 老 metadata 无 D1 ref，legacy fallback（仅 active metadata）
-  -> MEMORY_FILTER_MODEL 分拣压缩
+  -> Workers AI / MEMORY_FILTER_MODEL 分拣压缩
   -> 注入 dynamic_memory_patch
   -> pinned identity/persona -> persona_pinned block
 ```
