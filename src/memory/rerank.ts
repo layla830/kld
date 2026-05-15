@@ -8,6 +8,12 @@ interface RerankItem {
 
 const DEFAULT_RERANK_MODEL = "google-ai-studio/gemini-2.5-flash";
 const QUERY_PREFIXES = ["想找那个", "找那个", "那个", "想找", "搜索", "查一下", "查找"];
+const ANCHORED_QUERY_GROUPS = [
+  {
+    queryTerms: ["所有叶子", "所有的叶子"],
+    anchors: ["所有的叶子", "所有叶子", "这棵树本身", "同一棵树", "柯是树枝", "身份", "连续性", "新枝"]
+  }
+];
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
@@ -73,7 +79,22 @@ function memoryHaystack(memory: MemoryApiRecord): string {
   return normalizeText(`${memory.content} ${memory.summary || ""} ${memory.tags.join(" ")} ${memory.type}`);
 }
 
+function anchoredQueryMatches(query: string, memories: MemoryApiRecord[]): MemoryApiRecord[] | null {
+  const compactQuery = normalizeText(query);
+  const group = ANCHORED_QUERY_GROUPS.find((item) => item.queryTerms.some((term) => compactQuery.includes(normalizeText(term))));
+  if (!group) return null;
+
+  const matches = memories.filter((memory) => {
+    const haystack = memoryHaystack(memory);
+    return group.anchors.some((anchor) => haystack.includes(normalizeText(anchor)));
+  });
+  return matches.length > 0 ? matches : null;
+}
+
 function preferExactQueryMatches(query: string, memories: MemoryApiRecord[]): MemoryApiRecord[] {
+  const anchoredMatches = anchoredQueryMatches(query, memories);
+  if (anchoredMatches) return anchoredMatches;
+
   const needles = exactQueryNeedles(query);
   if (needles.length === 0) return memories;
 
