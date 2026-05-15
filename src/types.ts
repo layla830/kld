@@ -24,6 +24,7 @@ export interface Env {
   ENABLE_MEMORY_RERANK?: string;
   MEMORY_RERANK_MODEL?: string;
   MEMORY_RERANK_MAX_CANDIDATES?: string;
+  MEMORY_RERANK_TIMEOUT_MS?: string;
   VISION_MODEL?: string;
   GUIDE_DOG_MODEL?: string;
   MEMORY_FILTER_MAX_CANDIDATES?: string;
