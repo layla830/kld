@@ -15,7 +15,7 @@ function getRerankModel(env: Env): string | null {
 }
 
 function isRerankEnabled(env: Env): boolean {
-  return env.ENABLE_MEMORY_RERANK === "true" && Boolean(getRerankModel(env));
+  return env.ENABLE_MEMORY_RERANK !== "false" && Boolean(getRerankModel(env));
 }
 
 function getMaxCandidates(env: Env): number {
