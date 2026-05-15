@@ -6,16 +6,18 @@ interface RerankItem {
   score: number;
 }
 
+const DEFAULT_RERANK_MODEL = "google-ai-studio/gemini-2.5-flash";
+
 function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
 }
 
-function getRerankModel(env: Env): string | null {
-  return env.MEMORY_RERANK_MODEL || env.MEMORY_FILTER_MODEL || env.MEMORY_QUERY_REWRITE_MODEL || env.MEMORY_MODEL || null;
+function getRerankModel(env: Env): string {
+  return env.MEMORY_RERANK_MODEL || env.MEMORY_FILTER_MODEL || env.MEMORY_QUERY_REWRITE_MODEL || env.MEMORY_MODEL || DEFAULT_RERANK_MODEL;
 }
 
 function isRerankEnabled(env: Env): boolean {
-  return env.ENABLE_MEMORY_RERANK !== "false" && Boolean(getRerankModel(env));
+  return env.ENABLE_MEMORY_RERANK !== "false";
 }
 
 function getMaxCandidates(env: Env): number {
@@ -130,8 +132,6 @@ export async function rerankMemorySearchResults(
   }
 
   const model = getRerankModel(env);
-  if (!model) return input.memories.slice(0, input.topK);
-
   const maxCandidates = getMaxCandidates(env);
   const candidates = input.memories.slice(0, maxCandidates);
   const request: OpenAIChatRequest = {
