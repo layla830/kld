@@ -2,6 +2,7 @@ import { fetchMemoriesByIds, markMemoriesRecalled, searchMemoriesByText } from "
 import { callOpenAICompat } from "../proxy/openaiAdapter";
 import type { Env, MemoryApiRecord, MemoryRecord, OpenAIChatRequest, OpenAIChatResponse } from "../types";
 import { createEmbedding } from "./embedding";
+import { rerankMemorySearchResults } from "./rerank";
 
 type MetadataMap = Record<string, unknown>;
 type ScoredMemoryRecord = MemoryRecord & { score: number; vectorScore?: number; keywordScore?: number };
@@ -78,17 +79,6 @@ function getRefId(match: VectorizeMatch): string | null {
   return null;
 }
 
-function readMetadataText(metadata: MetadataMap): string | null {
-  const fields = ["content", "text", "memory", "summary", "document", "chunk", "value", "title"];
-
-  for (const field of fields) {
-    const value = metadata[field];
-    if (typeof value === "string" && value.trim()) return value.trim();
-  }
-
-  return null;
-}
-
 function readMetadataString(metadata: MetadataMap, field: string): string | null {
   const value = metadata[field];
   return typeof value === "string" && value.trim() ? value.trim() : null;
@@ -111,17 +101,20 @@ function readMetadataBoolean(metadata: MetadataMap, field: string): boolean {
 
 function readMetadataStringArray(metadata: MetadataMap, field: string): string[] {
   const value = metadata[field];
-  if (Array.isArray(value)) {
-    return value.filter((item): item is string => typeof item === "string");
-  }
+  if (Array.isArray(value)) return value.filter((item): item is string => typeof item === "string");
   if (typeof value === "string" && value.trim()) return [value.trim()];
   return [];
 }
 
-function toLegacyMemoryRecord(
-  match: VectorizeMatch,
-  input: { namespace: string }
-): ScoredMemoryRecord | null {
+function readMetadataText(metadata: MetadataMap): string | null {
+  for (const field of ["content", "text", "memory", "summary", "document", "chunk", "value", "title"]) {
+    const value = metadata[field];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return null;
+}
+
+function toLegacyMemoryRecord(match: VectorizeMatch, input: { namespace: string }): ScoredMemoryRecord | null {
   const metadata = (match.metadata || {}) as MetadataMap;
   const status = readMetadataString(metadata, "status");
   if (status && status !== "active") return null;
@@ -161,28 +154,11 @@ async function queryVectorize(
   input: { namespace: string; types?: string[]; topK: number },
   useFilter: boolean
 ): Promise<VectorizeMatches> {
-  if (!useFilter) {
-    return env.VECTORIZE!.query(vector, {
-      topK: input.topK,
-      returnMetadata: true
-    });
-  }
+  if (!useFilter) return env.VECTORIZE!.query(vector, { topK: input.topK, returnMetadata: true });
 
-  const filter: VectorizeVectorMetadataFilter = {
-    namespace: input.namespace,
-    status: "active"
-  };
-
-  if (input.types && input.types.length > 0) {
-    filter.type = { $in: input.types };
-  }
-
-  return env.VECTORIZE!.query(vector, {
-    topK: input.topK,
-    namespace: input.namespace,
-    returnMetadata: true,
-    filter
-  });
+  const filter: VectorizeVectorMetadataFilter = { namespace: input.namespace, status: "active" };
+  if (input.types && input.types.length > 0) filter.type = { $in: input.types };
+  return env.VECTORIZE!.query(vector, { topK: input.topK, namespace: input.namespace, returnMetadata: true, filter });
 }
 
 async function searchWithVectorize(
@@ -195,14 +171,11 @@ async function searchWithVectorize(
   if (!vector) return null;
 
   let result = await queryVectorize(env, vector, input, true);
-  if (result.matches.length === 0) {
-    result = await queryVectorize(env, vector, input, false);
-  }
+  if (result.matches.length === 0) result = await queryVectorize(env, vector, input, false);
 
   const minScore = getMinScore(env);
   const scoredIds = new Map<string, number>();
   const legacyRecords: ScoredMemoryRecord[] = [];
-
   for (const match of result.matches) {
     if (match.score < minScore) continue;
     const id = getRefId(match);
@@ -211,25 +184,15 @@ async function searchWithVectorize(
     if (legacy) legacyRecords.push(legacy);
   }
 
-  const allRecords = await fetchMemoriesByIds(env.DB, {
-    namespace: input.namespace,
-    ids: [...scoredIds.keys()]
-  });
-
-  // Only return active memories; expired/deleted/superseded records must not be injected.
+  const allRecords = await fetchMemoriesByIds(env.DB, { namespace: input.namespace, ids: [...scoredIds.keys()] });
   const activeRecords = allRecords.filter((record) => record.status === "active");
-
-  // Use allRecords (not just active) so inactive D1 records block legacy fallback.
   const foundD1Ids = new Set(allRecords.map((record) => record.id));
   const d1Records = activeRecords.map((record) => {
     const score = scoredIds.get(record.id) ?? 0;
     return { ...record, score, vectorScore: score };
   });
   const legacyOnlyRecords = legacyRecords.filter((record) => !foundD1Ids.has(record.id));
-
-  return [...d1Records, ...legacyOnlyRecords].sort(
-    (a, b) => b.score + b.importance * 0.05 - (a.score + a.importance * 0.05)
-  );
+  return [...d1Records, ...legacyOnlyRecords].sort((a, b) => b.score + b.importance * 0.05 - (a.score + a.importance * 0.05));
 }
 
 function recencyBoost(record: MemoryRecord): number {
@@ -291,9 +254,7 @@ function extractJsonArray(text: string): unknown[] | null {
   try {
     const parsed = JSON.parse(text) as unknown;
     if (Array.isArray(parsed)) return parsed;
-    if (parsed && typeof parsed === "object" && Array.isArray((parsed as { queries?: unknown }).queries)) {
-      return (parsed as { queries: unknown[] }).queries;
-    }
+    if (parsed && typeof parsed === "object" && Array.isArray((parsed as { queries?: unknown }).queries)) return (parsed as { queries: unknown[] }).queries;
   } catch {
     // Providers sometimes wrap JSON in prose; try extracting the outer array below.
   }
@@ -301,7 +262,6 @@ function extractJsonArray(text: string): unknown[] | null {
   const start = text.indexOf("[");
   const end = text.lastIndexOf("]");
   if (start === -1 || end === -1 || end <= start) return null;
-
   try {
     const parsed = JSON.parse(text.slice(start, end + 1)) as unknown;
     return Array.isArray(parsed) ? parsed : null;
@@ -381,8 +341,7 @@ function dateNeedles(value: string): string[] {
   const needles: string[] = [];
   const matches = value.match(/\b\d{4}[.\-/]\d{1,2}[.\-/]\d{1,2}\b/g) ?? [];
   for (const match of matches) {
-    const parts = match.split(/[.\-/]/).map((part) => Number(part));
-    const [year, month, day] = parts;
+    const [year, month, day] = match.split(/[.\-/]/).map((part) => Number(part));
     if (!year || !month || !day) continue;
     needles.push(`${year}.${month}.${day}`, `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`, `${month}月${day}日`);
   }
@@ -399,7 +358,6 @@ function extractStrongNeedles(query: string): string[] {
 
   const words = normalized.match(/[a-z][a-z0-9_+-]{2,}|[\u4e00-\u9fff]{2,}/gi) ?? [];
   for (const word of words) needles.add(normalizeText(word));
-
   return [...needles].filter((needle) => needle.length >= 2).slice(0, 12);
 }
 
@@ -437,12 +395,7 @@ function mergeSearchResults(
 
     const vectorScore = Math.max(existing.vectorScore ?? 0, record.vectorScore ?? 0);
     const keywordScore = Math.max(existing.keywordScore ?? 0, record.keywordScore ?? 0);
-    const next: ScoredMemoryRecord = {
-      ...existing,
-      ...record,
-      vectorScore: vectorScore || undefined,
-      keywordScore: keywordScore || undefined
-    };
+    const next: ScoredMemoryRecord = { ...existing, ...record, vectorScore: vectorScore || undefined, keywordScore: keywordScore || undefined };
     next.score = rankHybridRecord(next);
     merged.set(record.id, next);
   }
@@ -466,30 +419,18 @@ export async function searchMemories(
   const rewrittenQuery = await rewriteQueryWithModel(env, input.query);
   const expandedQuery = expandQuery(rewrittenQuery);
   const [vectorRecords, keywordRecords] = await Promise.all([
-    searchWithVectorize(env, {
-      namespace: input.namespace,
-      query: expandedQuery,
-      types: input.types,
-      topK: candidateLimit
-    }),
-    searchMemoriesByText(env.DB, {
-      namespace: input.namespace,
-      query: expandedQuery,
-      types: input.types,
-      limit: candidateLimit
-    })
+    searchWithVectorize(env, { namespace: input.namespace, query: expandedQuery, types: input.types, topK: candidateLimit }),
+    searchMemoriesByText(env.DB, { namespace: input.namespace, query: expandedQuery, types: input.types, limit: candidateLimit })
   ]);
 
   const records = mergeSearchResults(
     vectorRecords,
     keywordRecords.map((record) => ({ ...record, keywordScore: record.score })),
-    { query: expandedQuery, topK }
+    { query: expandedQuery, topK: candidateLimit }
   );
+  const apiRecords = records.map((record) => toMemoryApiRecord(record, record.score));
+  const rerankedRecords = await rerankMemorySearchResults(env, { query: input.query, memories: apiRecords, topK });
 
-  await markMemoriesRecalled(env.DB, {
-    namespace: input.namespace,
-    ids: records.map((record) => record.id)
-  });
-
-  return records.map((record) => toMemoryApiRecord(record, record.score));
+  await markMemoriesRecalled(env.DB, { namespace: input.namespace, ids: rerankedRecords.map((record) => record.id) });
+  return rerankedRecords;
 }
