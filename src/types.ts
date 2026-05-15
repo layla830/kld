@@ -19,6 +19,8 @@ export interface Env {
   MEMORY_MODEL?: string;
   ENABLE_MEMORY_FILTER?: string;
   MEMORY_FILTER_MODEL?: string;
+  ENABLE_MEMORY_QUERY_REWRITE?: string;
+  MEMORY_QUERY_REWRITE_MODEL?: string;
   VISION_MODEL?: string;
   GUIDE_DOG_MODEL?: string;
   MEMORY_FILTER_MAX_CANDIDATES?: string;
