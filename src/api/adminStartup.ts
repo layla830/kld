@@ -51,11 +51,11 @@ function compactText(value: string, maxChars: number): string {
   return `${value.slice(0, maxChars).trimEnd()}...`;
 }
 
-function toStartupMemory(record: MemoryRecord): StartupMemory {
+function toStartupMemory(record: MemoryRecord, maxChars: number): StartupMemory {
   return {
     id: record.id,
     type: record.type,
-    content: compactText(record.content, 520),
+    content: compactText(record.content, maxChars),
     importance: record.importance,
     pinned: Boolean(record.pinned),
     tags: parseJsonArray(record.tags),
@@ -63,9 +63,9 @@ function toStartupMemory(record: MemoryRecord): StartupMemory {
   };
 }
 
-async function queryStartupMemories(db: D1Database, sql: string, binds: unknown[]): Promise<StartupMemory[]> {
+async function queryStartupMemories(db: D1Database, sql: string, binds: unknown[], maxChars: number): Promise<StartupMemory[]> {
   const result = await db.prepare(sql).bind(...binds).all<MemoryRecord>();
-  return (result.results ?? []).map((record) => toStartupMemory(record));
+  return (result.results ?? []).map((record) => toStartupMemory(record, maxChars));
 }
 
 async function buildStartupContextLite(db: D1Database, namespace: string): Promise<Record<string, unknown>> {
@@ -75,7 +75,8 @@ async function buildStartupContextLite(db: D1Database, namespace: string): Promi
      WHERE namespace = ? AND status = 'active' AND pinned = 1
      ORDER BY importance DESC, updated_at DESC, created_at DESC
      LIMIT 5`,
-    [namespace]
+    [namespace],
+    520
   );
 
   const currentHandoff = await queryStartupMemories(
@@ -85,7 +86,8 @@ async function buildStartupContextLite(db: D1Database, namespace: string): Promi
        AND (tags LIKE '%handoff%' OR tags LIKE '%交接%')
      ORDER BY updated_at DESC
      LIMIT 2`,
-    [namespace]
+    [namespace],
+    2400
   );
 
   const recentDiary = await queryStartupMemories(
@@ -94,7 +96,8 @@ async function buildStartupContextLite(db: D1Database, namespace: string): Promi
      WHERE namespace = ? AND status = 'active' AND type IN ('diary', 'layla_diary')
      ORDER BY created_at DESC
      LIMIT 3`,
-    [namespace]
+    [namespace],
+    1400
   );
 
   return {
