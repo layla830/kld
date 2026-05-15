@@ -6,8 +6,22 @@ interface FilteredMemoryItem {
   content: string;
 }
 
+export interface MemoryFilterMeta {
+  status: "disabled" | "success" | "error" | "empty";
+  model: string;
+  raw_count: number;
+  candidate_count: number;
+  output_count: number;
+  reason?: string;
+  output_shape?: string;
+}
+
 function sanitizeMemoryContent(text: string): string {
   return text
+    .replace(/<time_reminder>[^|。\n]*/gi, "")
+    .replace(/对话摘要（\d+ 条消息）：?/g, "")
+    .replace(/用户话题[:：]/g, "")
+    .replace(/助手要点[:：]/g, "")
     .replace(/debug-test/gi, "")
     .replace(/记忆系统/g, "")
     .replace(/自动记忆测试口令/g, "口令")
@@ -29,8 +43,8 @@ function clamp(value: number, min: number, max: number): number {
 }
 
 function getMaxCandidates(env: Env): number {
-  const value = Number(env.MEMORY_FILTER_MAX_CANDIDATES || 16);
-  return Number.isFinite(value) ? clamp(Math.floor(value), 1, 50) : 16;
+  const value = Number(env.MEMORY_FILTER_MAX_CANDIDATES || 12);
+  return Number.isFinite(value) ? clamp(Math.floor(value), 1, 50) : 12;
 }
 
 function getMaxOutput(env: Env): number {
@@ -38,31 +52,127 @@ function getMaxOutput(env: Env): number {
   return Number.isFinite(value) ? clamp(Math.floor(value), 1, 20) : 6;
 }
 
-function extractJsonArray(text: string): unknown[] | null {
-  try {
-    const parsed = JSON.parse(text) as unknown;
-    if (Array.isArray(parsed)) return parsed;
-    if (parsed && typeof parsed === "object" && Array.isArray((parsed as { memories?: unknown }).memories)) {
-      return (parsed as { memories: unknown[] }).memories;
-    }
-  } catch {
-    // Try extracting a JSON array from providers that wrap the answer in prose.
+function getMaxContentChars(env: Env): number {
+  const value = Number(env.MEMORY_FILTER_MAX_CONTENT_CHARS || 700);
+  return Number.isFinite(value) ? clamp(Math.floor(value), 120, 3000) : 700;
+}
+
+function getMaxOutputChars(env: Env): number {
+  const value = Number(env.MEMORY_FILTER_OUTPUT_CHARS || 300);
+  return Number.isFinite(value) ? clamp(Math.floor(value), 60, 1000) : 300;
+}
+
+function getFilterMinScore(env: Env): number {
+  const value = Number(env.MEMORY_FILTER_MIN_SCORE || env.MEMORY_MIN_SCORE || 0.35);
+  return Number.isFinite(value) ? clamp(value, 0, 1) : 0.35;
+}
+
+function truncateText(text: string, maxChars: number): string {
+  return text.length > maxChars ? `${text.slice(0, maxChars).trim()}...` : text;
+}
+
+function normalizeForDedupe(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/\s+/g, "")
+    .replace(/[，,。.!！?？；;：:“”"'`、\[\]【】（）()<>《》]/g, "");
+}
+
+function compareMemoryQuality(a: MemoryApiRecord, b: MemoryApiRecord): number {
+  if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+
+  const scoreA = typeof a.score === "number" ? a.score : -1;
+  const scoreB = typeof b.score === "number" ? b.score : -1;
+  if (scoreA !== scoreB) return scoreB - scoreA;
+
+  if (a.importance !== b.importance) return b.importance - a.importance;
+  return b.confidence - a.confidence;
+}
+
+function prepareCandidates(env: Env, memories: MemoryApiRecord[]): MemoryApiRecord[] {
+  const minScore = getFilterMinScore(env);
+  const sorted = memories
+    .flatMap((memory): MemoryApiRecord[] => {
+      const content = sanitizeMemoryContent(memory.content);
+      if (!content) return [];
+      if (!memory.pinned && typeof memory.score === "number" && memory.score < minScore) return [];
+      return [{ ...memory, content }];
+    })
+    .sort(compareMemoryQuality);
+
+  const seenIds = new Set<string>();
+  const seenContent = new Set<string>();
+  const result: MemoryApiRecord[] = [];
+
+  for (const memory of sorted) {
+    const normalized = normalizeForDedupe(memory.content);
+    if (!normalized || seenIds.has(memory.id) || seenContent.has(normalized)) continue;
+    seenIds.add(memory.id);
+    seenContent.add(normalized);
+    result.push(memory);
+    if (result.length >= getMaxCandidates(env)) break;
   }
 
-  const start = text.indexOf("[");
-  const end = text.lastIndexOf("]");
+  return result;
+}
+
+function extractJsonArrayFromString(text: string): unknown[] | null {
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+
+  try {
+    return extractJsonArray(JSON.parse(trimmed) as unknown);
+  } catch {
+    // Try extracting JSON from providers that wrap the answer in prose.
+  }
+
+  const objectStart = trimmed.indexOf("{");
+  const objectEnd = trimmed.lastIndexOf("}");
+  if (objectStart !== -1 && objectEnd > objectStart) {
+    try {
+      return extractJsonArray(JSON.parse(trimmed.slice(objectStart, objectEnd + 1)) as unknown);
+    } catch {
+      // Fall through to array extraction.
+    }
+  }
+
+  const start = trimmed.indexOf("[");
+  const end = trimmed.lastIndexOf("]");
   if (start === -1 || end === -1 || end <= start) return null;
 
   try {
-    const parsed = JSON.parse(text.slice(start, end + 1)) as unknown;
+    const parsed = JSON.parse(trimmed.slice(start, end + 1)) as unknown;
     return Array.isArray(parsed) ? parsed : null;
   } catch {
     return null;
   }
 }
 
-function parseFilteredItems(text: string): FilteredMemoryItem[] | null {
-  const array = extractJsonArray(text);
+function extractJsonArray(value: unknown): unknown[] | null {
+  if (Array.isArray(value)) return value;
+  if (typeof value === "string") return extractJsonArrayFromString(value);
+  if (!value || typeof value !== "object") return null;
+
+  const object = value as {
+    memories?: unknown;
+    response?: unknown;
+    result?: unknown;
+    text?: unknown;
+    output?: unknown;
+  };
+
+  if (Array.isArray(object.memories)) return object.memories;
+
+  for (const field of [object.response, object.result, object.text, object.output]) {
+    const array = extractJsonArray(field);
+    if (array) return array;
+  }
+
+  return null;
+}
+
+function parseFilteredItems(value: unknown): FilteredMemoryItem[] | null {
+  const array = extractJsonArray(value);
   if (!array) return null;
 
   const items: FilteredMemoryItem[] = [];
@@ -86,31 +196,46 @@ function parseFilteredItems(text: string): FilteredMemoryItem[] | null {
   return items;
 }
 
-function buildPrompt(input: { query: string; memories: MemoryApiRecord[]; maxOutput: number }): string {
+function buildPrompt(input: {
+  query: string;
+  memories: MemoryApiRecord[];
+  maxOutput: number;
+  maxContentChars: number;
+  maxOutputChars: number;
+}): string {
   const candidates = input.memories.map((memory, index) => ({
     index: index + 1,
     id: memory.id,
     type: memory.type,
     importance: memory.importance,
     pinned: memory.pinned,
-    content: memory.content
+    score: typeof memory.score === "number" ? Number(memory.score.toFixed(4)) : undefined,
+    tags: memory.tags,
+    content: truncateText(memory.content, input.maxContentChars)
   }));
 
   return [
     "你是长期记忆分拣器。你的任务是从候选记忆中挑出对当前用户消息真正有帮助的记忆，并压缩成短句。",
+    "注意：你不是在判断这条候选是否值得长期保存；你只判断它是否能帮助当前这轮回答、回忆或检索。",
+    "候选已按相关度初筛；score 越高越相关。",
     "",
     "规则：",
-    "- 只保留与当前用户消息、长期偏好、正在进行的项目或稳定关系信息有关的记忆。",
-    "- 删除寒暄、重复、牵强、明显无关的记忆。",
+    "- 只保留能帮助当前用户消息的候选：直接回答问题、补全上下文、长期偏好、正在进行的项目或稳定关系信息。",
+    "- 如果当前用户消息是在询问、回忆或检索过去内容，只要候选与关键名词、事件、口令或时间线直接重合，就保留并压缩。",
+    "- type=summary 的候选要抽取与当前用户消息匹配的片段；不要因为它是短期聊天摘要或对话摘要格式就整条丢弃。",
+    "- 不要因为候选不够长期稳定而删除；删除标准只有明显无关、重复、空泛或调试噪音。",
+    "- 同一事实只保留一条，优先保留 score 更高或 pinned=true 的版本。",
     "- pinned=true 的记忆除非明显无关，否则优先保留。",
     "- 不要添加候选记忆里没有的新事实。",
+    "- 不要输出“对话摘要”“用户话题”“助手要点”“time_reminder”等包装词。",
     "- 不要输出记忆系统、debug-test、标签、测试口令等调试/后端元信息。",
-    "- 如果候选里有真实口令，只保留口令本身，不要保留“测试”“标签”“debug”等包装词。",
-    "- 每条 content 控制在 60 个中文字以内。",
+    "- 如果候选里有真实口令，只保留口令本身，不要保留测试、标签、debug 等包装词。",
+    "- 没有相关记忆时输出空数组。",
+    `- 每条 content 控制在 ${input.maxOutputChars} 个中文字以内。`,
     `- 最多输出 ${input.maxOutput} 条。`,
     "",
     "只输出 JSON，不要 markdown，不要解释。格式：",
-    `[{"id":"mem_xxx","content":"压缩后的记忆"}]`,
+    `{"memories":[{"id":"mem_xxx","content":"压缩后的记忆"}]}`,
     "",
     `当前用户消息：${input.query}`,
     "",
@@ -134,20 +259,76 @@ function mergeFilteredItems(memories: MemoryApiRecord[], items: FilteredMemoryIt
   return result;
 }
 
+function describeModelOutput(value: unknown): string {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return "array";
+  if (typeof value !== "object") return typeof value;
+
+  const object = value as { response?: unknown; memories?: unknown; result?: unknown; output?: unknown; text?: unknown };
+  if (Array.isArray(object.memories)) return "object.memories_array";
+  if (typeof object.response === "string") return "object.response_string";
+  if (object.response && typeof object.response === "object") return "object.response_object";
+  if (typeof object.result === "string") return "object.result_string";
+  if (object.result && typeof object.result === "object") return "object.result_object";
+  if (typeof object.output === "string") return "object.output_string";
+  if (typeof object.text === "string") return "object.text_string";
+  return "object";
+}
+
 export async function filterAndCompressMemories(
   env: Env,
   input: { query: string; memories: MemoryApiRecord[] }
 ): Promise<MemoryApiRecord[]> {
+  const result = await filterAndCompressMemoriesWithMeta(env, input);
+  return result.data;
+}
+
+export async function filterAndCompressMemoriesWithMeta(
+  env: Env,
+  input: { query: string; memories: MemoryApiRecord[] }
+): Promise<{ data: MemoryApiRecord[]; meta: MemoryFilterMeta }> {
   const query = input.query.trim();
-  if (!isEnabled(env) || !query || input.memories.length <= 1) {
-    return input.memories;
+  const model = env.MEMORY_FILTER_MODEL || "";
+  const baseMeta = {
+    model,
+    raw_count: input.memories.length,
+    candidate_count: 0,
+    output_count: input.memories.length
+  };
+
+  if (!isEnabled(env) || !query) {
+    return {
+      data: input.memories,
+      meta: {
+        ...baseMeta,
+        status: "disabled",
+        reason: !query ? "empty_query" : "filter_disabled"
+      }
+    };
   }
 
-  const maxCandidates = getMaxCandidates(env);
   const maxOutput = getMaxOutput(env);
-  const candidates = input.memories.slice(0, maxCandidates);
+  const candidates = prepareCandidates(env, input.memories);
+  if (candidates.length === 0) {
+    return {
+      data: [],
+      meta: {
+        ...baseMeta,
+        status: "empty",
+        candidate_count: 0,
+        output_count: 0,
+        reason: "no_candidates"
+      }
+    };
+  }
+
+  const activeMeta = {
+    ...baseMeta,
+    candidate_count: candidates.length,
+    output_count: 0
+  };
   const request: OpenAIChatRequest = {
-    model: env.MEMORY_FILTER_MODEL || "",
+    model,
     messages: [
       {
         role: "system",
@@ -158,7 +339,9 @@ export async function filterAndCompressMemories(
         content: buildPrompt({
           query,
           memories: candidates,
-          maxOutput
+          maxOutput,
+          maxContentChars: getMaxContentChars(env),
+          maxOutputChars: getMaxOutputChars(env)
         })
       }
     ],
@@ -169,18 +352,56 @@ export async function filterAndCompressMemories(
 
   try {
     const response = await callOpenAICompat(env, request);
-    if (!response.ok) return input.memories;
+    if (!response.ok) {
+      return {
+        data: input.memories,
+        meta: {
+          ...activeMeta,
+          status: "error",
+          output_count: input.memories.length,
+          reason: `provider_http_${response.status}`
+        }
+      };
+    }
 
     const parsed = (await response.json()) as OpenAIChatResponse;
     const content = parsed.choices?.[0]?.message?.content;
-    const text = typeof content === "string" ? content : "";
-    const items = parseFilteredItems(text);
-    if (!items || items.length === 0) return input.memories;
+    const output = typeof content === "string" ? content : parsed;
+    const items = parseFilteredItems(output);
+    if (!items) {
+      return {
+        data: input.memories,
+        meta: {
+          ...activeMeta,
+          status: "error",
+          output_count: input.memories.length,
+          reason: "parse_failed",
+          output_shape: describeModelOutput(output)
+        }
+      };
+    }
 
     const filtered = mergeFilteredItems(candidates, items).slice(0, maxOutput);
-    return filtered.length > 0 ? filtered : input.memories;
+    return {
+      data: filtered,
+      meta: {
+        ...activeMeta,
+        status: filtered.length > 0 ? "success" : "empty",
+        output_count: filtered.length,
+        reason: filtered.length > 0 ? undefined : "model_returned_empty",
+        output_shape: describeModelOutput(output)
+      }
+    };
   } catch (error) {
     console.error("memory filter failed", error);
-    return input.memories;
+    return {
+      data: input.memories,
+      meta: {
+        ...activeMeta,
+        status: "error",
+        output_count: input.memories.length,
+        reason: "exception"
+      }
+    };
   }
 }
