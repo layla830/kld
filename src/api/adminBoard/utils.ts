@@ -154,7 +154,7 @@ export function inputFromUrl(url: URL): PageInput {
   const page = Math.max(1, Math.floor(Number(url.searchParams.get("page") || "1") || 1));
   const status = url.searchParams.get("status") || "active";
   const tab = url.searchParams.get("tab") || "message";
-  const mode = url.searchParams.get("mode") || "keyword";
+  const mode = url.searchParams.get("mode") || url.searchParams.get("searchMode") || "keyword";
   return {
     q: (url.searchParams.get("q") || "").trim().slice(0, 200),
     type: (url.searchParams.get("type") || "").trim().slice(0, 80),
