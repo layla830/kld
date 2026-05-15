@@ -1,7 +1,7 @@
 import { fetchMemoriesByIds, markMemoriesRecalled, searchMemoriesByText } from "../db/memories";
 import type { Env, MemoryApiRecord, MemoryRecord } from "../types";
 import { createEmbedding } from "./embedding";
-import { rerankMemorySearchResults } from "./rerank";
+import { postProcessMemorySearchResults } from "./postProcess";
 
 type MetadataMap = Record<string, unknown>;
 type ScoredMemoryRecord = MemoryRecord & { score: number; vectorScore?: number; keywordScore?: number };
@@ -333,8 +333,8 @@ export async function searchMemories(
     { query: expandedQuery, topK: candidateLimit }
   );
   const apiRecords = records.map((record) => toMemoryApiRecord(record, record.score));
-  const rerankedRecords = await rerankMemorySearchResults(env, { query: input.query, memories: apiRecords, topK });
+  const processedRecords = await postProcessMemorySearchResults(env, { query: input.query, memories: apiRecords, topK });
 
-  await markMemoriesRecalled(env.DB, { namespace: input.namespace, ids: rerankedRecords.map((record) => record.id) });
-  return rerankedRecords;
+  await markMemoriesRecalled(env.DB, { namespace: input.namespace, ids: processedRecords.map((record) => record.id) });
+  return processedRecords;
 }
