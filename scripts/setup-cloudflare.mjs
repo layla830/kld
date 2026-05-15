@@ -9,7 +9,7 @@ const dbBinding = process.env.CMP_D1_BINDING || "DB";
 const wranglerToml = readFileSync(wranglerTomlPath, "utf8");
 function readVectorizeValue(name) {
   const match = wranglerToml.match(/\[\[vectorize\]\]([\s\S]*?)(?=\n\[|$)/);
-  return match?.[1]?.match(new RegExp(`${name}\\\\s*=\\\\s*"([^"]+)"`))?.[1];
+  return match?.[1]?.match(new RegExp(`${name}\\s*=\\s*"([^"]+)"`))?.[1];
 }
 const vectorizeName =
   process.env.CMP_VECTORIZE_NAME || readVectorizeValue("index_name") || "memo-kb";
@@ -23,6 +23,7 @@ const visibleVarNames = [
   "CHATBOX_API_KEY",
   "CF_AIG_TOKEN",
   "CHAT_MODEL",
+  "MEMORY_FILTER_PROVIDER",
   "MEMORY_FILTER_MODEL",
   "MEMORY_MODEL",
   "VISION_MODEL",
