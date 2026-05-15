@@ -10,6 +10,7 @@ import {
 } from "../db/memories";
 import { saveIngestMessages } from "../db/messages";
 import { deleteMemoryEmbedding, upsertMemoryEmbedding } from "../memory/embedding";
+import { filterAndCompressMemoriesWithMeta } from "../memory/filter";
 import { searchMemories, toMemoryApiRecord } from "../memory/search";
 import { enqueueMemoryMaintenanceIfNeeded } from "../queue/producer";
 import type { Env, KeyProfile, OpenAIChatMessage } from "../types";
@@ -130,14 +131,25 @@ async function handleSearchMemories(request: Request, env: Env, profile: KeyProf
 
   const query = readString(body.query) || "";
   const topK = readNumber(body.top_k, Number(env.MEMORY_TOP_K || 8));
-  const data = await searchMemories(env, {
+  const raw = await searchMemories(env, {
     namespace: resolveNamespace(profile, body.namespace),
     query,
     topK,
     types: readStringArray(body.types)
   });
 
-  return json({ data });
+  if (body.filter !== true && body.compress !== true) {
+    return json({ data: raw });
+  }
+
+  const filtered = await filterAndCompressMemoriesWithMeta(env, { query, memories: raw });
+  return json({
+    data: filtered.data,
+    meta: {
+      raw_count: raw.length,
+      filter: filtered.meta
+    }
+  });
 }
 
 function readMessages(value: unknown): OpenAIChatMessage[] {
