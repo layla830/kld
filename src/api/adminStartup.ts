@@ -69,6 +69,15 @@ async function queryStartupMemories(db: D1Database, sql: string, binds: unknown[
 }
 
 async function buildStartupContextLite(db: D1Database, namespace: string): Promise<Record<string, unknown>> {
+  const pinned = await queryStartupMemories(
+    db,
+    `SELECT * FROM memories
+     WHERE namespace = ? AND status = 'active' AND pinned = 1
+     ORDER BY importance DESC, updated_at DESC, created_at DESC
+     LIMIT 5`,
+    [namespace]
+  );
+
   const currentHandoff = await queryStartupMemories(
     db,
     `SELECT * FROM memories
@@ -89,9 +98,11 @@ async function buildStartupContextLite(db: D1Database, namespace: string): Promi
   );
 
   return {
-    startup_version: "2.6-lite-cc-handoff-and-diary-startup",
+    startup_version: "2.6-lite-cc-pinned-handoff-and-diary-startup",
+    pinned_count: pinned.length,
     current_handoff_count: currentHandoff.length,
     recent_diary_count: recentDiary.length,
+    pinned,
     current_handoff: currentHandoff,
     recent_diary: recentDiary
   };
