@@ -7,6 +7,7 @@ interface RerankItem {
 }
 
 const DEFAULT_RERANK_MODEL = "google-ai-studio/gemini-2.5-flash";
+const QUERY_PREFIXES = ["想找那个", "找那个", "那个", "想找", "搜索", "查一下", "查找"];
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
@@ -48,6 +49,40 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T
   } finally {
     if (timer !== undefined) clearTimeout(timer);
   }
+}
+
+function normalizeText(value: string): string {
+  return value.toLowerCase().replace(/\s+/g, "").trim();
+}
+
+function exactQueryNeedles(query: string): string[] {
+  const compact = normalizeText(query).replace(/[?？!！。.,，、:：;；"“”'‘’]/g, "");
+  if (!compact || /[a-z0-9]/i.test(compact)) return [];
+
+  const needles = new Set<string>();
+  if (compact.length >= 3 && compact.length <= 16) needles.add(compact);
+  for (const prefix of QUERY_PREFIXES) {
+    if (!compact.startsWith(prefix)) continue;
+    const stripped = compact.slice(prefix.length);
+    if (stripped.length >= 2 && stripped.length <= 12) needles.add(stripped);
+  }
+  return [...needles];
+}
+
+function memoryHaystack(memory: MemoryApiRecord): string {
+  return normalizeText(`${memory.content} ${memory.summary || ""} ${memory.tags.join(" ")} ${memory.type}`);
+}
+
+function preferExactQueryMatches(query: string, memories: MemoryApiRecord[]): MemoryApiRecord[] {
+  const needles = exactQueryNeedles(query);
+  if (needles.length === 0) return memories;
+
+  const exactMatches = memories.filter((memory) => {
+    const haystack = memoryHaystack(memory);
+    return needles.some((needle) => haystack.includes(needle));
+  });
+
+  return exactMatches.length > 0 ? exactMatches : memories;
 }
 
 function extractJsonArray(text: string): unknown[] | null {
@@ -153,13 +188,14 @@ export async function rerankMemorySearchResults(
 ): Promise<MemoryApiRecord[]> {
   const query = input.query.trim();
   const maxOutput = getMaxOutput(env, input.topK);
-  if (!isRerankEnabled(env) || !query || input.memories.length <= 1) {
-    return input.memories.slice(0, maxOutput);
+  const exactMemories = preferExactQueryMatches(query, input.memories);
+  if (!isRerankEnabled(env) || !query || exactMemories.length <= 1) {
+    return exactMemories.slice(0, maxOutput);
   }
 
   const model = getRerankModel(env);
   const maxCandidates = getMaxCandidates(env);
-  const candidates = input.memories.slice(0, maxCandidates);
+  const candidates = exactMemories.slice(0, maxCandidates);
   const request: OpenAIChatRequest = {
     model,
     messages: [
@@ -173,7 +209,7 @@ export async function rerankMemorySearchResults(
 
   try {
     const response = await withTimeout(callOpenAICompat(env, request), getTimeoutMs(env));
-    if (!response?.ok) return input.memories.slice(0, maxOutput);
+    if (!response?.ok) return exactMemories.slice(0, maxOutput);
 
     const parsed = (await response.json()) as OpenAIChatResponse;
     const message = parsed.choices?.[0]?.message as ({ content?: unknown; reasoning_content?: unknown }) | undefined;
@@ -181,11 +217,11 @@ export async function rerankMemorySearchResults(
     const reasoning = typeof message?.reasoning_content === "string" ? message.reasoning_content.trim() : "";
     const allowedIds = new Set(candidates.map((memory) => memory.id));
     const items = parseRerankItems(content || reasoning, allowedIds);
-    if (items === null) return input.memories.slice(0, maxOutput);
+    if (items === null) return exactMemories.slice(0, maxOutput);
 
     return applyRerank(candidates, items, maxOutput);
   } catch (error) {
     console.error("memory search rerank failed", error);
-    return input.memories.slice(0, maxOutput);
+    return exactMemories.slice(0, maxOutput);
   }
 }
