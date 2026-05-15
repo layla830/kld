@@ -1,5 +1,15 @@
 import { buildStartupContext } from "../memory/startupContext";
-import type { Env } from "../types";
+import type { Env, MemoryRecord } from "../types";
+
+interface StartupMemory {
+  id: string;
+  type: string;
+  content: string;
+  importance: number;
+  pinned: boolean;
+  tags: string[];
+  created_at: string;
+}
 
 function unauthorized(): Response {
   return new Response("Authentication required", {
@@ -26,6 +36,67 @@ function isAuthorized(request: Request, env: Env): boolean {
   }
 }
 
+function parseJsonArray(value: string | null): string[] {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function compactText(value: string, maxChars: number): string {
+  if (value.length <= maxChars) return value;
+  return `${value.slice(0, maxChars).trimEnd()}...`;
+}
+
+function toStartupMemory(record: MemoryRecord): StartupMemory {
+  return {
+    id: record.id,
+    type: record.type,
+    content: compactText(record.content, 520),
+    importance: record.importance,
+    pinned: Boolean(record.pinned),
+    tags: parseJsonArray(record.tags),
+    created_at: (record.created_at || "").slice(0, 10)
+  };
+}
+
+async function queryStartupMemories(db: D1Database, sql: string, binds: unknown[]): Promise<StartupMemory[]> {
+  const result = await db.prepare(sql).bind(...binds).all<MemoryRecord>();
+  return (result.results ?? []).map((record) => toStartupMemory(record));
+}
+
+async function buildStartupContextLite(db: D1Database, namespace: string): Promise<Record<string, unknown>> {
+  const currentHandoff = await queryStartupMemories(
+    db,
+    `SELECT * FROM memories
+     WHERE namespace = ? AND status = 'active'
+       AND (tags LIKE '%handoff%' OR tags LIKE '%交接%')
+     ORDER BY updated_at DESC
+     LIMIT 2`,
+    [namespace]
+  );
+
+  const recentDiary = await queryStartupMemories(
+    db,
+    `SELECT * FROM memories
+     WHERE namespace = ? AND status = 'active' AND type IN ('diary', 'layla_diary')
+     ORDER BY created_at DESC
+     LIMIT 3`,
+    [namespace]
+  );
+
+  return {
+    startup_version: "2.6-lite-cc-handoff-and-diary-startup",
+    current_handoff_count: currentHandoff.length,
+    recent_diary_count: recentDiary.length,
+    current_handoff: currentHandoff,
+    recent_diary: recentDiary
+  };
+}
+
 export async function handleAdminStartupContext(request: Request, env: Env): Promise<Response> {
   if (!isAuthorized(request, env)) return unauthorized();
   if (request.method !== "GET") return new Response("Method not allowed", { status: 405 });
@@ -33,6 +104,22 @@ export async function handleAdminStartupContext(request: Request, env: Env): Pro
   const url = new URL(request.url);
   const namespace = url.searchParams.get("namespace") || "default";
   const data = await buildStartupContext(env.DB, namespace);
+
+  return new Response(JSON.stringify(data, null, 2), {
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "no-store"
+    }
+  });
+}
+
+export async function handleAdminStartupContextLite(request: Request, env: Env): Promise<Response> {
+  if (!isAuthorized(request, env)) return unauthorized();
+  if (request.method !== "GET") return new Response("Method not allowed", { status: 405 });
+
+  const url = new URL(request.url);
+  const namespace = url.searchParams.get("namespace") || "default";
+  const data = await buildStartupContextLite(env.DB, namespace);
 
   return new Response(JSON.stringify(data, null, 2), {
     headers: {
