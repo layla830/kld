@@ -9,6 +9,17 @@ const STRONG_KEYWORD_SCORE = 0.62;
 const WEAK_KEYWORD_SCORE = 0.55;
 const VECTOR_ONLY_SCORE_WITH_STRONG_KEYWORDS = 0.68;
 
+const QUERY_ALIAS_GROUPS = [
+  ["sm", "s/m", "bdsm", "dom", "sub", "brat", "switch", "支配", "臣服", "主导", "被主导"],
+  ["cc", "claude code", "claude-code", "cc-connect", "telegram", "tg"],
+  ["cf", "cloudflare", "worker", "workers", "d1", "vectorize"],
+  ["memory", "memories", "记忆", "记忆库", "memory home", "小家"],
+  ["book", "books", "reading", "reader", "共读", "读书", "书架"],
+  ["handoff", "交接"],
+  ["startup", "startup context", "启动", "启动上下文"],
+  ["vps", "server", "服务器"]
+];
+
 function parseJsonArray(value: string | null): string[] {
   if (!value) return [];
   try {
@@ -245,6 +256,28 @@ function normalizeText(value: string): string {
   return value.toLowerCase().replace(/\s+/g, " ").trim();
 }
 
+function hasLatin(value: string): boolean {
+  return /[a-z0-9]/i.test(value);
+}
+
+function aliasMatches(query: string, alias: string): boolean {
+  const normalizedAlias = normalizeText(alias);
+  if (!normalizedAlias) return false;
+  if (!hasLatin(normalizedAlias)) return query.includes(normalizedAlias);
+  const escaped = normalizedAlias.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+");
+  return new RegExp(`(^|[^a-z0-9])${escaped}($|[^a-z0-9])`, "i").test(query);
+}
+
+function expandQuery(query: string): string {
+  const normalized = normalizeText(query);
+  const terms = new Set([query.trim()]);
+  for (const group of QUERY_ALIAS_GROUPS) {
+    if (!group.some((alias) => aliasMatches(normalized, alias))) continue;
+    for (const alias of group) terms.add(alias);
+  }
+  return [...terms].filter(Boolean).join(" ");
+}
+
 function dateNeedles(value: string): string[] {
   const needles: string[] = [];
   const matches = value.match(/\b\d{4}[.\-/]\d{1,2}[.\-/]\d{1,2}\b/g) ?? [];
@@ -333,16 +366,17 @@ export async function searchMemories(
 ): Promise<MemoryApiRecord[]> {
   const topK = getTopK(env, input.topK);
   const candidateLimit = getCandidateLimit(topK);
+  const expandedQuery = expandQuery(input.query);
   const [vectorRecords, keywordRecords] = await Promise.all([
     searchWithVectorize(env, {
       namespace: input.namespace,
-      query: input.query,
+      query: expandedQuery,
       types: input.types,
       topK: candidateLimit
     }),
     searchMemoriesByText(env.DB, {
       namespace: input.namespace,
-      query: input.query,
+      query: expandedQuery,
       types: input.types,
       limit: candidateLimit
     })
@@ -351,7 +385,7 @@ export async function searchMemories(
   const records = mergeSearchResults(
     vectorRecords,
     keywordRecords.map((record) => ({ ...record, keywordScore: record.score })),
-    { query: input.query, topK }
+    { query: expandedQuery, topK }
   );
 
   await markMemoriesRecalled(env.DB, {
