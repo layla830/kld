@@ -88,11 +88,12 @@ async function queryRecentRulesAndLessons(db: D1Database, namespace: string): Pr
 export async function buildStartupContext(db: D1Database, namespace = "default"): Promise<Record<string, unknown>> {
   const startupRules = await queryStartupRules(db, namespace);
   const recentRulesAndLessons = await queryRecentRulesAndLessons(db, namespace);
-  const pinned = await queryStartupMemories(
+  const pinnedAndWarmth = await queryStartupMemories(
     db,
     `SELECT * FROM memories
-     WHERE namespace = ? AND status = 'active' AND pinned = 1
-     ORDER BY importance DESC, updated_at DESC, created_at DESC
+     WHERE namespace = ? AND status = 'active'
+       AND (pinned = 1 OR type IN ('warmth', 'milestone'))
+     ORDER BY pinned DESC, importance DESC, updated_at DESC, created_at DESC
      LIMIT 12`,
     [namespace]
   );
@@ -115,16 +116,16 @@ export async function buildStartupContext(db: D1Database, namespace = "default")
   );
 
   return {
-    startup_version: "2.7-database-pinned-startup",
+    startup_version: "2.7-warmth-handoff-and-diary-startup",
     startup_rules_since: DYNAMIC_STARTUP_RULES_SINCE,
     startup_rules_count: startupRules.length,
     recent_rules_and_lessons_count: recentRulesAndLessons.length,
-    pinned_count: pinned.length,
+    pinned_and_warmth_count: pinnedAndWarmth.length,
     current_handoff_count: currentHandoff.length,
     recent_diary_count: recentDiary.length,
     startup_rules: startupRules,
     recent_rules_and_lessons: recentRulesAndLessons,
-    pinned,
+    pinned_and_warmth: pinnedAndWarmth,
     current_handoff: currentHandoff,
     recent_diary: recentDiary
   };
