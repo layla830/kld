@@ -1,6 +1,8 @@
 import { callOpenAICompat } from "../proxy/openaiAdapter";
 import type { Env, MemoryApiRecord, OpenAIChatRequest, OpenAIChatResponse } from "../types";
 
+const DEFAULT_WORKERS_AI_FILTER_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
+
 interface FilteredMemoryItem {
   id: string;
   content: string;
@@ -8,6 +10,7 @@ interface FilteredMemoryItem {
 
 export interface MemoryFilterMeta {
   status: "disabled" | "success" | "error" | "empty";
+  provider: "workers-ai" | "openai-compatible";
   model: string;
   raw_count: number;
   candidate_count: number;
@@ -34,8 +37,16 @@ function sanitizeMemoryContent(text: string): string {
     .trim();
 }
 
+function getProvider(env: Env): "workers-ai" | "openai-compatible" {
+  return env.MEMORY_FILTER_PROVIDER === "openai-compatible" ? "openai-compatible" : "workers-ai";
+}
+
+function getModel(env: Env): string {
+  return env.MEMORY_FILTER_MODEL || DEFAULT_WORKERS_AI_FILTER_MODEL;
+}
+
 function isEnabled(env: Env): boolean {
-  return env.ENABLE_MEMORY_FILTER !== "false" && Boolean(env.MEMORY_FILTER_MODEL);
+  return env.ENABLE_MEMORY_FILTER !== "false" && Boolean(getModel(env));
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -275,6 +286,53 @@ function describeModelOutput(value: unknown): string {
   return "object";
 }
 
+async function callWorkersAiFilter(env: Env, prompt: string): Promise<unknown> {
+  if (!env.AI) return "";
+
+  return env.AI.run(getModel(env), {
+    messages: [
+      {
+        role: "system",
+        content: "你是严格的 JSON 生成器。你只输出 JSON。"
+      },
+      {
+        role: "user",
+        content: prompt
+      }
+    ],
+    temperature: 0,
+    max_tokens: 700
+  });
+}
+
+async function callOpenAICompatFilter(env: Env, prompt: string): Promise<string> {
+  if (!env.MEMORY_FILTER_MODEL) return "";
+
+  const request: OpenAIChatRequest = {
+    model: env.MEMORY_FILTER_MODEL,
+    messages: [
+      {
+        role: "system",
+        content: "你是严格的 JSON 生成器。你只输出 JSON。"
+      },
+      {
+        role: "user",
+        content: prompt
+      }
+    ],
+    temperature: 0,
+    max_tokens: 700,
+    stream: false
+  };
+
+  const response = await callOpenAICompat(env, request);
+  if (!response.ok) return { error: { status: response.status } } as unknown as string;
+
+  const parsed = (await response.json()) as OpenAIChatResponse;
+  const content = parsed.choices?.[0]?.message?.content;
+  return typeof content === "string" ? content : "";
+}
+
 export async function filterAndCompressMemories(
   env: Env,
   input: { query: string; memories: MemoryApiRecord[] }
@@ -288,8 +346,10 @@ export async function filterAndCompressMemoriesWithMeta(
   input: { query: string; memories: MemoryApiRecord[] }
 ): Promise<{ data: MemoryApiRecord[]; meta: MemoryFilterMeta }> {
   const query = input.query.trim();
-  const model = env.MEMORY_FILTER_MODEL || "";
+  const provider = getProvider(env);
+  const model = getModel(env);
   const baseMeta = {
+    provider,
     model,
     raw_count: input.memories.length,
     candidate_count: 0,
@@ -327,46 +387,16 @@ export async function filterAndCompressMemoriesWithMeta(
     candidate_count: candidates.length,
     output_count: 0
   };
-  const request: OpenAIChatRequest = {
-    model,
-    messages: [
-      {
-        role: "system",
-        content: "你是严格的 JSON 生成器。你只输出 JSON。"
-      },
-      {
-        role: "user",
-        content: buildPrompt({
-          query,
-          memories: candidates,
-          maxOutput,
-          maxContentChars: getMaxContentChars(env),
-          maxOutputChars: getMaxOutputChars(env)
-        })
-      }
-    ],
-    temperature: 0,
-    max_tokens: 700,
-    stream: false
-  };
+  const prompt = buildPrompt({
+    query,
+    memories: candidates,
+    maxOutput,
+    maxContentChars: getMaxContentChars(env),
+    maxOutputChars: getMaxOutputChars(env)
+  });
 
   try {
-    const response = await callOpenAICompat(env, request);
-    if (!response.ok) {
-      return {
-        data: input.memories,
-        meta: {
-          ...activeMeta,
-          status: "error",
-          output_count: input.memories.length,
-          reason: `provider_http_${response.status}`
-        }
-      };
-    }
-
-    const parsed = (await response.json()) as OpenAIChatResponse;
-    const content = parsed.choices?.[0]?.message?.content;
-    const output = typeof content === "string" ? content : parsed;
+    const output = provider === "openai-compatible" ? await callOpenAICompatFilter(env, prompt) : await callWorkersAiFilter(env, prompt);
     const items = parseFilteredItems(output);
     if (!items) {
       return {
