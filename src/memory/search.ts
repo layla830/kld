@@ -1,5 +1,6 @@
 import { fetchMemoriesByIds, markMemoriesRecalled, searchMemoriesByText } from "../db/memories";
-import type { Env, MemoryApiRecord, MemoryRecord } from "../types";
+import { callOpenAICompat } from "../proxy/openaiAdapter";
+import type { Env, MemoryApiRecord, MemoryRecord, OpenAIChatRequest, OpenAIChatResponse } from "../types";
 import { createEmbedding } from "./embedding";
 
 type MetadataMap = Record<string, unknown>;
@@ -278,6 +279,104 @@ function expandQuery(query: string): string {
   return [...terms].filter(Boolean).join(" ");
 }
 
+function getRewriteModel(env: Env): string | null {
+  return env.MEMORY_QUERY_REWRITE_MODEL || env.MEMORY_FILTER_MODEL || env.MEMORY_MODEL || null;
+}
+
+function isRewriteEnabled(env: Env): boolean {
+  return env.ENABLE_MEMORY_QUERY_REWRITE === "true" && Boolean(getRewriteModel(env));
+}
+
+function extractJsonArray(text: string): unknown[] | null {
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    if (Array.isArray(parsed)) return parsed;
+    if (parsed && typeof parsed === "object" && Array.isArray((parsed as { queries?: unknown }).queries)) {
+      return (parsed as { queries: unknown[] }).queries;
+    }
+  } catch {
+    // Providers sometimes wrap JSON in prose; try extracting the outer array below.
+  }
+
+  const start = text.indexOf("[");
+  const end = text.lastIndexOf("]");
+  if (start === -1 || end === -1 || end <= start) return null;
+
+  try {
+    const parsed = JSON.parse(text.slice(start, end + 1)) as unknown;
+    return Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function cleanRewriteTerm(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const text = value.trim().replace(/\s+/g, " ").slice(0, 80);
+  if (!text || text.length < 2) return null;
+  return text;
+}
+
+function parseRewriteTerms(text: string, originalQuery: string): string[] {
+  const items = extractJsonArray(text) ?? [];
+  const terms = new Set<string>([originalQuery.trim()]);
+  for (const item of items) {
+    const term = cleanRewriteTerm(item);
+    if (term) terms.add(term);
+  }
+  return [...terms].filter(Boolean).slice(0, 10);
+}
+
+function buildRewritePrompt(query: string): string {
+  return [
+    "你是个人长期记忆库的搜索改写器。",
+    "把用户搜索词改写成 4-10 个适合检索的短查询词/短语，用来找相关记忆。",
+    "规则：",
+    "- 必须保留原始查询。",
+    "- 展开缩写、别名、上位概念、中文/英文说法、相关术语。",
+    "- 日期要补充常见格式，例如 2026.4.17 / 2026-04-17 / 4月17日。",
+    "- 不要编造具体事实，不要添加人名、日期或事件，除非它们已经出现在查询里。",
+    "- 每个词/短语不超过 20 个中文字符或 8 个英文词。",
+    "- 只输出 JSON 数组，不要 markdown，不要解释。",
+    "例子：",
+    "sm -> [\"sm\", \"BDSM\", \"dom\", \"sub\", \"brat\", \"switch\", \"支配\", \"臣服\"]",
+    "cf记忆库 -> [\"cf记忆库\", \"Cloudflare 记忆库\", \"Worker\", \"D1\", \"Vectorize\", \"memory MCP\"]",
+    "",
+    `用户搜索词：${query}`
+  ].join("\n");
+}
+
+async function rewriteQueryWithModel(env: Env, query: string): Promise<string> {
+  const trimmed = query.trim();
+  const model = getRewriteModel(env);
+  if (!trimmed || !isRewriteEnabled(env) || !model) return trimmed;
+
+  const request: OpenAIChatRequest = {
+    model,
+    messages: [
+      { role: "system", content: "你是严格的 JSON 生成器。你只输出 JSON。" },
+      { role: "user", content: buildRewritePrompt(trimmed) }
+    ],
+    temperature: 0,
+    max_tokens: 240,
+    stream: false
+  };
+
+  try {
+    const response = await callOpenAICompat(env, request);
+    if (!response.ok) return trimmed;
+    const parsed = (await response.json()) as OpenAIChatResponse;
+    const message = parsed.choices?.[0]?.message as ({ content?: unknown; reasoning_content?: unknown }) | undefined;
+    const content = typeof message?.content === "string" ? message.content.trim() : "";
+    const reasoning = typeof message?.reasoning_content === "string" ? message.reasoning_content.trim() : "";
+    const terms = parseRewriteTerms(content || reasoning, trimmed);
+    return terms.join(" ").slice(0, 500);
+  } catch (error) {
+    console.error("memory query rewrite failed", error);
+    return trimmed;
+  }
+}
+
 function dateNeedles(value: string): string[] {
   const needles: string[] = [];
   const matches = value.match(/\b\d{4}[.\-/]\d{1,2}[.\-/]\d{1,2}\b/g) ?? [];
@@ -366,7 +465,8 @@ export async function searchMemories(
 ): Promise<MemoryApiRecord[]> {
   const topK = getTopK(env, input.topK);
   const candidateLimit = getCandidateLimit(topK);
-  const expandedQuery = expandQuery(input.query);
+  const rewrittenQuery = await rewriteQueryWithModel(env, input.query);
+  const expandedQuery = expandQuery(rewrittenQuery);
   const [vectorRecords, keywordRecords] = await Promise.all([
     searchWithVectorize(env, {
       namespace: input.namespace,
