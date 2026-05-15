@@ -241,8 +241,48 @@ function hasStrongKeywordMatch(records: ScoredMemoryRecord[]): boolean {
   return records.some((record) => (record.keywordScore ?? 0) >= STRONG_KEYWORD_SCORE);
 }
 
-function isSupportedBySearchMode(record: ScoredMemoryRecord, hasStrongKeyword: boolean): boolean {
-  if (!hasStrongKeyword) return true;
+function normalizeText(value: string): string {
+  return value.toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+function dateNeedles(value: string): string[] {
+  const needles: string[] = [];
+  const matches = value.match(/\b\d{4}[.\-/]\d{1,2}[.\-/]\d{1,2}\b/g) ?? [];
+  for (const match of matches) {
+    const parts = match.split(/[.\-/]/).map((part) => Number(part));
+    const [year, month, day] = parts;
+    if (!year || !month || !day) continue;
+    needles.push(`${year}.${month}.${day}`, `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`, `${month}月${day}日`);
+  }
+  return needles;
+}
+
+function extractStrongNeedles(query: string): string[] {
+  const normalized = normalizeText(query);
+  const needles = new Set<string>();
+  for (const item of dateNeedles(normalized)) needles.add(item);
+
+  const compact = normalized.replace(/\s+/g, "");
+  if (/[^\d.\-/]/.test(compact) && compact.length >= 3) needles.add(compact);
+
+  const words = normalized.match(/[a-z][a-z0-9_+-]{2,}|[\u4e00-\u9fff]{2,}/gi) ?? [];
+  for (const word of words) needles.add(normalizeText(word));
+
+  return [...needles].filter((needle) => needle.length >= 2).slice(0, 12);
+}
+
+function recordHaystack(record: MemoryRecord): string {
+  return normalizeText(`${record.content} ${record.summary || ""} ${record.tags || ""} ${record.type}`);
+}
+
+function containsStrongNeedle(record: MemoryRecord, needles: string[]): boolean {
+  const haystack = recordHaystack(record);
+  return needles.some((needle) => haystack.includes(normalizeText(needle)));
+}
+
+function isSupportedBySearchMode(record: ScoredMemoryRecord, input: { hasStrongKeyword: boolean; strongNeedles: string[] }): boolean {
+  if (!input.hasStrongKeyword) return true;
+  if (input.strongNeedles.length > 0) return containsStrongNeedle(record, input.strongNeedles);
   if ((record.keywordScore ?? 0) >= WEAK_KEYWORD_SCORE) return true;
   return (record.vectorScore ?? 0) >= VECTOR_ONLY_SCORE_WITH_STRONG_KEYWORDS;
 }
@@ -250,7 +290,7 @@ function isSupportedBySearchMode(record: ScoredMemoryRecord, hasStrongKeyword: b
 function mergeSearchResults(
   vectorRecords: ScoredMemoryRecord[] | null,
   keywordRecords: ScoredMemoryRecord[],
-  topK: number
+  input: { query: string; topK: number }
 ): ScoredMemoryRecord[] {
   const merged = new Map<string, ScoredMemoryRecord>();
 
@@ -280,10 +320,11 @@ function mergeSearchResults(
 
   const records = [...merged.values()];
   const hasStrongKeyword = hasStrongKeywordMatch(records);
+  const strongNeedles = extractStrongNeedles(input.query);
   return records
-    .filter((record) => isSupportedBySearchMode(record, hasStrongKeyword))
+    .filter((record) => isSupportedBySearchMode(record, { hasStrongKeyword, strongNeedles }))
     .sort((a, b) => b.score - a.score)
-    .slice(0, topK);
+    .slice(0, input.topK);
 }
 
 export async function searchMemories(
@@ -310,7 +351,7 @@ export async function searchMemories(
   const records = mergeSearchResults(
     vectorRecords,
     keywordRecords.map((record) => ({ ...record, keywordScore: record.score })),
-    topK
+    { query: input.query, topK }
   );
 
   await markMemoriesRecalled(env.DB, {
