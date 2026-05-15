@@ -10,7 +10,6 @@ interface StartupMemory {
   type: string;
   content: string;
   importance: number;
-  pinned: boolean;
   tags: string[];
   created_at: string;
 }
@@ -98,7 +97,6 @@ function toStartupMemory(record: MemoryRecord): StartupMemory {
     type: record.type,
     content: compactContent(record, tags),
     importance: record.importance,
-    pinned: Boolean(record.pinned),
     tags,
     created_at: (record.created_at || "").slice(0, 10)
   };
@@ -240,7 +238,7 @@ export async function buildStartupContext(db: D1Database, namespace = "default")
       "To promote a future lesson into startup, store a short memory with type=startup_rule or tag=启动规则/startup_rule; keep it under 160 Chinese characters.",
       "current_handoff contains up to 2 latest handoff memories; recent_diary contains up to 3 latest diary memories.",
       "Use memory_search for exact warmth labels, dates, rules, handoff, diary, and full paper/reference queries.",
-      "Startup database memories are compact cards: content, type, tags, importance, pinned, and created_at only."
+      "Startup database memories are compact cards: content, type, tags, importance, and created_at only."
     ],
     required_warmth: requiredWarmth,
     tag_format: "Tags are JSON arrays; mood is stored as mood:<name>."
