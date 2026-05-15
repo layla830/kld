@@ -42,8 +42,16 @@ function readMetadataBoolean(metadata: MetadataMap, field: string): boolean {
 function readMetadataStringArray(metadata: MetadataMap, field: string): string[] {
   const value = metadata[field];
   if (Array.isArray(value)) return value.filter((item): item is string => typeof item === "string");
-  if (typeof value === "string" && value.trim()) return [value.trim()];
-  return [];
+  if (typeof value !== "string" || !value.trim()) return [];
+
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (Array.isArray(parsed)) return parsed.filter((item): item is string => typeof item === "string");
+  } catch {
+    // Legacy metadata may store a plain tag string instead of JSON.
+  }
+
+  return [value.trim()];
 }
 
 function readMetadataText(metadata: MetadataMap): string | null {
