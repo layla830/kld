@@ -25,6 +25,25 @@ function getMaxCandidates(env: Env): number {
   return Number.isFinite(value) ? clamp(Math.floor(value), 2, 50) : 18;
 }
 
+function getTimeoutMs(env: Env): number {
+  const value = Number(env.MEMORY_RERANK_TIMEOUT_MS || 3500);
+  return Number.isFinite(value) ? clamp(Math.floor(value), 500, 15000) : 3500;
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<null>((resolve) => {
+        timer = setTimeout(() => resolve(null), timeoutMs);
+      })
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
 function extractJsonArray(text: string): unknown[] | null {
   try {
     const parsed = JSON.parse(text) as unknown;
@@ -146,8 +165,8 @@ export async function rerankMemorySearchResults(
   };
 
   try {
-    const response = await callOpenAICompat(env, request);
-    if (!response.ok) return input.memories.slice(0, input.topK);
+    const response = await withTimeout(callOpenAICompat(env, request), getTimeoutMs(env));
+    if (!response?.ok) return input.memories.slice(0, input.topK);
 
     const parsed = (await response.json()) as OpenAIChatResponse;
     const message = parsed.choices?.[0]?.message as ({ content?: unknown; reasoning_content?: unknown }) | undefined;
