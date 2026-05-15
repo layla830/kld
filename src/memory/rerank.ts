@@ -69,7 +69,7 @@ function parseRerankItems(text: string, allowedIds: Set<string>): RerankItem[] |
     items.push({ id, score: clamp(rawScore, 0, 1) });
   }
 
-  return items.length > 0 ? items : null;
+  return items;
 }
 
 function buildPrompt(input: { query: string; memories: MemoryApiRecord[]; maxOutput: number }): string {
@@ -155,10 +155,9 @@ export async function rerankMemorySearchResults(
     const reasoning = typeof message?.reasoning_content === "string" ? message.reasoning_content.trim() : "";
     const allowedIds = new Set(candidates.map((memory) => memory.id));
     const items = parseRerankItems(content || reasoning, allowedIds);
-    if (!items) return input.memories.slice(0, input.topK);
+    if (items === null) return input.memories.slice(0, input.topK);
 
-    const reranked = applyRerank(candidates, items, input.topK);
-    return reranked.length > 0 ? reranked : input.memories.slice(0, input.topK);
+    return applyRerank(candidates, items, input.topK);
   } catch (error) {
     console.error("memory search rerank failed", error);
     return input.memories.slice(0, input.topK);
