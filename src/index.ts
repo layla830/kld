@@ -5,7 +5,7 @@ import { handleChatCompletions } from "./api/chatCompletions";
 import { handleGuideDogChatCompletions } from "./api/guideDog";
 import { handleAdminBoard } from "./api/adminBoard";
 import { handleAdminMaintenance } from "./api/adminMaintenance";
-import { handleAdminStartupContext } from "./api/adminStartup";
+import { handleAdminStartupContext, handleAdminStartupContextLite } from "./api/adminStartup";
 import { handleBooks } from "./api/books";
 import { handleBooksReaderPage } from "./api/booksReader";
 import { handleBooksUpload } from "./api/booksUpload";
@@ -35,6 +35,10 @@ export default {
 
     if (url.pathname === "/admin/startup-context") {
       return handleAdminStartupContext(request, env);
+    }
+
+    if (url.pathname === "/admin/startup-context-lite") {
+      return handleAdminStartupContextLite(request, env);
     }
 
     if (url.pathname === "/books") {
