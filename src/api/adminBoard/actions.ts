@@ -1,6 +1,13 @@
-import { createMemory, softDeleteMemory, updateMemory } from "../../db/memories";
+import { createMemory, getMemoryById, updateMemory } from "../../db/memories";
 import type { Env, MemoryRecord } from "../../types";
-import { clampNumber, parseTagInput, readFormText } from "./utils";
+import { clampNumber, parseTagInput, parseTags, readFormText } from "./utils";
+
+function cleanPinTags(tags: string[]): string[] {
+  return [...new Set(tags.filter((tag) => {
+    const normalized = tag.trim().toLowerCase();
+    return normalized && !["pin", "pinned", "置顶"].includes(normalized);
+  }))];
+}
 
 export async function createBoardMemory(env: Env, form: FormData): Promise<MemoryRecord | null> {
   const kind = readFormText(form, "kind");
@@ -23,7 +30,7 @@ export async function createBoardMemory(env: Env, form: FormData): Promise<Memor
     tags = ["语录", category, "admin-board"];
   } else if (kind === "memory") {
     type = readFormText(form, "memory_type") || "note";
-    tags = parseTagInput(readFormText(form, "tags"));
+    tags = cleanPinTags(parseTagInput(readFormText(form, "tags")));
     tags.push("admin-board");
     pinned = readFormText(form, "pinned") === "on";
   }
@@ -40,7 +47,7 @@ export async function createBoardMemory(env: Env, form: FormData): Promise<Memor
     confidence: 0.95,
     status: "active",
     pinned,
-    tags: [...new Set(tags)],
+    tags: cleanPinTags(tags),
     source: "admin-board",
     sourceMessageIds: [],
     expiresAt: null
@@ -53,7 +60,7 @@ export async function editBoardMemory(env: Env, form: FormData): Promise<MemoryR
   if (!id || !content) return null;
 
   const type = readFormText(form, "type") || "note";
-  const tags = parseTagInput(readFormText(form, "tags"));
+  const tags = cleanPinTags(parseTagInput(readFormText(form, "tags")));
   const mood = readFormText(form, "mood");
   if (mood) tags.push(`mood:${mood}`);
   if (type === "message" && !tags.includes("留言")) tags.push("留言");
@@ -64,7 +71,7 @@ export async function editBoardMemory(env: Env, form: FormData): Promise<MemoryR
     patch: {
       type,
       content,
-      tags: [...new Set(tags)],
+      tags: cleanPinTags(tags),
       importance: clampNumber(readFormText(form, "importance"), 0.65, 0, 1),
       pinned: readFormText(form, "pinned") === "on"
     }
@@ -74,5 +81,17 @@ export async function editBoardMemory(env: Env, form: FormData): Promise<MemoryR
 export async function deleteBoardMemory(env: Env, form: FormData): Promise<MemoryRecord | null> {
   const id = readFormText(form, "id");
   if (!id) return null;
-  return softDeleteMemory(env.DB, { namespace: "default", id });
+
+  const existing = await getMemoryById(env.DB, { namespace: "default", id });
+  if (!existing) return null;
+
+  return updateMemory(env.DB, {
+    namespace: "default",
+    id,
+    patch: {
+      status: "deleted",
+      pinned: false,
+      tags: cleanPinTags(parseTags(existing.tags))
+    }
+  });
 }
