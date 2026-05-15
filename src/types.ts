@@ -1,5 +1,6 @@
 export interface Env {
   DB: D1Database;
+  AI?: Ai;
   MEMORY_QUEUE?: Queue<QueueMessage>;
   VECTORIZE?: Vectorize | VectorizeIndex;
   PUBLIC_MODEL_NAME?: string;
@@ -18,6 +19,7 @@ export interface Env {
   MEMORY_MODE?: string;
   MEMORY_MODEL?: string;
   ENABLE_MEMORY_FILTER?: string;
+  MEMORY_FILTER_PROVIDER?: string;
   MEMORY_FILTER_MODEL?: string;
   MEMORY_SEARCH_MAX_OUTPUT?: string;
   VISION_MODEL?: string;
