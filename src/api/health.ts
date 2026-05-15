@@ -6,6 +6,7 @@ const requiredTextVars = [
   "CHATBOX_API_KEY",
   "CF_AIG_TOKEN",
   "CHAT_MODEL",
+  "MEMORY_FILTER_PROVIDER",
   "MEMORY_FILTER_MODEL",
   "MEMORY_MODEL",
   "VISION_MODEL"
@@ -19,6 +20,7 @@ export function handleHealth(env: Env): Response {
     service: "companion-memory-proxy",
     missing_text_vars,
     bindings: {
+      ai: Boolean(env.AI),
       d1: Boolean(env.DB),
       vectorize: Boolean(env.VECTORIZE),
       queue: Boolean(env.MEMORY_QUEUE)
