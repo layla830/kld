@@ -25,6 +25,12 @@ function getMaxCandidates(env: Env): number {
   return Number.isFinite(value) ? clamp(Math.floor(value), 2, 50) : 18;
 }
 
+function getMaxOutput(env: Env, requestedTopK: number): number {
+  const value = Number(env.MEMORY_RERANK_MAX_OUTPUT || 8);
+  const maxOutput = Number.isFinite(value) ? clamp(Math.floor(value), 1, 20) : 8;
+  return Math.min(requestedTopK, maxOutput);
+}
+
 function getTimeoutMs(env: Env): number {
   const value = Number(env.MEMORY_RERANK_TIMEOUT_MS || 3500);
   return Number.isFinite(value) ? clamp(Math.floor(value), 500, 15000) : 3500;
@@ -146,8 +152,9 @@ export async function rerankMemorySearchResults(
   input: { query: string; memories: MemoryApiRecord[]; topK: number }
 ): Promise<MemoryApiRecord[]> {
   const query = input.query.trim();
+  const maxOutput = getMaxOutput(env, input.topK);
   if (!isRerankEnabled(env) || !query || input.memories.length <= 1) {
-    return input.memories.slice(0, input.topK);
+    return input.memories.slice(0, maxOutput);
   }
 
   const model = getRerankModel(env);
@@ -157,7 +164,7 @@ export async function rerankMemorySearchResults(
     model,
     messages: [
       { role: "system", content: "你是严格的 JSON 生成器。你只输出 JSON。" },
-      { role: "user", content: buildPrompt({ query, memories: candidates, maxOutput: input.topK }) }
+      { role: "user", content: buildPrompt({ query, memories: candidates, maxOutput }) }
     ],
     temperature: 0,
     max_tokens: 500,
@@ -166,7 +173,7 @@ export async function rerankMemorySearchResults(
 
   try {
     const response = await withTimeout(callOpenAICompat(env, request), getTimeoutMs(env));
-    if (!response?.ok) return input.memories.slice(0, input.topK);
+    if (!response?.ok) return input.memories.slice(0, maxOutput);
 
     const parsed = (await response.json()) as OpenAIChatResponse;
     const message = parsed.choices?.[0]?.message as ({ content?: unknown; reasoning_content?: unknown }) | undefined;
@@ -174,11 +181,11 @@ export async function rerankMemorySearchResults(
     const reasoning = typeof message?.reasoning_content === "string" ? message.reasoning_content.trim() : "";
     const allowedIds = new Set(candidates.map((memory) => memory.id));
     const items = parseRerankItems(content || reasoning, allowedIds);
-    if (items === null) return input.memories.slice(0, input.topK);
+    if (items === null) return input.memories.slice(0, maxOutput);
 
-    return applyRerank(candidates, items, input.topK);
+    return applyRerank(candidates, items, maxOutput);
   } catch (error) {
     console.error("memory search rerank failed", error);
-    return input.memories.slice(0, input.topK);
+    return input.memories.slice(0, maxOutput);
   }
 }
