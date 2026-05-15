@@ -14,7 +14,7 @@ function clamp(value: number, min: number, max: number): number {
 }
 
 function getMaxOutput(env: Env, requestedTopK: number): number {
-  const value = Number(env.MEMORY_RERANK_MAX_OUTPUT || 8);
+  const value = Number(env.MEMORY_SEARCH_MAX_OUTPUT || 8);
   const maxOutput = Number.isFinite(value) ? clamp(Math.floor(value), 1, 20) : 8;
   return Math.min(requestedTopK, maxOutput);
 }
