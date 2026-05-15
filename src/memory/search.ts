@@ -450,13 +450,11 @@ function mergeSearchResults(
   for (const record of vectorRecords ?? []) add(record);
   for (const record of keywordRecords) add(record);
 
-  const records = [...merged.values()];
-  const hasStrongKeyword = hasStrongKeywordMatch(records);
+  const rankedRecords = [...merged.values()].sort((a, b) => b.score - a.score);
+  const hasStrongKeyword = hasStrongKeywordMatch(rankedRecords);
   const strongNeedles = extractStrongNeedles(input.query);
-  return records
-    .filter((record) => isSupportedBySearchMode(record, { hasStrongKeyword, strongNeedles }))
-    .sort((a, b) => b.score - a.score)
-    .slice(0, input.topK);
+  const filteredRecords = rankedRecords.filter((record) => isSupportedBySearchMode(record, { hasStrongKeyword, strongNeedles }));
+  return (filteredRecords.length > 0 ? filteredRecords : rankedRecords).slice(0, input.topK);
 }
 
 export async function searchMemories(
