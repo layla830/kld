@@ -5,6 +5,10 @@ import { createEmbedding } from "./embedding";
 type MetadataMap = Record<string, unknown>;
 type ScoredMemoryRecord = MemoryRecord & { score: number; vectorScore?: number; keywordScore?: number };
 
+const STRONG_KEYWORD_SCORE = 0.62;
+const WEAK_KEYWORD_SCORE = 0.45;
+const VECTOR_ONLY_SCORE_WITH_STRONG_KEYWORDS = 0.62;
+
 function parseJsonArray(value: string | null): string[] {
   if (!value) return [];
   try {
@@ -233,6 +237,16 @@ function rankHybridRecord(record: ScoredMemoryRecord): number {
   return vectorScore * 0.7 + keywordScore * 0.55 + record.importance * 0.08 + pinnedBoost + recencyBoost(record) * 0.04;
 }
 
+function hasStrongKeywordMatch(records: ScoredMemoryRecord[]): boolean {
+  return records.some((record) => (record.keywordScore ?? 0) >= STRONG_KEYWORD_SCORE);
+}
+
+function isSupportedBySearchMode(record: ScoredMemoryRecord, hasStrongKeyword: boolean): boolean {
+  if (!hasStrongKeyword) return true;
+  if ((record.keywordScore ?? 0) >= WEAK_KEYWORD_SCORE) return true;
+  return (record.vectorScore ?? 0) >= VECTOR_ONLY_SCORE_WITH_STRONG_KEYWORDS;
+}
+
 function mergeSearchResults(
   vectorRecords: ScoredMemoryRecord[] | null,
   keywordRecords: ScoredMemoryRecord[],
@@ -264,7 +278,12 @@ function mergeSearchResults(
   for (const record of vectorRecords ?? []) add(record);
   for (const record of keywordRecords) add(record);
 
-  return [...merged.values()].sort((a, b) => b.score - a.score).slice(0, topK);
+  const records = [...merged.values()];
+  const hasStrongKeyword = hasStrongKeywordMatch(records);
+  return records
+    .filter((record) => isSupportedBySearchMode(record, hasStrongKeyword))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, topK);
 }
 
 export async function searchMemories(
