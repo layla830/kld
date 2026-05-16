@@ -74,7 +74,7 @@ async function buildStartupContextLite(db: D1Database, namespace: string): Promi
     `SELECT * FROM memories
      WHERE namespace = ? AND status = 'active' AND pinned = 1
      ORDER BY importance DESC, updated_at DESC, created_at DESC
-     LIMIT 5`,
+     LIMIT 7`,
     [namespace],
     520
   );
@@ -101,7 +101,7 @@ async function buildStartupContextLite(db: D1Database, namespace: string): Promi
   );
 
   return {
-    startup_version: "2.6-lite-cc-pinned-handoff-and-diary-startup",
+    startup_version: "2.7-lite-cc-pinned7-handoff-and-diary-startup",
     pinned_count: pinned.length,
     current_handoff_count: currentHandoff.length,
     recent_diary_count: recentDiary.length,
