@@ -205,10 +205,19 @@ function haystack(record: MemoryRecord): string {
 
 function scoreKeywordRecord(record: MemoryRecord, query: string, tokens: string[]): number {
   const text = haystack(record);
-  const exact = query && text.includes(query.toLowerCase()) ? 0.25 : 0;
+  const tagsAndType = `${record.tags || ""} ${record.type}`.toLowerCase();
+  const normalizedQuery = query.toLowerCase();
+  const exact = normalizedQuery && text.includes(normalizedQuery) ? 0.25 : 0;
   const hits = tokens.filter((token) => text.includes(token)).length;
-  const tokenScore = tokens.length ? hits / tokens.length : 0;
-  return 0.35 + exact + tokenScore * 0.35 + record.importance * 0.05 + (record.pinned ? 0.05 : 0);
+  const tagOrTypeHits = tokens.filter((token) => tagsAndType.includes(token)).length;
+
+  // Expanded aliases can contain many terms. A single precise tag hit like "sm"
+  // or "sub" should still be a strong lexical signal instead of being diluted.
+  const denominator = Math.max(1, Math.min(tokens.length, 4));
+  const tokenScore = tokens.length ? Math.min(1, hits / denominator) : 0;
+  const presenceBoost = hits > 0 ? 0.14 : 0;
+  const tagBoost = tagOrTypeHits > 0 ? Math.min(0.18, tagOrTypeHits * 0.09) : 0;
+  return 0.28 + exact + presenceBoost + tagBoost + tokenScore * 0.35 + record.importance * 0.05 + (record.pinned ? 0.05 : 0);
 }
 
 export async function searchMemoriesByText(
