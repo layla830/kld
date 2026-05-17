@@ -52,6 +52,8 @@ const QUERY_NOISE_PATTERNS = [
   /的/g
 ];
 
+const LEADING_PRONOUN_PATTERN = /^(你们|我们|他们|她们|它们|你|我|她|他|它)+/;
+
 function parseJsonArray(value: string | null): string[] {
   if (!value) return [];
   try {
@@ -141,6 +143,8 @@ function normalizeQueryForSearch(query: string): string {
   let normalized = normalizeText(query).replace(/[?？!！。.,，、:：;；"“”'‘’]/g, " ");
   for (const pattern of QUERY_NOISE_PATTERNS) normalized = normalized.replace(pattern, " ");
   normalized = normalized.replace(/\s+/g, " ").trim();
+  const withoutLeadingPronoun = normalized.replace(LEADING_PRONOUN_PATTERN, "").trim();
+  if (withoutLeadingPronoun.length >= 2) normalized = withoutLeadingPronoun;
   return normalized.length >= 2 ? normalized : normalizeText(query);
 }
 
