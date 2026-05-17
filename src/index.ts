@@ -13,6 +13,7 @@ import { handleMemories } from "./api/memories";
 import { handleMcp } from "./api/mcp";
 import { handleMigration } from "./api/migration";
 import { handleModels } from "./api/models";
+import { handleRecall } from "./api/recall";
 import { handleQueueMessage } from "./queue/consumer";
 import type { Env, QueueMessage } from "./types";
 import { openAiError } from "./utils/json";
@@ -74,6 +75,10 @@ export default {
 
     if (url.pathname === "/v1/migration/memories") {
       return handleMigration(request, env, ctx);
+    }
+
+    if (request.method === "POST" && url.pathname === "/v1/memories/recall") {
+      return handleRecall(request, env);
     }
 
     if (url.pathname.startsWith("/v1/memories")) {
