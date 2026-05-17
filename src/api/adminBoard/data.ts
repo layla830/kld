@@ -135,26 +135,7 @@ function matchesBrowseFilters(record: MemoryRecord, input: PageInput): boolean {
   return true;
 }
 
-async function fetchSemanticMemories(env: Env, input: PageInput): Promise<{ total: number; records: MemoryRecord[] }> {
-  if (!input.q || input.tab !== "browse") return { total: 0, records: [] };
-  if (input.status !== "active" && input.status !== "all") return { total: 0, records: [] };
-
-  const apiRecords = await searchMemories(env, {
-    namespace: "default",
-    query: input.q,
-    types: input.type ? [input.type] : undefined,
-    topK: 50
-  });
-  const records = apiRecords.map(apiRecordToMemoryRecord).filter((record) => matchesBrowseFilters(record, input));
-  const offset = (input.page - 1) * PAGE_SIZE;
-  return { total: records.length, records: records.slice(offset, offset + PAGE_SIZE) };
-}
-
-export async function fetchMemories(env: Env, input: PageInput): Promise<{ total: number; records: MemoryRecord[] }> {
-  if (input.tab === "browse" && input.q && input.searchMode === "semantic") {
-    return fetchSemanticMemories(env, input);
-  }
-
+async function fetchKeywordMemories(env: Env, input: PageInput): Promise<{ total: number; records: MemoryRecord[] }> {
   let where = "WHERE namespace = 'default'";
   const binds: unknown[] = [];
 
@@ -197,4 +178,32 @@ export async function fetchMemories(env: Env, input: PageInput): Promise<{ total
   ]);
 
   return { total: total?.count ?? 0, records: result.results ?? [] };
+}
+
+async function fetchSemanticMemories(env: Env, input: PageInput): Promise<{ total: number; records: MemoryRecord[] }> {
+  if (!input.q || input.tab !== "browse") return { total: 0, records: [] };
+  if (input.status !== "active" && input.status !== "all") return { total: 0, records: [] };
+
+  try {
+    const apiRecords = await searchMemories(env, {
+      namespace: "default",
+      query: input.q,
+      types: input.type ? [input.type] : undefined,
+      topK: 24
+    });
+    const records = apiRecords.map(apiRecordToMemoryRecord).filter((record) => matchesBrowseFilters(record, input));
+    const offset = (input.page - 1) * PAGE_SIZE;
+    return { total: records.length, records: records.slice(offset, offset + PAGE_SIZE) };
+  } catch (error) {
+    console.error("admin semantic search failed; falling back to keyword", error);
+    return fetchKeywordMemories(env, { ...input, searchMode: "keyword" });
+  }
+}
+
+export async function fetchMemories(env: Env, input: PageInput): Promise<{ total: number; records: MemoryRecord[] }> {
+  if (input.tab === "browse" && input.q && input.searchMode === "semantic") {
+    return fetchSemanticMemories(env, input);
+  }
+
+  return fetchKeywordMemories(env, input);
 }
