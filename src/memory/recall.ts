@@ -4,22 +4,23 @@ import { searchMemories } from "./search";
 const MAX_PROMPT_CHARS = 1_200;
 const MAX_MEMORY_CHARS = 220;
 
-const STRONG_RECALL_PATTERNS = [
+const EXPLICIT_RECALL_PATTERNS = [
   /之前|上次|以前|过去|刚才|昨天|前天|那天|当时|后来|曾经/,
   /记得|记住|忘了|想起来|回忆|印象|提过|说过|聊过|写过|存过/,
-  /喜欢|讨厌|偏好|习惯|设定|雷点|底线|关系|称呼|名字|生日|纪念日/,
-  /什么时候|哪天|多久|第几次|进度|状态|安排|计划/,
-  /remember|recall|forgot|previous|before|last time|preference|habit|relationship/i,
+  /之前.*(喜欢|讨厌|偏好|习惯|设定|雷点|底线|关系|称呼|名字|生日|纪念日)/,
+  /(喜欢|讨厌|偏好|习惯|设定|雷点|底线|关系|称呼|名字|生日|纪念日).*之前/,
+  /(上次|之前|刚才|昨天|那天|当时).*(进度|状态|安排|计划|部署|服务器|记忆库|heartbeat|forge|codex|claude|cc)/,
+  /(进度|状态|安排|计划|部署|服务器|记忆库|heartbeat|forge|codex|claude|cc).*(上次|之前|刚才|昨天|那天|当时)/,
+  /remember|recall|forgot|previous|before|last time|as we discussed|mentioned before/i,
   /\b\d{4}[.\-/年]\d{1,2}([.\-/月]\d{1,2})?/,
   /\b\d{1,2}月\d{1,2}日/
 ];
 
-const SOFT_RECALL_PATTERNS = [
-  /我|你|我们|她|他|宝宝|小柯|柯/,
-  /怎么办|怎么做|要不要|可不可以|合适吗|继续|更新|整理|总结/,
-  /难过|开心|生气|焦虑|害怕|想要|希望|感觉|在意/,
-  /项目|仓库|服务器|部署|记忆库|heartbeat|forge|codex|claude|cc/,
-  /how should|what did|what was|do you know|can you remember/i
+const CONTEXT_HINT_PATTERNS = [
+  /喜欢|讨厌|偏好|习惯|设定|雷点|底线|关系|称呼|名字|生日|纪念日/,
+  /进度|状态|安排|计划|部署|服务器|记忆库|heartbeat|forge|codex|claude|cc/,
+  /她|他|我们|小柯|柯/,
+  /什么|哪|多久|第几次|where|when|what/i
 ];
 
 const NO_RECALL_PATTERNS = [
@@ -58,20 +59,20 @@ export function analyzeRecallNeed(prompt: string): { shouldRecall: boolean; scor
   const reasons: string[] = [];
   let score = 0;
 
-  for (const pattern of STRONG_RECALL_PATTERNS) {
+  for (const pattern of EXPLICIT_RECALL_PATTERNS) {
     if (!pattern.test(query)) continue;
     score += 2;
-    reasons.push("strong_signal");
+    reasons.push("explicit_recall_signal");
   }
 
-  for (const pattern of SOFT_RECALL_PATTERNS) {
-    if (!pattern.test(query)) continue;
-    score += 1;
-    reasons.push("soft_signal");
+  if (score > 0) {
+    for (const pattern of CONTEXT_HINT_PATTERNS) {
+      if (!pattern.test(query)) continue;
+      score += 1;
+      reasons.push("context_hint");
+      break;
+    }
   }
-
-  if (query.length >= 18) score += 1;
-  if (/[?？]/.test(query)) score += 1;
 
   return {
     shouldRecall: score >= 2,
