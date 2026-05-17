@@ -2,7 +2,8 @@ import type { Env, MemoryApiRecord } from "../types";
 import { searchMemories } from "./search";
 
 const MAX_PROMPT_CHARS = 1_200;
-const MAX_MEMORY_CHARS = 220;
+const MAX_MEMORY_CHARS = 140;
+const EXCERPT_RADIUS = 52;
 const DEFAULT_RECALL_TOP_K = 3;
 
 const EXPLICIT_RECALL_PATTERNS = [
@@ -30,6 +31,46 @@ const NO_RECALL_PATTERNS = [
   /^(ping|test|测试)$/i
 ];
 
+const QUERY_STOP_WORDS = new Set([
+  "之前",
+  "上次",
+  "以前",
+  "过去",
+  "刚才",
+  "昨天",
+  "那天",
+  "当时",
+  "后来",
+  "曾经",
+  "记得",
+  "记住",
+  "忘了",
+  "想起来",
+  "回忆",
+  "印象",
+  "提过",
+  "说过",
+  "聊过",
+  "什么",
+  "怎么",
+  "时候",
+  "会说",
+  "说什么",
+  "我会",
+  "你还",
+  "我们",
+  "这个",
+  "那个",
+  "there",
+  "what",
+  "when",
+  "where",
+  "remember",
+  "recall",
+  "previous",
+  "before"
+]);
+
 function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
 }
@@ -38,12 +79,14 @@ function normalizePrompt(prompt: string): string {
   return prompt.replace(/\s+/g, " ").trim().slice(0, MAX_PROMPT_CHARS);
 }
 
-function sanitizeMemoryContent(memory: MemoryApiRecord): string {
-  return memory.content
-    .replace(/\s+/g, " ")
-    .replace(/<\/?memories>/gi, "")
-    .trim()
-    .slice(0, MAX_MEMORY_CHARS);
+function normalizeMemoryContent(memory: MemoryApiRecord): string {
+  return memory.content.replace(/\s+/g, " ").replace(/<\/?memories>/gi, "").trim();
+}
+
+function clip(value: string, limit = MAX_MEMORY_CHARS): string {
+  const text = value.replace(/\s+/g, " ").trim();
+  if (text.length <= limit) return text;
+  return `${text.slice(0, limit).trim()}...`;
 }
 
 function getRecallTopK(env: Env, requested?: number): number {
@@ -61,6 +104,40 @@ function buildRecallSearchQuery(query: string): string {
   }
 
   return [...terms].join(" ");
+}
+
+function excerptNeedles(query: string): string[] {
+  const compact = query.replace(/\s+/g, "");
+  const needles = new Set<string>();
+
+  if (/想你/.test(compact) && /(说什么|会说|说啥|怎么说|留言|口头禅)/.test(compact)) {
+    for (const item of ["人好想你", "人想你", "想你", "机"]) needles.add(item);
+  }
+
+  for (const match of query.match(/[a-z][a-z0-9_+-]{2,}|[\u4e00-\u9fff]{2,}/gi) ?? []) {
+    const term = match.toLowerCase();
+    if (!QUERY_STOP_WORDS.has(term)) needles.add(term);
+  }
+
+  return [...needles].sort((a, b) => b.length - a.length).slice(0, 10);
+}
+
+function relevantExcerpt(memory: MemoryApiRecord, query: string): string {
+  const content = normalizeMemoryContent(memory);
+  if (!content) return "";
+
+  const lowerContent = content.toLowerCase();
+  for (const needle of excerptNeedles(query)) {
+    const index = lowerContent.indexOf(needle.toLowerCase());
+    if (index < 0) continue;
+    const start = Math.max(0, index - EXCERPT_RADIUS);
+    const end = Math.min(content.length, index + needle.length + EXCERPT_RADIUS);
+    const prefix = start > 0 ? "..." : "";
+    const suffix = end < content.length ? "..." : "";
+    return clip(`${prefix}${content.slice(start, end).trim()}${suffix}`);
+  }
+
+  return clip(content);
 }
 
 export function analyzeRecallNeed(prompt: string): { shouldRecall: boolean; score: number; reasons: string[]; query: string } {
@@ -94,9 +171,9 @@ export function analyzeRecallNeed(prompt: string): { shouldRecall: boolean; scor
   };
 }
 
-export function formatRecallBlock(memories: MemoryApiRecord[]): string {
+export function formatRecallBlock(memories: MemoryApiRecord[], query: string): string {
   const lines = memories.flatMap((memory) => {
-    const content = sanitizeMemoryContent(memory);
+    const content = relevantExcerpt(memory, query);
     if (!content) return [];
     const tags = memory.tags.length ? ` tags=${memory.tags.slice(0, 4).join(",")}` : "";
     const pinned = memory.pinned ? " pinned=true" : "";
@@ -133,6 +210,6 @@ export async function buildRecallContext(
     reasons: analysis.reasons,
     query: analysis.query,
     memories,
-    recall: formatRecallBlock(memories)
+    recall: formatRecallBlock(memories, analysis.query)
   };
 }
