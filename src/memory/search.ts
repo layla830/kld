@@ -19,6 +19,39 @@ const QUERY_ALIAS_GROUPS = [
   ["vps", "server", "服务器"]
 ];
 
+const QUERY_NOISE_PATTERNS = [
+  /你还记得/g,
+  /还记得/g,
+  /记不记得/g,
+  /记得/g,
+  /记住/g,
+  /想起来/g,
+  /回忆/g,
+  /印象/g,
+  /之前/g,
+  /上次/g,
+  /以前/g,
+  /过去/g,
+  /刚才/g,
+  /昨天/g,
+  /那天/g,
+  /当时/g,
+  /说过/g,
+  /聊过/g,
+  /提过/g,
+  /存过/g,
+  /是什么/g,
+  /什么/g,
+  /哪个/g,
+  /哪里/g,
+  /哪儿/g,
+  /吗/g,
+  /呢/g,
+  /呀/g,
+  /啊/g,
+  /的/g
+];
+
 function parseJsonArray(value: string | null): string[] {
   if (!value) return [];
   try {
@@ -104,6 +137,21 @@ function normalizeText(value: string): string {
   return value.toLowerCase().replace(/\s+/g, " ").trim();
 }
 
+function normalizeQueryForSearch(query: string): string {
+  let normalized = normalizeText(query).replace(/[?？!！。.,，、:：;；"“”'‘’]/g, " ");
+  for (const pattern of QUERY_NOISE_PATTERNS) normalized = normalized.replace(pattern, " ");
+  normalized = normalized.replace(/\s+/g, " ").trim();
+  return normalized.length >= 2 ? normalized : normalizeText(query);
+}
+
+function chineseNgrams(value: string): string[] {
+  const grams: string[] = [];
+  for (let size = 2; size <= Math.min(4, value.length); size += 1) {
+    for (let index = 0; index <= value.length - size; index += 1) grams.push(value.slice(index, index + size));
+  }
+  return grams;
+}
+
 function hasLatin(value: string): boolean {
   return /[a-z0-9]/i.test(value);
 }
@@ -146,8 +194,14 @@ function extractStrongNeedles(query: string): string[] {
   if (/[^\d.\-/]/.test(compact) && compact.length >= 3) needles.add(compact);
 
   const words = normalized.match(/[a-z][a-z0-9_+-]{2,}|[\u4e00-\u9fff]{2,}/gi) ?? [];
-  for (const word of words) needles.add(normalizeText(word));
-  return [...needles].filter((needle) => needle.length >= 2).slice(0, 12);
+  for (const word of words) {
+    const term = normalizeText(word);
+    needles.add(term);
+    if (/^[\u4e00-\u9fff]+$/.test(term) && term.length > 2) {
+      for (const gram of chineseNgrams(term)) needles.add(gram);
+    }
+  }
+  return [...needles].filter((needle) => needle.length >= 2).slice(0, 24);
 }
 
 function recordHaystack(record: MemoryRecord): string {
@@ -164,10 +218,14 @@ function queryTermsForLexicalScore(input: { query: string; expandedQuery: string
   for (const source of [input.query, input.expandedQuery]) {
     for (const term of source.match(/[a-z][a-z0-9_+-]{1,}|[\u4e00-\u9fff]{2,}/gi) ?? []) {
       const normalized = normalizeText(term);
-      if (normalized.length >= 2) terms.add(normalized);
+      if (normalized.length < 2) continue;
+      terms.add(normalized);
+      if (/^[\u4e00-\u9fff]+$/.test(normalized) && normalized.length > 2) {
+        for (const gram of chineseNgrams(normalized)) terms.add(gram);
+      }
     }
   }
-  return [...terms].slice(0, 20);
+  return [...terms].slice(0, 30);
 }
 
 function lexicalScoreRecord(record: MemoryRecord, input: { query: string; expandedQuery: string }): number {
@@ -189,7 +247,7 @@ function lexicalScoreRecord(record: MemoryRecord, input: { query: string; expand
     const inTagsOrType = tags.includes(term) || type.includes(term);
     if (!inContent && !inTagsOrType) continue;
     hits += 1;
-    best = Math.max(best, inTagsOrType ? 0.85 : 0.58);
+    best = Math.max(best, inTagsOrType ? 0.9 : 0.6);
   }
 
   const coverage = terms.length ? Math.min(1, hits / Math.min(terms.length, 4)) : 0;
@@ -254,7 +312,8 @@ export async function searchMemories(
 ): Promise<MemoryApiRecord[]> {
   const topK = getTopK(env, input.topK);
   const candidateLimit = getCandidateLimit(topK);
-  const expandedQuery = expandQuery(input.query);
+  const searchQuery = normalizeQueryForSearch(input.query);
+  const expandedQuery = expandQuery(searchQuery);
   const [vectorRecords, keywordRecords] = await Promise.all([
     searchVectorMemories(env, { namespace: input.namespace, query: expandedQuery, types: input.types, topK: candidateLimit }),
     searchMemoriesByText(env.DB, { namespace: input.namespace, query: expandedQuery, types: input.types, limit: candidateLimit })
@@ -263,10 +322,10 @@ export async function searchMemories(
   const records = mergeSearchResults(
     vectorRecords,
     keywordRecords.map((record) => ({ ...record, keywordScore: record.score })),
-    { query: input.query, expandedQuery, topK: candidateLimit }
+    { query: searchQuery, expandedQuery, topK: candidateLimit }
   );
   const apiRecords = records.map((record) => toMemoryApiRecord(record, record.score));
-  const processedRecords = await postProcessMemorySearchResults(env, { query: input.query, memories: apiRecords, topK });
+  const processedRecords = await postProcessMemorySearchResults(env, { query: searchQuery, memories: apiRecords, topK });
 
   await markMemoriesRecalled(env.DB, { namespace: input.namespace, ids: processedRecords.map((record) => record.id) });
   return processedRecords;
