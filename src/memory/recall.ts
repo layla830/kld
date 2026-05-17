@@ -3,6 +3,7 @@ import { searchMemories } from "./search";
 
 const MAX_PROMPT_CHARS = 1_200;
 const MAX_MEMORY_CHARS = 220;
+const DEFAULT_RECALL_TOP_K = 3;
 
 const EXPLICIT_RECALL_PATTERNS = [
   /之前|上次|以前|过去|刚才|昨天|前天|那天|当时|后来|曾经/,
@@ -46,9 +47,20 @@ function sanitizeMemoryContent(memory: MemoryApiRecord): string {
 }
 
 function getRecallTopK(env: Env, requested?: number): number {
-  const fallback = Number(env.MEMORY_RECALL_TOP_K || 5);
+  const fallback = Number(env.MEMORY_RECALL_TOP_K || DEFAULT_RECALL_TOP_K);
   const value = requested || fallback;
-  return Number.isFinite(value) ? clamp(Math.floor(value), 1, 12) : 5;
+  return Number.isFinite(value) ? clamp(Math.floor(value), 1, 3) : DEFAULT_RECALL_TOP_K;
+}
+
+function buildRecallSearchQuery(query: string): string {
+  const terms = new Set([query]);
+  const compact = query.replace(/\s+/g, "");
+
+  if (/想你/.test(compact) && /(说什么|会说|说啥|怎么说|留言|口头禅)/.test(compact)) {
+    terms.add("机 人想你 人好想你 机人想你 留言");
+  }
+
+  return [...terms].join(" ");
 }
 
 export function analyzeRecallNeed(prompt: string): { shouldRecall: boolean; score: number; reasons: string[]; query: string } {
@@ -111,7 +123,7 @@ export async function buildRecallContext(
 
   const memories = await searchMemories(env, {
     namespace: input.namespace,
-    query: analysis.query,
+    query: buildRecallSearchQuery(analysis.query),
     topK: getRecallTopK(env, input.topK)
   });
 
