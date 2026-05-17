@@ -187,16 +187,26 @@ function escapeLike(value: string): string {
   return value.replace(/[\\%_]/g, "\\$&");
 }
 
+function chineseNgrams(value: string): string[] {
+  const grams: string[] = [];
+  for (let size = 2; size <= Math.min(4, value.length); size += 1) {
+    for (let index = 0; index <= value.length - size; index += 1) {
+      grams.push(value.slice(index, index + size));
+    }
+  }
+  return grams;
+}
+
 function tokenizeQuery(query: string): string[] {
   const normalized = query.trim().toLowerCase().replace(/\s+/g, " ").slice(0, 500);
   const words = normalized.match(/[a-z0-9_+-]{2,}|[\u4e00-\u9fff]{1,}/gi) ?? [];
   const tokens = words.flatMap((word) => {
     if (/^[\u4e00-\u9fff]+$/.test(word) && word.length > 2) {
-      return [word, ...Array.from(word)];
+      return [word, ...chineseNgrams(word)];
     }
     return [word];
   });
-  return [...new Set(tokens)].slice(0, 12);
+  return [...new Set(tokens)].slice(0, 24);
 }
 
 function haystack(record: MemoryRecord): string {
@@ -211,12 +221,12 @@ function scoreKeywordRecord(record: MemoryRecord, query: string, tokens: string[
   const hits = tokens.filter((token) => text.includes(token)).length;
   const tagOrTypeHits = tokens.filter((token) => tagsAndType.includes(token)).length;
 
-  // Expanded aliases can contain many terms. A single precise tag hit like "sm"
-  // or "sub" should still be a strong lexical signal instead of being diluted.
+  // Expanded aliases and Chinese ngrams can contain many terms. A precise tag
+  // hit like "体位" or "sub" should stay strong instead of being diluted.
   const denominator = Math.max(1, Math.min(tokens.length, 4));
   const tokenScore = tokens.length ? Math.min(1, hits / denominator) : 0;
   const presenceBoost = hits > 0 ? 0.14 : 0;
-  const tagBoost = tagOrTypeHits > 0 ? Math.min(0.18, tagOrTypeHits * 0.09) : 0;
+  const tagBoost = tagOrTypeHits > 0 ? Math.min(0.22, tagOrTypeHits * 0.11) : 0;
   return 0.28 + exact + presenceBoost + tagBoost + tokenScore * 0.35 + record.importance * 0.05 + (record.pinned ? 0.05 : 0);
 }
 
