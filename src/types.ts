@@ -34,6 +34,7 @@ export interface Env {
   INJECTION_MODE?: string;
   EMBEDDING_MODEL?: string;
   MEMORY_TOP_K?: string;
+  MEMORY_RECALL_TOP_K?: string;
   MEMORY_MIN_SCORE?: string;
   ANTHROPIC_CACHE_ENABLED?: string;
   ANTHROPIC_CACHE_TTL?: string;
