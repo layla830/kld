@@ -3,9 +3,10 @@ import type { Env, MemoryApiRecord, MemoryRecord } from "../types";
 import { postProcessMemorySearchResults } from "./postProcess";
 import { searchVectorMemories, type ScoredMemoryRecord } from "./vectorStore";
 
-const STRONG_KEYWORD_SCORE = 0.62;
-const WEAK_KEYWORD_SCORE = 0.55;
-const VECTOR_ONLY_SCORE_WITH_STRONG_KEYWORDS = 0.68;
+const STRONG_KEYWORD_SCORE = 0.54;
+const WEAK_KEYWORD_SCORE = 0.48;
+const VECTOR_ONLY_SCORE_WITH_STRONG_KEYWORDS = 0.78;
+const RRF_K = 60;
 
 const QUERY_ALIAS_GROUPS = [
   ["sm", "s/m", "bdsm", "dom", "sub", "brat", "switch", "支配", "臣服", "主导", "被主导"],
@@ -59,7 +60,7 @@ function getTopK(env: Env, requested?: number): number {
 }
 
 function getCandidateLimit(topK: number): number {
-  return Math.min(Math.max(topK * 3, topK), 50);
+  return Math.min(Math.max(topK * 5, topK), 80);
 }
 
 function recencyBoost(record: MemoryRecord): number {
@@ -72,11 +73,27 @@ function recencyBoost(record: MemoryRecord): number {
   return 0;
 }
 
-function rankHybridRecord(record: ScoredMemoryRecord): number {
+type HybridScoredMemoryRecord = ScoredMemoryRecord & { lexicalScore?: number; rankScore?: number };
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max);
+}
+
+function rankHybridRecord(record: HybridScoredMemoryRecord): number {
   const vectorScore = record.vectorScore ?? 0;
   const keywordScore = record.keywordScore ?? 0;
+  const lexicalScore = record.lexicalScore ?? 0;
+  const rankScore = record.rankScore ?? 0;
   const pinnedBoost = record.pinned ? 0.08 : 0;
-  return vectorScore * 0.7 + keywordScore * 0.55 + record.importance * 0.08 + pinnedBoost + recencyBoost(record) * 0.04;
+  return (
+    vectorScore * 0.42 +
+    keywordScore * 0.7 +
+    lexicalScore * 0.45 +
+    rankScore * 8 +
+    record.importance * 0.08 +
+    pinnedBoost +
+    recencyBoost(record) * 0.04
+  );
 }
 
 function hasStrongKeywordMatch(records: ScoredMemoryRecord[]): boolean {
@@ -142,24 +159,66 @@ function containsStrongNeedle(record: MemoryRecord, needles: string[]): boolean 
   return needles.some((needle) => haystack.includes(normalizeText(needle)));
 }
 
-function isSupportedBySearchMode(record: ScoredMemoryRecord, input: { hasStrongKeyword: boolean; strongNeedles: string[] }): boolean {
+function queryTermsForLexicalScore(input: { query: string; expandedQuery: string }): string[] {
+  const terms = new Set<string>();
+  for (const source of [input.query, input.expandedQuery]) {
+    for (const term of source.match(/[a-z][a-z0-9_+-]{1,}|[\u4e00-\u9fff]{2,}/gi) ?? []) {
+      const normalized = normalizeText(term);
+      if (normalized.length >= 2) terms.add(normalized);
+    }
+  }
+  return [...terms].slice(0, 20);
+}
+
+function lexicalScoreRecord(record: MemoryRecord, input: { query: string; expandedQuery: string }): number {
+  const query = normalizeText(input.query);
+  const compactQuery = query.replace(/\s+/g, "");
+  const terms = queryTermsForLexicalScore(input);
+  const content = normalizeText(record.content);
+  const summary = normalizeText(record.summary || "");
+  const tags = normalizeText(record.tags || "");
+  const type = normalizeText(record.type);
+  const haystack = `${content} ${summary} ${tags} ${type}`;
+
+  let best = 0;
+  if (compactQuery.length >= 2 && compactQuery.length <= 24 && haystack.includes(compactQuery)) best = Math.max(best, 0.7);
+
+  let hits = 0;
+  for (const term of terms) {
+    const inContent = content.includes(term) || summary.includes(term);
+    const inTagsOrType = tags.includes(term) || type.includes(term);
+    if (!inContent && !inTagsOrType) continue;
+    hits += 1;
+    best = Math.max(best, inTagsOrType ? 0.85 : 0.58);
+  }
+
+  const coverage = terms.length ? Math.min(1, hits / Math.min(terms.length, 4)) : 0;
+  return clamp(best + coverage * 0.22, 0, 1.1);
+}
+
+function isSupportedBySearchMode(record: HybridScoredMemoryRecord, input: { hasStrongKeyword: boolean; strongNeedles: string[] }): boolean {
   if (!input.hasStrongKeyword) return true;
-  if (input.strongNeedles.length > 0) return containsStrongNeedle(record, input.strongNeedles);
+  if ((record.lexicalScore ?? 0) >= 0.55) return true;
   if ((record.keywordScore ?? 0) >= WEAK_KEYWORD_SCORE) return true;
+  if (input.strongNeedles.length > 0 && containsStrongNeedle(record, input.strongNeedles)) return true;
   return (record.vectorScore ?? 0) >= VECTOR_ONLY_SCORE_WITH_STRONG_KEYWORDS;
 }
 
 function mergeSearchResults(
   vectorRecords: ScoredMemoryRecord[] | null,
   keywordRecords: ScoredMemoryRecord[],
-  input: { query: string; topK: number }
+  input: { query: string; expandedQuery: string; topK: number }
 ): ScoredMemoryRecord[] {
-  const merged = new Map<string, ScoredMemoryRecord>();
+  const merged = new Map<string, HybridScoredMemoryRecord>();
 
-  function add(record: ScoredMemoryRecord): void {
+  function add(record: ScoredMemoryRecord, source: "vector" | "keyword", rank: number): void {
     const existing = merged.get(record.id);
+    const rankWeight = source === "keyword" ? 1.25 : 1;
+    const rankScore = rankWeight / (RRF_K + rank);
+    const lexicalScore = lexicalScoreRecord(record, input);
+
     if (!existing) {
-      const next = { ...record };
+      const next: HybridScoredMemoryRecord = { ...record, lexicalScore, rankScore };
       next.score = rankHybridRecord(next);
       merged.set(record.id, next);
       return;
@@ -167,17 +226,24 @@ function mergeSearchResults(
 
     const vectorScore = Math.max(existing.vectorScore ?? 0, record.vectorScore ?? 0);
     const keywordScore = Math.max(existing.keywordScore ?? 0, record.keywordScore ?? 0);
-    const next: ScoredMemoryRecord = { ...existing, ...record, vectorScore: vectorScore || undefined, keywordScore: keywordScore || undefined };
+    const next: HybridScoredMemoryRecord = {
+      ...existing,
+      ...record,
+      vectorScore: vectorScore || undefined,
+      keywordScore: keywordScore || undefined,
+      lexicalScore: Math.max(existing.lexicalScore ?? 0, lexicalScore),
+      rankScore: (existing.rankScore ?? 0) + rankScore
+    };
     next.score = rankHybridRecord(next);
     merged.set(record.id, next);
   }
 
-  for (const record of vectorRecords ?? []) add(record);
-  for (const record of keywordRecords) add(record);
+  (vectorRecords ?? []).forEach((record, index) => add(record, "vector", index + 1));
+  keywordRecords.forEach((record, index) => add(record, "keyword", index + 1));
 
   const rankedRecords = [...merged.values()].sort((a, b) => b.score - a.score);
-  const hasStrongKeyword = hasStrongKeywordMatch(rankedRecords);
-  const strongNeedles = extractStrongNeedles(input.query);
+  const hasStrongKeyword = hasStrongKeywordMatch(rankedRecords) || rankedRecords.some((record) => (record.lexicalScore ?? 0) >= 0.55);
+  const strongNeedles = [...new Set([...extractStrongNeedles(input.expandedQuery), ...queryTermsForLexicalScore(input)])];
   const filteredRecords = rankedRecords.filter((record) => isSupportedBySearchMode(record, { hasStrongKeyword, strongNeedles }));
   return (filteredRecords.length > 0 ? filteredRecords : rankedRecords).slice(0, input.topK);
 }
@@ -197,7 +263,7 @@ export async function searchMemories(
   const records = mergeSearchResults(
     vectorRecords,
     keywordRecords.map((record) => ({ ...record, keywordScore: record.score })),
-    { query: expandedQuery, topK: candidateLimit }
+    { query: input.query, expandedQuery, topK: candidateLimit }
   );
   const apiRecords = records.map((record) => toMemoryApiRecord(record, record.score));
   const processedRecords = await postProcessMemorySearchResults(env, { query: input.query, memories: apiRecords, topK });
