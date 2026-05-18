@@ -1,4 +1,5 @@
 import type { Env, MemoryApiRecord } from "../types";
+import { chineseNgrams, normalizeQueryForMemorySearch } from "./query";
 import { searchMemories } from "./search";
 
 const MAX_PROMPT_CHARS = 1_200;
@@ -31,40 +32,7 @@ const NO_RECALL_PATTERNS = [
   /^(ping|test|测试)$/i
 ];
 
-const QUERY_NOISE_PATTERNS = [
-  /你还记得/g,
-  /还记得/g,
-  /记不记得/g,
-  /记得/g,
-  /记住/g,
-  /想起来/g,
-  /回忆/g,
-  /印象/g,
-  /之前/g,
-  /上次/g,
-  /以前/g,
-  /过去/g,
-  /刚才/g,
-  /昨天/g,
-  /那天/g,
-  /当时/g,
-  /说过/g,
-  /聊过/g,
-  /提过/g,
-  /存过/g,
-  /是什么/g,
-  /什么/g,
-  /哪个/g,
-  /哪里/g,
-  /哪儿/g,
-  /吗/g,
-  /呢/g,
-  /呀/g,
-  /啊/g,
-  /的/g
-];
-
-const LEADING_PRONOUN_PATTERN = /^(你们|我们|他们|她们|它们|你|我|她|他|它)+/;
+const SENTENCE_BOUNDARIES = new Set(["。", "！", "？", "!", "?", "；", ";"]);
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
@@ -90,29 +58,9 @@ function getRecallTopK(env: Env, requested?: number): number {
   return Number.isFinite(value) ? clamp(Math.floor(value), 1, 3) : DEFAULT_RECALL_TOP_K;
 }
 
-function cleanQueryTerms(query: string): string {
-  let normalized = query.toLowerCase().replace(/[?？!！。.,，、:：;；"“”'‘’]/g, " ");
-  for (const pattern of QUERY_NOISE_PATTERNS) normalized = normalized.replace(pattern, " ");
-  normalized = normalized.replace(/\s+/g, " ").trim();
-  let previous = "";
-  while (previous !== normalized) {
-    previous = normalized;
-    normalized = normalized.replace(LEADING_PRONOUN_PATTERN, "").trim();
-  }
-  return normalized.length >= 2 ? normalized : query;
-}
-
-function chineseNgrams(value: string): string[] {
-  const grams: string[] = [];
-  for (let size = Math.min(4, value.length); size >= 2; size -= 1) {
-    for (let index = 0; index <= value.length - size; index += 1) grams.push(value.slice(index, index + size));
-  }
-  return grams;
-}
-
 function excerptNeedles(query: string): string[] {
   const needles = new Set<string>();
-  for (const match of cleanQueryTerms(query).match(/[a-z][a-z0-9_+-]{2,}|[\u4e00-\u9fff]{2,}/gi) ?? []) {
+  for (const match of normalizeQueryForMemorySearch(query).match(/[a-z][a-z0-9_+-]{2,}|[\u4e00-\u9fff]{2,}/gi) ?? []) {
     const term = match.toLowerCase();
     needles.add(term);
     if (/^[\u4e00-\u9fff]+$/.test(term) && term.length > 2) {
@@ -121,8 +69,6 @@ function excerptNeedles(query: string): string[] {
   }
   return [...needles].sort((a, b) => b.length - a.length).slice(0, 16);
 }
-
-const SENTENCE_BOUNDARIES = new Set(["。", "！", "？", "!", "?", "；", ";"]);
 
 function findExcerptStart(content: string, index: number): number {
   const rawStart = Math.max(0, index - EXCERPT_RADIUS);
