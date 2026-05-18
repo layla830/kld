@@ -112,13 +112,11 @@ function chineseNgrams(value: string): string[] {
 
 function excerptNeedles(query: string): string[] {
   const needles = new Set<string>();
-  for (const source of [cleanQueryTerms(query), query]) {
-    for (const match of source.match(/[a-z][a-z0-9_+-]{2,}|[\u4e00-\u9fff]{2,}/gi) ?? []) {
-      const term = match.toLowerCase();
-      needles.add(term);
-      if (/^[\u4e00-\u9fff]+$/.test(term) && term.length > 2) {
-        for (const gram of chineseNgrams(term)) needles.add(gram);
-      }
+  for (const match of cleanQueryTerms(query).match(/[a-z][a-z0-9_+-]{2,}|[\u4e00-\u9fff]{2,}/gi) ?? []) {
+    const term = match.toLowerCase();
+    needles.add(term);
+    if (/^[\u4e00-\u9fff]+$/.test(term) && term.length > 2) {
+      for (const gram of chineseNgrams(term)) needles.add(gram);
     }
   }
   return [...needles].sort((a, b) => b.length - a.length).slice(0, 16);
