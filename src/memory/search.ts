@@ -312,7 +312,7 @@ function mergeSearchResults(
 
 export async function searchMemories(
   env: Env,
-  input: { namespace: string; query: string; types?: string[]; topK?: number }
+  input: { namespace: string; query: string; rawQuery?: string; types?: string[]; topK?: number }
 ): Promise<MemoryApiRecord[]> {
   const topK = getTopK(env, input.topK);
   const candidateLimit = getCandidateLimit(topK);
@@ -329,7 +329,7 @@ export async function searchMemories(
     { query: searchQuery, expandedQuery, topK: candidateLimit }
   );
   const apiRecords = records.map((record) => toMemoryApiRecord(record, record.score));
-  const processedRecords = await postProcessMemorySearchResults(env, { query: searchQuery, rawQuery: input.query, memories: apiRecords, topK });
+  const processedRecords = await postProcessMemorySearchResults(env, { query: searchQuery, rawQuery: input.rawQuery || input.query, memories: apiRecords, topK });
 
   await markMemoriesRecalled(env.DB, { namespace: input.namespace, ids: processedRecords.map((record) => record.id) });
   return processedRecords;
