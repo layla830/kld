@@ -9,6 +9,10 @@ const ANCHORED_QUERY_GROUPS = [
   }
 ];
 
+const UTTERANCE_QUERY_PATTERNS = [/原话|怎么说|说什么|会说|说过什么|表达|口头禅|称呼|叫/];
+const FACT_QUERY_PATTERNS = [/是什么|哪个|哪种|喜欢什么|讨厌什么|设定|偏好|雷点|底线/];
+const TIME_QUERY_PATTERNS = [/什么时候|哪天|多久|第几次|上次|昨天|前天|那天|当时|日期|时间/];
+
 function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
 }
@@ -76,13 +80,83 @@ function preferSupportedMatches(query: string, memories: MemoryApiRecord[]): Mem
   return anchoredQueryMatches(query, memories) || exactQueryMatches(query, memories) || memories;
 }
 
+function isShortMemory(memory: MemoryApiRecord): boolean {
+  return stripQueryNoise(memory.content).length <= 80;
+}
+
+function isLongNarrative(memory: MemoryApiRecord): boolean {
+  const tags = memory.tags.join(" ");
+  return memory.content.length > 180 || /diary|summary|交接|日记|总结|legacy:vps/i.test(`${memory.type} ${tags}`);
+}
+
+function intentKind(rawQuery: string, query: string): "utterance" | "fact" | "time" | "general" {
+  const combined = `${rawQuery} ${query}`;
+  if (UTTERANCE_QUERY_PATTERNS.some((pattern) => pattern.test(combined))) return "utterance";
+  if (TIME_QUERY_PATTERNS.some((pattern) => pattern.test(combined))) return "time";
+  if (FACT_QUERY_PATTERNS.some((pattern) => pattern.test(combined))) return "fact";
+  return "general";
+}
+
+function typeTags(memory: MemoryApiRecord): string {
+  return `${memory.type} ${memory.tags.join(" ")}`;
+}
+
+function directHit(memory: MemoryApiRecord, query: string): boolean {
+  const compactQuery = stripQueryNoise(query);
+  return compactQuery.length >= 2 && memoryHaystack(memory).includes(compactQuery);
+}
+
+function questionIntentScore(memory: MemoryApiRecord, input: { query: string; rawQuery: string; index: number }): number {
+  const kind = intentKind(input.rawQuery, input.query);
+  if (kind === "general") return 0;
+
+  const meta = typeTags(memory);
+  const contentLength = stripQueryNoise(memory.content).length;
+  let score = directHit(memory, input.query) ? 0.8 : 0;
+
+  if (kind === "utterance") {
+    if (/quote|message|留言|语录|read/i.test(meta)) score += 1.0;
+    if (isShortMemory(memory)) score += 1.0;
+    score += clamp((80 - contentLength) / 80, 0, 1) * 0.7;
+    if (/diary|日记|summary|总结|交接/i.test(meta)) score -= 0.8;
+    if (isLongNarrative(memory)) score -= 0.7;
+  }
+
+  if (kind === "fact") {
+    if (/note|fact|profile|preference|设定|偏好/i.test(meta)) score += 0.6;
+    if (isShortMemory(memory)) score += 0.35;
+    if (isLongNarrative(memory)) score -= 0.35;
+  }
+
+  if (kind === "time") {
+    if (/diary|timeline|日记|交接/i.test(meta)) score += 0.45;
+    if (/\d{4}|\d{1,2}月\d{1,2}日|昨天|前天|那天|当时/.test(memory.content)) score += 0.45;
+  }
+
+  return score - input.index * 0.001;
+}
+
+function rerankByQuestionIntent(query: string, rawQuery: string, memories: MemoryApiRecord[]): MemoryApiRecord[] {
+  const kind = intentKind(rawQuery, query);
+  if (kind === "general") return memories;
+
+  return [...memories].sort((a, b) => {
+    const aIndex = memories.indexOf(a);
+    const bIndex = memories.indexOf(b);
+    const delta = questionIntentScore(b, { query, rawQuery, index: bIndex }) - questionIntentScore(a, { query, rawQuery, index: aIndex });
+    return delta || aIndex - bIndex;
+  });
+}
+
 export async function postProcessMemorySearchResults(
   env: Env,
-  input: { query: string; memories: MemoryApiRecord[]; topK: number }
+  input: { query: string; rawQuery?: string; memories: MemoryApiRecord[]; topK: number }
 ): Promise<MemoryApiRecord[]> {
   const maxOutput = getMaxOutput(env, input.topK);
   const query = input.query.trim();
   if (!query || input.memories.length === 0) return input.memories.slice(0, maxOutput);
 
-  return preferSupportedMatches(query, input.memories).slice(0, maxOutput);
+  const supportedMatches = preferSupportedMatches(query, input.memories);
+  const rerankedMatches = rerankByQuestionIntent(query, input.rawQuery || query, supportedMatches);
+  return rerankedMatches.slice(0, maxOutput);
 }
