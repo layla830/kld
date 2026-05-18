@@ -166,7 +166,8 @@ export async function buildRecallContext(
   const searchQuery = normalizeQueryForMemorySearch(analysis.query);
   const memories = await searchMemories(env, {
     namespace: input.namespace,
-    query: analysis.query,
+    query: searchQuery,
+    rawQuery: analysis.query,
     topK: getRecallTopK(env, input.topK)
   });
 
