@@ -2,8 +2,8 @@ import type { Env, MemoryApiRecord } from "../types";
 import { searchMemories } from "./search";
 
 const MAX_PROMPT_CHARS = 1_200;
-const MAX_MEMORY_CHARS = 140;
-const EXCERPT_RADIUS = 52;
+const MAX_MEMORY_CHARS = 120;
+const EXCERPT_RADIUS = 48;
 const DEFAULT_RECALL_TOP_K = 3;
 
 const EXPLICIT_RECALL_PATTERNS = [
@@ -122,6 +122,24 @@ function excerptNeedles(query: string): string[] {
   return [...needles].sort((a, b) => b.length - a.length).slice(0, 16);
 }
 
+const SENTENCE_BOUNDARIES = new Set(["。", "！", "？", "!", "?", "；", ";"]);
+
+function findExcerptStart(content: string, index: number): number {
+  const rawStart = Math.max(0, index - EXCERPT_RADIUS);
+  for (let cursor = index - 1; cursor >= rawStart; cursor -= 1) {
+    if (SENTENCE_BOUNDARIES.has(content[cursor])) return cursor + 1;
+  }
+  return rawStart;
+}
+
+function findExcerptEnd(content: string, index: number, needleLength: number): number {
+  const rawEnd = Math.min(content.length, index + needleLength + EXCERPT_RADIUS);
+  for (let cursor = index + needleLength; cursor < rawEnd; cursor += 1) {
+    if (SENTENCE_BOUNDARIES.has(content[cursor])) return cursor + 1;
+  }
+  return rawEnd;
+}
+
 function relevantExcerpt(memory: MemoryApiRecord, query: string): string {
   const content = normalizeMemoryContent(memory);
   if (!content) return "";
@@ -130,11 +148,12 @@ function relevantExcerpt(memory: MemoryApiRecord, query: string): string {
   for (const needle of excerptNeedles(query)) {
     const index = lowerContent.indexOf(needle.toLowerCase());
     if (index < 0) continue;
-    const start = Math.max(0, index - EXCERPT_RADIUS);
-    const end = Math.min(content.length, index + needle.length + EXCERPT_RADIUS);
+    const start = findExcerptStart(content, index);
+    const end = findExcerptEnd(content, index, needle.length);
+    const excerpt = content.slice(start, end).replace(/^\s*(?:\d+\.|[一二三四五六七八九十]+、)\s*/, "").trim();
     const prefix = start > 0 ? "..." : "";
     const suffix = end < content.length ? "..." : "";
-    return clip(`${prefix}${content.slice(start, end).trim()}${suffix}`);
+    return clip(prefix + excerpt + suffix);
   }
 
   return clip(content);
