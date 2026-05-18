@@ -163,9 +163,10 @@ export async function buildRecallContext(
     return { should_recall: false, score: analysis.score, reasons: analysis.reasons, query: analysis.query, memories: [], recall: "" };
   }
 
+  const searchQuery = normalizeQueryForMemorySearch(analysis.query);
   const memories = await searchMemories(env, {
     namespace: input.namespace,
-    query: analysis.query,
+    query: searchQuery,
     topK: getRecallTopK(env, input.topK)
   });
 
@@ -173,8 +174,8 @@ export async function buildRecallContext(
     should_recall: memories.length > 0,
     score: analysis.score,
     reasons: analysis.reasons,
-    query: analysis.query,
+    query: searchQuery,
     memories,
-    recall: formatRecallBlock(memories, analysis.query)
+    recall: formatRecallBlock(memories, searchQuery)
   };
 }
