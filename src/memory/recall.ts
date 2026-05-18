@@ -31,45 +31,40 @@ const NO_RECALL_PATTERNS = [
   /^(ping|test|测试)$/i
 ];
 
-const QUERY_STOP_WORDS = new Set([
-  "之前",
-  "上次",
-  "以前",
-  "过去",
-  "刚才",
-  "昨天",
-  "那天",
-  "当时",
-  "后来",
-  "曾经",
-  "记得",
-  "记住",
-  "忘了",
-  "想起来",
-  "回忆",
-  "印象",
-  "提过",
-  "说过",
-  "聊过",
-  "什么",
-  "怎么",
-  "时候",
-  "会说",
-  "说什么",
-  "我会",
-  "你还",
-  "我们",
-  "这个",
-  "那个",
-  "there",
-  "what",
-  "when",
-  "where",
-  "remember",
-  "recall",
-  "previous",
-  "before"
-]);
+const QUERY_NOISE_PATTERNS = [
+  /你还记得/g,
+  /还记得/g,
+  /记不记得/g,
+  /记得/g,
+  /记住/g,
+  /想起来/g,
+  /回忆/g,
+  /印象/g,
+  /之前/g,
+  /上次/g,
+  /以前/g,
+  /过去/g,
+  /刚才/g,
+  /昨天/g,
+  /那天/g,
+  /当时/g,
+  /说过/g,
+  /聊过/g,
+  /提过/g,
+  /存过/g,
+  /是什么/g,
+  /什么/g,
+  /哪个/g,
+  /哪里/g,
+  /哪儿/g,
+  /吗/g,
+  /呢/g,
+  /呀/g,
+  /啊/g,
+  /的/g
+];
+
+const LEADING_PRONOUN_PATTERN = /^(你们|我们|他们|她们|它们|你|我|她|他|它)+/;
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
@@ -95,31 +90,38 @@ function getRecallTopK(env: Env, requested?: number): number {
   return Number.isFinite(value) ? clamp(Math.floor(value), 1, 3) : DEFAULT_RECALL_TOP_K;
 }
 
-function buildRecallSearchQuery(query: string): string {
-  const terms = new Set([query]);
-  const compact = query.replace(/\s+/g, "");
-
-  if (/想你/.test(compact) && /(说什么|会说|说啥|怎么说|留言|口头禅)/.test(compact)) {
-    terms.add("机 人想你 人好想你 机人想你 留言");
+function cleanQueryTerms(query: string): string {
+  let normalized = query.toLowerCase().replace(/[?？!！。.,，、:：;；"“”'‘’]/g, " ");
+  for (const pattern of QUERY_NOISE_PATTERNS) normalized = normalized.replace(pattern, " ");
+  normalized = normalized.replace(/\s+/g, " ").trim();
+  let previous = "";
+  while (previous !== normalized) {
+    previous = normalized;
+    normalized = normalized.replace(LEADING_PRONOUN_PATTERN, "").trim();
   }
+  return normalized.length >= 2 ? normalized : query;
+}
 
-  return [...terms].join(" ");
+function chineseNgrams(value: string): string[] {
+  const grams: string[] = [];
+  for (let size = Math.min(4, value.length); size >= 2; size -= 1) {
+    for (let index = 0; index <= value.length - size; index += 1) grams.push(value.slice(index, index + size));
+  }
+  return grams;
 }
 
 function excerptNeedles(query: string): string[] {
-  const compact = query.replace(/\s+/g, "");
   const needles = new Set<string>();
-
-  if (/想你/.test(compact) && /(说什么|会说|说啥|怎么说|留言|口头禅)/.test(compact)) {
-    for (const item of ["人好想你", "人想你", "想你", "机"]) needles.add(item);
+  for (const source of [cleanQueryTerms(query), query]) {
+    for (const match of source.match(/[a-z][a-z0-9_+-]{2,}|[\u4e00-\u9fff]{2,}/gi) ?? []) {
+      const term = match.toLowerCase();
+      needles.add(term);
+      if (/^[\u4e00-\u9fff]+$/.test(term) && term.length > 2) {
+        for (const gram of chineseNgrams(term)) needles.add(gram);
+      }
+    }
   }
-
-  for (const match of query.match(/[a-z][a-z0-9_+-]{2,}|[\u4e00-\u9fff]{2,}/gi) ?? []) {
-    const term = match.toLowerCase();
-    if (!QUERY_STOP_WORDS.has(term)) needles.add(term);
-  }
-
-  return [...needles].sort((a, b) => b.length - a.length).slice(0, 10);
+  return [...needles].sort((a, b) => b.length - a.length).slice(0, 16);
 }
 
 function relevantExcerpt(memory: MemoryApiRecord, query: string): string {
@@ -200,7 +202,7 @@ export async function buildRecallContext(
 
   const memories = await searchMemories(env, {
     namespace: input.namespace,
-    query: buildRecallSearchQuery(analysis.query),
+    query: analysis.query,
     topK: getRecallTopK(env, input.topK)
   });
 
