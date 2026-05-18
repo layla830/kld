@@ -329,7 +329,7 @@ export async function searchMemories(
     { query: searchQuery, expandedQuery, topK: candidateLimit }
   );
   const apiRecords = records.map((record) => toMemoryApiRecord(record, record.score));
-  const processedRecords = await postProcessMemorySearchResults(env, { query: searchQuery, memories: apiRecords, topK });
+  const processedRecords = await postProcessMemorySearchResults(env, { query: searchQuery, rawQuery: input.query, memories: apiRecords, topK });
 
   await markMemoriesRecalled(env.DB, { namespace: input.namespace, ids: processedRecords.map((record) => record.id) });
   return processedRecords;
