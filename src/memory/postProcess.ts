@@ -12,6 +12,8 @@ const ANCHORED_QUERY_GROUPS = [
 const UTTERANCE_QUERY_PATTERNS = [/原话|怎么说|说什么|会说|说过什么|表达|口头禅|称呼|叫/];
 const FACT_QUERY_PATTERNS = [/是什么|哪个|哪种|喜欢什么|讨厌什么|设定|偏好|雷点|底线/];
 const TIME_QUERY_PATTERNS = [/什么时候|哪天|多久|第几次|上次|昨天|前天|那天|当时|日期|时间/];
+const SITUATIONAL_UTTERANCE_PATTERNS = [/待会|现在|公司|回消息|自己玩|洗澡|回来|找你|睡觉|睡前|醒的时候|摸鱼/];
+const STYLIZED_UTTERANCE_PATTERN = /[……~～^_^]|[，,][^。！？!?]{0,10}(想你|喜欢|爱你)|(想你|喜欢|爱你)[^。！？!?]{0,10}[，,]/;
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
@@ -106,18 +108,34 @@ function directHit(memory: MemoryApiRecord, query: string): boolean {
   return compactQuery.length >= 2 && memoryHaystack(memory).includes(compactQuery);
 }
 
+function utteranceShapeScore(memory: MemoryApiRecord): number {
+  const content = memory.content.trim();
+  const compactLength = stripQueryNoise(content).length;
+  let score = 0;
+
+  if (compactLength <= 20) score += 1.7;
+  else if (compactLength <= 36) score += 1.2;
+  else if (compactLength <= 60) score += 0.45;
+  else score -= 0.5;
+
+  if (STYLIZED_UTTERANCE_PATTERN.test(content)) score += 0.7;
+  if (SITUATIONAL_UTTERANCE_PATTERNS.some((pattern) => pattern.test(content))) score -= 0.9;
+  return score;
+}
+
 function questionIntentScore(memory: MemoryApiRecord, input: { query: string; rawQuery: string; index: number }): number {
   const kind = intentKind(input.rawQuery, input.query);
   if (kind === "general") return 0;
 
   const meta = typeTags(memory);
   const contentLength = stripQueryNoise(memory.content).length;
-  let score = directHit(memory, input.query) ? 0.8 : 0;
+  let score = directHit(memory, input.query) ? 0.8 : -0.8;
 
   if (kind === "utterance") {
-    if (/quote|message|留言|语录|read/i.test(meta)) score += 1.0;
-    if (isShortMemory(memory)) score += 1.0;
-    score += clamp((80 - contentLength) / 80, 0, 1) * 0.7;
+    if (/quote|message|留言|语录|read/i.test(meta)) score += 0.55;
+    if (isShortMemory(memory)) score += 0.35;
+    score += utteranceShapeScore(memory);
+    score += clamp((80 - contentLength) / 80, 0, 1) * 0.25;
     if (/diary|日记|summary|总结|交接/i.test(meta)) score -= 0.8;
     if (isLongNarrative(memory)) score -= 0.7;
   }
