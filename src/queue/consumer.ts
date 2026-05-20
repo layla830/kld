@@ -1,6 +1,7 @@
 import { runMemoryRetention } from "../memory/retention";
 import { maybeUpdateLongTermSummary } from "../memory/summary";
 import type { Env, QueueMessage } from "../types";
+import { runConversationChunking } from "../memory/chunking";
 import { runMemoryMaintenance } from "../memory/maintenance";
 
 export async function handleQueueMessage(message: QueueMessage, env: Env): Promise<void> {
@@ -13,6 +14,9 @@ export async function handleQueueMessage(message: QueueMessage, env: Env): Promi
       } catch (error) {
         console.error("summary update failed", error);
       }
+      return;
+    case "conversation_chunk":
+      await runConversationChunking(env, message);
       return;
     case "retention":
       await runMemoryRetention(env, message.namespace);
