@@ -1,6 +1,9 @@
+import { countUnprocessedChunkMessages } from "../db/messages";
 import type { Env, QueueMessage } from "../types";
 import { newId } from "../utils/ids";
 import { handleQueueMessage } from "./consumer";
+
+const DEFAULT_CHUNK_THRESHOLD = 10;
 
 /**
  * Send a queue message. Uses real Cloudflare Queue when MEMORY_QUEUE binding
@@ -12,6 +15,11 @@ async function sendQueueMessage(env: Env, message: QueueMessage): Promise<void> 
   } else {
     await handleQueueMessage(message, env);
   }
+}
+
+function chunkThreshold(env: Env): number {
+  const value = Number(env.AUTO_CHUNK_MIN_MESSAGES || DEFAULT_CHUNK_THRESHOLD);
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : DEFAULT_CHUNK_THRESHOLD;
 }
 
 export async function enqueueMemoryMaintenanceIfNeeded(
@@ -39,6 +47,39 @@ export async function enqueueMemoryMaintenanceIfNeeded(
   };
 
   await sendQueueMessage(env, message);
+  await enqueueConversationChunkingIfNeeded(env, {
+    namespace: input.namespace,
+    conversationId: input.conversationId,
+    source: input.source
+  });
+}
+
+export async function enqueueConversationChunkingIfNeeded(
+  env: Env,
+  input: {
+    namespace: string;
+    conversationId: string;
+    source: string;
+  }
+): Promise<void> {
+  if (env.ENABLE_AUTO_MEMORY === "false") return;
+  if ((env.MEMORY_MODE || "external") === "none") return;
+
+  const unprocessedCount = await countUnprocessedChunkMessages(env.DB, {
+    namespace: input.namespace,
+    conversationId: input.conversationId
+  });
+  const threshold = chunkThreshold(env);
+  if (unprocessedCount < threshold) return;
+
+  await sendQueueMessage(env, {
+    type: "conversation_chunk",
+    namespace: input.namespace,
+    conversationId: input.conversationId,
+    source: input.source,
+    maxMessages: Math.max(unprocessedCount, threshold),
+    idempotencyKey: newId("idem")
+  });
 }
 
 export async function enqueueRetentionIfNeeded(
