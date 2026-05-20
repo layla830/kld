@@ -31,6 +31,9 @@ export interface Env {
   MEMORY_FILTER_MIN_SCORE?: string;
   MEMORY_EXTRACT_EVERY_N_MESSAGES?: string;
   MEMORY_MIN_IMPORTANCE?: string;
+  AUTO_CHUNK_MIN_MESSAGES?: string;
+  AUTO_CHUNK_MAX_MESSAGES?: string;
+  AUTO_CHUNK_SUMMARY_MODEL?: string;
   INJECTION_MODE?: string;
   EMBEDDING_MODEL?: string;
   MEMORY_TOP_K?: string;
@@ -59,12 +62,21 @@ export interface MemoryMaintenanceQueueMessage {
   idempotencyKey: string;
 }
 
+export interface ConversationChunkQueueMessage {
+  type: "conversation_chunk";
+  namespace: string;
+  conversationId: string;
+  source: string;
+  maxMessages?: number;
+  idempotencyKey: string;
+}
+
 export interface RetentionQueueMessage {
   type: "retention";
   namespace: string;
 }
 
-export type QueueMessage = MemoryMaintenanceQueueMessage | RetentionQueueMessage;
+export type QueueMessage = MemoryMaintenanceQueueMessage | ConversationChunkQueueMessage | RetentionQueueMessage;
 
 export type Scope =
   | "chat:proxy"
