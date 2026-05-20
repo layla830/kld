@@ -134,6 +134,65 @@ export async function getMessagesByIds(
   return result.results ?? [];
 }
 
+export async function countUnprocessedChunkMessages(
+  db: D1Database,
+  input: { namespace: string; conversationId: string }
+): Promise<number> {
+  const row = await db
+    .prepare(
+      `SELECT COUNT(*) AS count
+       FROM messages
+       WHERE namespace = ?
+         AND conversation_id = ?
+         AND role IN ('user', 'assistant')
+         AND content != ''
+         AND chunk_processed_at IS NULL`
+    )
+    .bind(input.namespace, input.conversationId)
+    .first<{ count: number }>();
+
+  return row?.count ?? 0;
+}
+
+export async function listUnprocessedChunkMessages(
+  db: D1Database,
+  input: { namespace: string; conversationId: string; limit: number }
+): Promise<MessageRecord[]> {
+  const result = await db
+    .prepare(
+      `SELECT id, conversation_id, namespace, role, content, source, created_at
+       FROM messages
+       WHERE namespace = ?
+         AND conversation_id = ?
+         AND role IN ('user', 'assistant')
+         AND content != ''
+         AND chunk_processed_at IS NULL
+       ORDER BY created_at ASC
+       LIMIT ?`
+    )
+    .bind(input.namespace, input.conversationId, input.limit)
+    .all<MessageRecord>();
+
+  return result.results ?? [];
+}
+
+export async function markMessagesChunkProcessed(
+  db: D1Database,
+  input: { namespace: string; ids: string[] }
+): Promise<void> {
+  if (input.ids.length === 0) return;
+  const placeholders = input.ids.map(() => "?").join(", ");
+
+  await db
+    .prepare(
+      `UPDATE messages
+       SET chunk_processed_at = ?
+       WHERE namespace = ? AND id IN (${placeholders})`
+    )
+    .bind(nowIso(), input.namespace, ...input.ids)
+    .run();
+}
+
 export async function saveIngestMessages(
   db: D1Database,
   input: {
