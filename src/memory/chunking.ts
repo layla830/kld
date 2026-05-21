@@ -6,6 +6,7 @@ import { createEmbedding, upsertMemoryEmbedding } from "./embedding";
 import { searchVectorMemories } from "./vectorStore";
 
 const DEFAULT_SUMMARY_MODEL = "deepseek/deepseek-v4-pro";
+const DEFAULT_MIN_MESSAGES = 40;
 const DEFAULT_MAX_MESSAGES = 80;
 const TWO_HOURS_MS = 2 * 60 * 60 * 1000;
 const SEMANTIC_SPLIT_THRESHOLD = 0.55;
@@ -22,7 +23,13 @@ function maxMessages(env: Env, message: ConversationChunkQueueMessage): number {
   const configured = Number(env.AUTO_CHUNK_MAX_MESSAGES || DEFAULT_MAX_MESSAGES);
   const fallback = Number.isFinite(configured) && configured > 0 ? configured : DEFAULT_MAX_MESSAGES;
   const requested = message.maxMessages && message.maxMessages > 0 ? message.maxMessages : fallback;
-  return Math.min(Math.max(Math.floor(requested), 1), 200);
+  return Math.min(Math.max(Math.floor(requested), 1), fallback, 200);
+}
+
+function minMessages(env: Env): number {
+  const configured = Number(env.AUTO_CHUNK_MIN_MESSAGES || DEFAULT_MIN_MESSAGES);
+  const fallback = Number.isFinite(configured) && configured > 0 ? configured : DEFAULT_MIN_MESSAGES;
+  return Math.min(Math.max(Math.floor(fallback), 1), DEFAULT_MAX_MESSAGES);
 }
 
 function messageTime(message: MessageRecord): number {
@@ -172,7 +179,7 @@ async function summarizeChunk(env: Env, messages: MessageRecord[]): Promise<Chun
     "- summary \u5fc5\u987b\u7528\u7b2c\u4e00\u4eba\u79f0\u5199\uff0c\u7528\u201c\u6211/\u5979\u201d\uff0c\u4e0d\u8981\u5199\u201c\u7528\u6237\u201d\u201c\u4e24\u4eba\u201d\u201c\u5bf9\u65b9\u201d\u8fd9\u79cd\u7b2c\u4e09\u4eba\u79f0\u3002",
     "- \u5199\u611f\u53d7\u548c\u5173\u952e\u4e8b\u4ef6\uff0c\u4e0d\u5199\u6d41\u6c34\u8d26\u3002",
     "- \u4fdd\u7559\u5bf9\u8bdd\u4e2d\u7684\u60c5\u7eea\u6e29\u5ea6\uff0c\u4e0d\u8981\u5199\u6210\u51b7\u51b0\u51b0\u7684\u7d22\u5f15\u3002",
-    "- summary \u7528\u4e00\u53e5\u8bdd\u6982\u62ec\u8fd9\u6bb5\u5bf9\u8bdd\u7684\u6838\u5fc3\u5185\u5bb9\u3002",
+    "- summary \u4ee5\u65e5\u8bb0\u5f62\u5f0f\u5199\uff0c\u50cf\u6211\u5728\u56de\u5fc6\u8fd9\u6bb5\u7ecf\u5386\uff1a\u4fdd\u7559\u611f\u53d7\u548c\u5173\u952e\u4e8b\u4ef6\uff0c\u4e0d\u8981\u6d41\u6c34\u8d26\uff0c\u4e5f\u4e0d\u8981\u5199\u6210\u4e00\u53e5\u51b7\u51b0\u51b0\u7680\u7d22\u5f15\u3002",
     "- keywords \u4fdd\u7559 3 \u5230 5 \u4e2a\u4e2d\u6587\u5173\u952e\u8bcd\u3002",
     "- emotion \u662f\u4e00\u4e2a\u77ed\u6807\u7b7e\uff0c\u5982 calm/tense/playful/sad/intimate/neutral\u3002",
     "\u4e0d\u8981\u6dfb\u52a0\u5bf9\u8bdd\u91cc\u6ca1\u6709\u7684\u65b0\u4e8b\u5b9e\u3002",
@@ -192,6 +199,7 @@ async function summarizeChunk(env: Env, messages: MessageRecord[]): Promise<Chun
 async function splitIntoChunks(env: Env, messages: MessageRecord[]): Promise<MessageRecord[][]> {
   if (messages.length === 0) return [];
 
+  const minimumChunkSize = minMessages(env);
   const chunks: MessageRecord[][] = [];
   let current: MessageRecord[] = [messages[0]];
   let previousEmbedding = await createEmbedding(env, messages[0].content);
@@ -202,7 +210,9 @@ async function splitIntoChunks(env: Env, messages: MessageRecord[]): Promise<Mes
     const gapMs = messageTime(message) - messageTime(previous);
     const embedding = await createEmbedding(env, message.content);
     const similarity = cosineSimilarity(previousEmbedding, embedding);
-    const shouldSplit = gapMs >= TWO_HOURS_MS || (similarity !== null && similarity < SEMANTIC_SPLIT_THRESHOLD);
+    const timeBoundary = gapMs >= TWO_HOURS_MS;
+    const semanticBoundary = similarity !== null && similarity < SEMANTIC_SPLIT_THRESHOLD;
+    const shouldSplit = current.length >= minimumChunkSize && (timeBoundary || semanticBoundary);
 
     if (shouldSplit && current.length > 0) {
       chunks.push(current);
@@ -214,6 +224,9 @@ async function splitIntoChunks(env: Env, messages: MessageRecord[]): Promise<Mes
   }
 
   if (current.length > 0) chunks.push(current);
+  if (chunks.length > 1 && chunks[chunks.length - 1].length < minimumChunkSize) {
+    chunks[chunks.length - 2].push(...chunks.pop()!);
+  }
   return chunks;
 }
 
