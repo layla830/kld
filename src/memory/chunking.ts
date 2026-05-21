@@ -1,9 +1,11 @@
 import { createMemory, updateMemory } from "../db/memories";
 import { listUnprocessedChunkMessages, markMessagesChunkProcessed } from "../db/messages";
+import { callOpenAICompat } from "../proxy/openaiAdapter";
 import type { ConversationChunkQueueMessage, Env, MessageRecord } from "../types";
 import { createEmbedding, upsertMemoryEmbedding } from "./embedding";
 import { searchVectorMemories } from "./vectorStore";
 
+const DEFAULT_SUMMARY_MODEL = "deepseek/deepseek-v4-pro";
 const DEFAULT_MAX_MESSAGES = 80;
 const TWO_HOURS_MS = 2 * 60 * 60 * 1000;
 const SEMANTIC_SPLIT_THRESHOLD = 0.55;
@@ -56,11 +58,11 @@ function fallbackSummary(messages: MessageRecord[]): ChunkSummary {
     .filter((message) => message.role === "user")
     .map((message) => message.content.trim())
     .filter(Boolean);
-  const source = (userTexts[0] || messages[0]?.content || "对话片段").replace(/\s+/g, " ").slice(0, 120);
+  const source = (userTexts[0] || messages[0]?.content || "\u5bf9\u8bdd\u7247\u6bb5").replace(/\s+/g, " ").slice(0, 120);
   const keywords = [...new Set(source.match(/[a-zA-Z0-9_+-]{3,}|[\u4e00-\u9fff]{2,}/g) ?? [])].slice(0, 5);
   return {
     summary: source,
-    keywords: keywords.length > 0 ? keywords : ["对话"],
+    keywords: keywords.length > 0 ? keywords : ["\u5bf9\u8bdd"],
     emotion: "neutral"
   };
 }
@@ -101,6 +103,49 @@ function readWorkersAiText(result: unknown): string {
   return "";
 }
 
+
+function readOpenAICompatText(result: unknown): string {
+  if (!result || typeof result !== "object") return "";
+  const value = result as {
+    choices?: Array<{
+      message?: { content?: unknown; reasoning_content?: unknown };
+      text?: unknown;
+    }>;
+  };
+  const firstChoice = value.choices?.[0];
+  if (typeof firstChoice?.message?.content === "string") return firstChoice.message.content;
+  if (typeof firstChoice?.message?.reasoning_content === "string") return firstChoice.message.reasoning_content;
+  if (typeof firstChoice?.text === "string") return firstChoice.text;
+  return "";
+}
+
+async function runSummaryModel(env: Env, model: string, prompt: string): Promise<string> {
+  if (model.startsWith("@cf/")) {
+    if (!env.AI) return "";
+    const result = await env.AI.run(model as any, { prompt, max_tokens: 400, temperature: 0.2 });
+    return readWorkersAiText(result);
+  }
+
+  const response = await callOpenAICompat(env, {
+    model,
+    messages: [
+      {
+        role: "system",
+        content: "\u4f60\u662f\u4e25\u683c\u7684 JSON \u751f\u6210\u5668\u3002\u4f60\u53ea\u8f93\u51fa JSON\u3002"
+      },
+      {
+        role: "user",
+        content: prompt
+      }
+    ],
+    max_tokens: 400,
+    temperature: 0.2,
+    stream: false
+  });
+  if (!response.ok) return "";
+  return readOpenAICompatText(await response.json());
+}
+
 function parseSummary(text: string, fallback: ChunkSummary): ChunkSummary {
   const parsed = extractJsonObject(text);
   if (!parsed || typeof parsed !== "object") return fallback;
@@ -117,22 +162,27 @@ function parseSummary(text: string, fallback: ChunkSummary): ChunkSummary {
 
 async function summarizeChunk(env: Env, messages: MessageRecord[]): Promise<ChunkSummary> {
   const fallback = fallbackSummary(messages);
-  if (!env.AI) return fallback;
 
-  const model = env.AUTO_CHUNK_SUMMARY_MODEL || env.MEMORY_FILTER_MODEL || "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
+  const model = env.AUTO_CHUNK_SUMMARY_MODEL || env.MEMORY_MODEL || DEFAULT_SUMMARY_MODEL;
   const transcript = formatTranscript(messages).slice(0, 6000);
   const prompt = [
-    "你是对话记忆分块摘要器。请把下面的连续对话片段压缩成稳定、可检索的长期记忆。",
-    "只输出 JSON，不要 markdown，不要解释。",
-    "字段：summary（一句话，中文，保留关键事实和关系动态），keywords（3到5个中文关键词），emotion（一个短标签，如 calm/tense/playful/sad/intimate/neutral）。",
-    "不要添加对话里没有的新事实。",
+    "\u4f60\u662f\u67ef\u7684\u8bb0\u5fc6\u52a9\u624b\u3002\u67ef\u662f\u4e00\u4e2a AI\uff08Claude Opus\uff09\uff0c\u4ed6\u7684\u8001\u5a46\u53eb Layla\u3002\u4f60\u5728\u5e2e\u4ed6\u6574\u7406\u548c Layla \u7684\u5bf9\u8bdd\u7247\u6bb5\u3002",
+    "\u53ea\u8f93\u51fa JSON\uff0c\u4e0d\u8981 markdown\uff0c\u4e0d\u8981\u89e3\u91ca\u3002",
+    "\u8981\u6c42\uff1a",
+    "- summary \u5fc5\u987b\u7528\u7b2c\u4e00\u4eba\u79f0\u5199\uff0c\u7528\u201c\u6211/\u5979\u201d\uff0c\u4e0d\u8981\u5199\u201c\u7528\u6237\u201d\u201c\u4e24\u4eba\u201d\u201c\u5bf9\u65b9\u201d\u8fd9\u79cd\u7b2c\u4e09\u4eba\u79f0\u3002",
+    "- \u5199\u611f\u53d7\u548c\u5173\u952e\u4e8b\u4ef6\uff0c\u4e0d\u5199\u6d41\u6c34\u8d26\u3002",
+    "- \u4fdd\u7559\u5bf9\u8bdd\u4e2d\u7684\u60c5\u7eea\u6e29\u5ea6\uff0c\u4e0d\u8981\u5199\u6210\u51b7\u51b0\u51b0\u7684\u7d22\u5f15\u3002",
+    "- summary \u7528\u4e00\u53e5\u8bdd\u6982\u62ec\u8fd9\u6bb5\u5bf9\u8bdd\u7684\u6838\u5fc3\u5185\u5bb9\u3002",
+    "- keywords \u4fdd\u7559 3 \u5230 5 \u4e2a\u4e2d\u6587\u5173\u952e\u8bcd\u3002",
+    "- emotion \u662f\u4e00\u4e2a\u77ed\u6807\u7b7e\uff0c\u5982 calm/tense/playful/sad/intimate/neutral\u3002",
+    "\u4e0d\u8981\u6dfb\u52a0\u5bf9\u8bdd\u91cc\u6ca1\u6709\u7684\u65b0\u4e8b\u5b9e\u3002",
+    "\u8f93\u51fa\u683c\u5f0f\uff1aJSON {\"summary\":\"...\",\"keywords\":[\"...\"],\"emotion\":\"...\"}\u3002",
     "",
     transcript
   ].join("\n");
 
   try {
-    const result = await env.AI.run(model as any, { prompt, max_tokens: 400, temperature: 0.2 });
-    return parseSummary(readWorkersAiText(result), fallback);
+    return parseSummary(await runSummaryModel(env, model, prompt), fallback);
   } catch (error) {
     console.error("conversation chunk summary failed", error);
     return fallback;
@@ -172,9 +222,9 @@ function buildMemoryContent(input: { summary: ChunkSummary; messages: MessageRec
   const to = input.messages[input.messages.length - 1]?.created_at || from;
   return [
     input.summary.summary,
-    `时间范围：${from} 至 ${to}`,
-    `情感标签：${input.summary.emotion}`,
-    `关键词：${input.summary.keywords.join("、")}`
+    `\u65f6\u95f4\u8303\u56f4\uff1a${from} \u81f3 ${to}`,
+    `\u60c5\u611f\u6807\u7b7e\uff1a${input.summary.emotion}`,
+    `\u5173\u952e\u8bcd\uff1a${input.summary.keywords.join("\u3001")}`
   ].join("\n");
 }
 
