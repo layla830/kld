@@ -239,3 +239,21 @@ export async function saveIngestMessages(
 
   return ids;
 }
+
+export async function deleteProcessedSourceMessagesBefore(
+  db: D1Database,
+  input: { namespace: string; source: string; before: string }
+): Promise<number> {
+  const result = await db
+    .prepare(
+      `DELETE FROM messages
+       WHERE namespace = ?
+         AND source = ?
+         AND chunk_processed_at IS NOT NULL
+         AND created_at < ?`
+    )
+    .bind(input.namespace, input.source, input.before)
+    .run();
+
+  return result.meta.changes ?? 0;
+}
