@@ -3,6 +3,8 @@ import { newId } from "../utils/ids";
 import { nowIso } from "../utils/time";
 import { buildVectorId } from "../utils/vectorId";
 
+const D1_BIND_LIMIT = 90;
+
 export interface CreateMemoryInput {
   namespace: string;
   type: string;
@@ -36,6 +38,14 @@ export interface UpdateMemoryInput {
   tags?: string[];
   sourceMessageIds?: string[];
   expiresAt?: string | null;
+}
+
+function chunk<T>(items: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let index = 0; index < items.length; index += size) {
+    chunks.push(items.slice(index, index + size));
+  }
+  return chunks;
 }
 
 export async function createMemory(db: D1Database, input: CreateMemoryInput): Promise<MemoryRecord> {
@@ -132,18 +142,30 @@ export async function fetchMemoriesByIds(
 ): Promise<MemoryRecord[]> {
   if (input.ids.length === 0) return [];
 
-  const placeholders = input.ids.map(() => "?").join(", ");
-  const result = await db
-    .prepare(`SELECT * FROM memories WHERE namespace = ? AND id IN (${placeholders})`)
-    .bind(input.namespace, ...input.ids)
-    .all<MemoryRecord>();
+  const rows: MemoryRecord[] = [];
+  const idsPerQuery = D1_BIND_LIMIT - 1;
+  for (const ids of chunk(input.ids, idsPerQuery)) {
+    const placeholders = ids.map(() => "?").join(", ");
+    const result = await db
+      .prepare(`SELECT * FROM memories WHERE namespace = ? AND id IN (${placeholders})`)
+      .bind(input.namespace, ...ids)
+      .all<MemoryRecord>();
+    rows.push(...(result.results ?? []));
+  }
 
-  return result.results ?? [];
+  const order = new Map(input.ids.map((id, index) => [id, index]));
+  return rows.sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0));
 }
 
 export async function updateMemory(
   db: D1Database,
-  input: { namespace: string; id: string; patch: UpdateMemoryInput }
+  input: {
+    namespace: string;
+    id: string;
+    patch: UpdateMemoryInput;
+    expectedStatus?: string;
+    requireUnpinned?: boolean;
+  }
 ): Promise<MemoryRecord | null> {
   const assignments: string[] = [];
   const binds: unknown[] = [];
@@ -168,11 +190,22 @@ export async function updateMemory(
 
   set("updated_at", nowIso());
 
-  await db
-    .prepare(`UPDATE memories SET ${assignments.join(", ")} WHERE namespace = ? AND id = ?`)
-    .bind(...binds, input.namespace, input.id)
+  const where = ["namespace = ?", "id = ?"];
+  const whereBinds: unknown[] = [input.namespace, input.id];
+  if (input.expectedStatus) {
+    where.push("status = ?");
+    whereBinds.push(input.expectedStatus);
+  }
+  if (input.requireUnpinned) {
+    where.push("pinned = 0");
+  }
+
+  const result = await db
+    .prepare(`UPDATE memories SET ${assignments.join(", ")} WHERE ${where.join(" AND ")}`)
+    .bind(...binds, ...whereBinds)
     .run();
 
+  if ((result.meta.changes ?? 0) === 0) return null;
   return getMemoryById(db, input);
 }
 
@@ -221,8 +254,6 @@ function scoreKeywordRecord(record: MemoryRecord, query: string, tokens: string[
   const hits = tokens.filter((token) => text.includes(token)).length;
   const tagOrTypeHits = tokens.filter((token) => tagsAndType.includes(token)).length;
 
-  // Expanded aliases and Chinese ngrams can contain many terms. A precise tag
-  // hit like "体位" or "sub" should stay strong instead of being diluted.
   const denominator = Math.max(1, Math.min(tokens.length, 4));
   const tokenScore = tokens.length ? Math.min(1, hits / denominator) : 0;
   const presenceBoost = hits > 0 ? 0.14 : 0;
@@ -239,9 +270,11 @@ export async function searchMemoriesByText(
   let sql = "SELECT * FROM memories WHERE namespace = ? AND status = 'active'";
   const binds: unknown[] = [input.namespace];
 
-  if (input.types && input.types.length > 0) {
-    sql += ` AND type IN (${input.types.map(() => "?").join(", ")})`;
-    binds.push(...input.types);
+  const typeBudget = Math.max(0, D1_BIND_LIMIT - binds.length - 6);
+  const types = (input.types ?? []).slice(0, Math.min(input.types?.length ?? 0, typeBudget, 20));
+  if (types.length > 0) {
+    sql += ` AND type IN (${types.map(() => "?").join(", ")})`;
+    binds.push(...types);
   }
 
   if (query) {
@@ -249,7 +282,9 @@ export async function searchMemoriesByText(
     const exactLike = `%${escapeLike(query)}%`;
     binds.push(exactLike, exactLike, exactLike, exactLike);
 
-    for (const token of tokens) {
+    const tokenBudget = Math.max(0, Math.floor((D1_BIND_LIMIT - binds.length - 1) / 4));
+    const safeTokens = tokens.slice(0, tokenBudget);
+    for (const token of safeTokens) {
       const like = `%${escapeLike(token)}%`;
       clauses.push(`content LIKE ? ESCAPE '\\'`, `summary LIKE ? ESCAPE '\\'`, `tags LIKE ? ESCAPE '\\'`, `type LIKE ? ESCAPE '\\'`);
       binds.push(like, like, like, like);
@@ -281,13 +316,16 @@ export async function markMemoriesRecalled(
 ): Promise<void> {
   if (input.ids.length === 0) return;
 
-  const placeholders = input.ids.map(() => "?").join(", ");
-  await db
-    .prepare(
-      `UPDATE memories
-       SET last_recalled_at = ?, recall_count = recall_count + 1
-       WHERE namespace = ? AND id IN (${placeholders})`
-    )
-    .bind(nowIso(), input.namespace, ...input.ids)
-    .run();
+  const idsPerQuery = D1_BIND_LIMIT - 2;
+  for (const ids of chunk(input.ids, idsPerQuery)) {
+    const placeholders = ids.map(() => "?").join(", ");
+    await db
+      .prepare(
+        `UPDATE memories
+         SET last_recalled_at = ?, recall_count = recall_count + 1
+         WHERE namespace = ? AND id IN (${placeholders})`
+      )
+      .bind(nowIso(), input.namespace, ...ids)
+      .run();
+  }
 }
