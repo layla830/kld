@@ -16,20 +16,16 @@ export async function tryStartIdempotentTask(
       .run();
     return true;
   } catch {
-    const existing = await db
-      .prepare("SELECT status FROM idempotency_keys WHERE key = ?")
-      .bind(input.key)
-      .first<{ status: string }>();
+    const result = await db
+      .prepare(
+        `UPDATE idempotency_keys
+         SET status = ?, updated_at = ?
+         WHERE key = ? AND status = ?`
+      )
+      .bind("processing", now, input.key, "failed")
+      .run();
 
-    if (existing?.status === "failed") {
-      await db
-        .prepare("UPDATE idempotency_keys SET status = ?, updated_at = ? WHERE key = ?")
-        .bind("processing", now, input.key)
-        .run();
-      return true;
-    }
-
-    return false;
+    return (result.meta.changes ?? 0) > 0;
   }
 }
 

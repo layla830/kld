@@ -86,7 +86,7 @@ function normalizeForDedupe(text: string): string {
   return text
     .toLowerCase()
     .replace(/\s+/g, "")
-    .replace(/[，,。.!！?？；;：:“”"'`、\[\]【】（）()<>《》]/g, "");
+    .replace(/[，,。.!！?？；;：“”"'`、\[\]【】（）()<>《》]/g, "");
 }
 
 function compareMemoryQuality(a: MemoryApiRecord, b: MemoryApiRecord): number {
@@ -275,8 +275,9 @@ function describeModelOutput(value: unknown): string {
   if (Array.isArray(value)) return "array";
   if (typeof value !== "object") return typeof value;
 
-  const object = value as { response?: unknown; memories?: unknown; result?: unknown; output?: unknown; text?: unknown };
+  const object = value as { response?: unknown; memories?: unknown; result?: unknown; output?: unknown; text?: unknown; error?: unknown };
   if (Array.isArray(object.memories)) return "object.memories_array";
+  if (object.error && typeof object.error === "object") return "object.error";
   if (typeof object.response === "string") return "object.response_string";
   if (object.response && typeof object.response === "object") return "object.response_object";
   if (typeof object.result === "string") return "object.result_string";
@@ -305,7 +306,7 @@ async function callWorkersAiFilter(env: Env, prompt: string): Promise<unknown> {
   });
 }
 
-async function callOpenAICompatFilter(env: Env, prompt: string): Promise<string> {
+async function callOpenAICompatFilter(env: Env, prompt: string): Promise<unknown> {
   if (!env.MEMORY_FILTER_MODEL) return "";
 
   const request: OpenAIChatRequest = {
@@ -326,7 +327,7 @@ async function callOpenAICompatFilter(env: Env, prompt: string): Promise<string>
   };
 
   const response = await callOpenAICompat(env, request);
-  if (!response.ok) return { error: { status: response.status } } as unknown as string;
+  if (!response.ok) return { error: { status: response.status } };
 
   const parsed = (await response.json()) as OpenAIChatResponse;
   const content = parsed.choices?.[0]?.message?.content;
