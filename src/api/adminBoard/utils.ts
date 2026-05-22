@@ -18,6 +18,7 @@ export const PAGE_SIZE = 8;
 export const TABS = [
   { id: "message", label: "留言板" },
   { id: "diary", label: "交换日记" },
+  { id: "auto_diary", label: "自动日记" },
   { id: "quote", label: "语录" },
   { id: "browse", label: "记忆浏览" }
 ] as const;
