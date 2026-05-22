@@ -1,4 +1,4 @@
-import type { MessageRecord } from "../db/messages";
+import type { MessageRecord } from "../types";
 
 export type ChunkSummary = {
   summary: string;
