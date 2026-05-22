@@ -12,7 +12,7 @@ import { saveIngestMessages } from "../db/messages";
 import { deleteMemoryEmbedding, upsertMemoryEmbedding } from "../memory/embedding";
 import { filterAndCompressMemoriesWithMeta } from "../memory/filter";
 import { searchMemories, toMemoryApiRecord } from "../memory/search";
-import { enqueueMemoryMaintenanceIfNeeded } from "../queue/producer";
+import { enqueueConversationChunkingIfNeeded, enqueueMemoryMaintenanceIfNeeded } from "../queue/producer";
 import type { Env, KeyProfile, OpenAIChatMessage } from "../types";
 import { json, openAiError } from "../utils/json";
 
@@ -227,6 +227,45 @@ async function handleResetCcConnect(
   });
 }
 
+async function handleGenerateCcConnectDiary(
+  request: Request,
+  env: Env,
+  ctx: ExecutionContext,
+  profile: KeyProfile
+): Promise<Response> {
+  const scopeError = requireScope(profile, "memory:write");
+  if (scopeError) return scopeError;
+
+  const body = await readBody(request);
+  if (!body) return openAiError("Request body must be a JSON object", 400);
+
+  const conversationId = readString(body.conversation_id);
+  if (!conversationId) return openAiError("conversation_id is required", 400);
+
+  const namespace = resolveNamespace(profile, body.namespace);
+  const source = readString(body.source) || "cc-connect";
+  const force = body.force !== false;
+
+  ctx.waitUntil(
+    enqueueConversationChunkingIfNeeded(env, {
+      namespace,
+      conversationId,
+      source,
+      force
+    })
+  );
+
+  return json({
+    data: {
+      queued: true,
+      namespace,
+      conversation_id: conversationId,
+      source,
+      force
+    }
+  });
+}
+
 async function handleIngestMemories(
   request: Request,
   env: Env,
@@ -379,6 +418,10 @@ export async function handleMemories(request: Request, env: Env, ctx: ExecutionC
 
   if (tail.length === 1 && tail[0] === "ingest" && request.method === "POST") {
     return handleIngestMemories(request, env, ctx, auth.profile);
+  }
+
+  if (tail.length === 2 && tail[0] === "auto-diary" && tail[1] === "cc-connect" && request.method === "POST") {
+    return handleGenerateCcConnectDiary(request, env, ctx, auth.profile);
   }
 
   if (tail.length === 2 && tail[0] === "reset" && tail[1] === "cc-connect" && request.method === "POST") {
