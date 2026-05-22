@@ -9,6 +9,7 @@ const FALLBACK_WORKERS_SUMMARY_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast
 const DEFAULT_MAX_MESSAGES = 80;
 const SUMMARY_MAX_TOKENS = 900;
 const MIN_MESSAGES = 10;
+const SHANGHAI_OFFSET_MS = 8 * 60 * 60 * 1000;
 
 type ChunkSummary = {
   summary: string;
@@ -32,18 +33,32 @@ function messageTime(message: MessageRecord): string {
   return message.created_at;
 }
 
-function formatLocalDate(ms: number): string {
-  const date = new Date(ms || Date.now());
+function shanghaiDate(ms: number): Date {
+  return new Date((ms || Date.now()) + SHANGHAI_OFFSET_MS);
+}
+
+function formatShanghaiDate(ms: number): string {
+  const date = shanghaiDate(ms);
   const y = date.getUTCFullYear();
   const m = String(date.getUTCMonth() + 1).padStart(2, "0");
   const d = String(date.getUTCDate()).padStart(2, "0");
   return `${y}-${m}-${d}`;
 }
 
+function formatShanghaiDateTime(value: string | null | undefined): string {
+  const ms = toMs(value);
+  if (!ms) return value || "unknown";
+  const date = shanghaiDate(ms);
+  const day = formatShanghaiDate(ms);
+  const h = String(date.getUTCHours()).padStart(2, "0");
+  const m = String(date.getUTCMinutes()).padStart(2, "0");
+  return `${day} ${h}:${m}`;
+}
+
 function periodSlot(ms: number): { key: string; label: string } {
-  const date = new Date(ms || Date.now());
+  const date = shanghaiDate(ms);
   const hour = date.getUTCHours();
-  const day = formatLocalDate(ms);
+  const day = formatShanghaiDate(ms);
   if (hour < 6) return { key: `${day}:night`, label: `${day} 凌晨` };
   if (hour < 12) return { key: `${day}:morning`, label: `${day} 上午` };
   if (hour < 18) return { key: `${day}:afternoon`, label: `${day} 下午` };
@@ -89,8 +104,8 @@ function splitIntoChunks(env: Env, messages: MessageRecord[]): ConversationChunk
 function formatTranscript(messages: MessageRecord[]): string {
   return messages.map((message) => {
     const role = message.role || "message";
-    const timestamp = messageTime(message) ? ` ${messageTime(message)}` : "";
-    return `[${role}${timestamp}] ${message.content}`;
+    const timestamp = formatShanghaiDateTime(messageTime(message));
+    return `[${role} ${timestamp}] ${message.content}`;
   }).join("\n");
 }
 
@@ -192,11 +207,11 @@ function parseSummary(text: string, fallback: ChunkSummary): ChunkSummary | null
   return { summary, keywords: keywords.length > 0 ? keywords : fallback.keywords, emotion };
 }
 
-async function summarizeChunk(env: Env, messages: MessageRecord[]): Promise<ChunkSummary | null> {
+async function summarizeChunk(env: Env, messages: MessageRecord[], periodLabel: string): Promise<ChunkSummary | null> {
   const fallback = fallbackSummary(messages);
   const transcript = formatTranscript(messages).slice(0, 12000);
   const model = env.AUTO_CHUNK_SUMMARY_MODEL || env.MEMORY_FILTER_MODEL || env.CHAT_MODEL || DEFAULT_SUMMARY_MODEL;
-  const prompt = `请把下面这一整段聊天窗口整理成一则中文日记式记忆。要求：\n- 不是逐条流水账，也不是一句话概括。\n- 用第一人称或贴近日记的叙述，保留具体事件、关系、情绪变化、决定和待办。\n- 忽略无意义寒暄、重复催促、工具噪音。\n- 如果内容很少，也要说明上下文不足，不要编造。\n- 输出 JSON，格式：{"summary":"...","keywords":["..."],"emotion":"..."}\n\n聊天窗口：\n${transcript}`;
+  const prompt = `请把下面这一整段聊天窗口整理成一则中文日记式记忆。\n时间段：${periodLabel}（东八区）。\n要求：\n- 不是逐条流水账，也不是一句话概括。\n- 用第一人称或贴近日记的叙述，保留具体事件、关系、情绪变化、决定和待办。\n- 忽略无意义寒暄、重复催促、工具噪音。\n- 如果内容很少，也要说明上下文不足，不要编造。\n- 输出 JSON，格式：{"summary":"...","keywords":["..."],"emotion":"..."}\n\n聊天窗口：\n${transcript}`;
 
   const primary = parseSummary(await runSummaryModel(env, model, prompt), fallback);
   if (primary) return primary;
@@ -216,21 +231,22 @@ async function summarizeChunk(env: Env, messages: MessageRecord[]): Promise<Chun
 }
 
 function diaryContent(periodLabel: string, summary: ChunkSummary, messages: MessageRecord[]): string {
-  const start = messages[0] ? messageTime(messages[0]) : "unknown";
-  const end = messages[messages.length - 1] ? messageTime(messages[messages.length - 1]) : start;
+  const start = messages[0] ? formatShanghaiDateTime(messageTime(messages[0])) : "unknown";
+  const end = messages[messages.length - 1] ? formatShanghaiDateTime(messageTime(messages[messages.length - 1])) : start;
   const keywordLine = summary.keywords.length > 0 ? `\n关键词：${summary.keywords.join("、")}` : "";
-  return `【${periodLabel}】\n${summary.summary}\n\n时间范围：${start} 至 ${end}\n情感标签：${summary.emotion}${keywordLine}`;
+  return `【${periodLabel}】\n${summary.summary}\n\n时间范围：${start} 至 ${end}（东八区）\n情感标签：${summary.emotion}${keywordLine}`;
 }
 
 async function persistChunkMemory(env: Env, params: {
   namespace: string;
+  source: string;
   chunk: ConversationChunk;
   summary: ChunkSummary;
 }): Promise<void> {
-  const { namespace, chunk, summary } = params;
+  const { namespace, source, chunk, summary } = params;
   const content = diaryContent(chunk.periodLabel, summary, chunk.messages);
   const sourceMessageIds = chunk.messages.map((message) => message.id);
-  const tags = ["auto-diary", chunk.periodKey, ...summary.keywords].slice(0, 10);
+  const tags = ["auto-diary", "自动日记", chunk.periodKey, ...summary.keywords].slice(0, 10);
 
   const memory = await createMemory(env.DB, {
     namespace,
@@ -240,7 +256,7 @@ async function persistChunkMemory(env: Env, params: {
     importance: 0.62,
     confidence: 0.82,
     tags,
-    source: "conversation_chunker",
+    source,
     sourceMessageIds
   });
 
@@ -272,11 +288,12 @@ export async function runConversationChunking(
 
   for (const chunk of chunks) {
     if (chunk.messages.length < MIN_MESSAGES) continue;
-    const summary = await summarizeChunk(env, chunk.messages);
+    const summary = await summarizeChunk(env, chunk.messages, chunk.periodLabel);
     if (!summary) continue;
 
     await persistChunkMemory(env, {
       namespace: message.namespace,
+      source: message.source,
       chunk,
       summary
     });
