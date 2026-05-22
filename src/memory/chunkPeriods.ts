@@ -1,5 +1,4 @@
-import type { Env } from "../types";
-import type { MessageRecord } from "../db/messages";
+import type { Env, MessageRecord } from "../types";
 import type { ConversationChunk } from "./chunkTypes";
 
 export const DEFAULT_MAX_MESSAGES = 80;
