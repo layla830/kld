@@ -1,8 +1,8 @@
-import { createMemory, updateMemory } from "../db/memories";
+import { createMemory } from "../db/memories";
 import { listUnprocessedChunkMessages, markMessagesChunkProcessed, type MessageRecord } from "../db/messages";
-import { embedTexts, upsertVector } from "../services/vectorize";
-import { callOpenAICompat } from "../services/openaiCompat";
-import type { Env } from "../types";
+import { upsertMemoryEmbedding } from "./embedding";
+import { callOpenAICompat } from "../proxy/openaiAdapter";
+import type { ConversationChunkQueueMessage, Env } from "../types";
 
 const DEFAULT_SUMMARY_MODEL = "deepseek/deepseek-v4-pro";
 const FALLBACK_WORKERS_SUMMARY_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
@@ -18,8 +18,6 @@ type ChunkSummary = {
 
 type ConversationChunk = {
   messages: MessageRecord[];
-  startTs: number;
-  endTs: number;
   periodKey: string;
   periodLabel: string;
 };
@@ -28,6 +26,10 @@ function toMs(timestamp: string | null | undefined): number {
   if (!timestamp) return 0;
   const ms = Date.parse(timestamp);
   return Number.isFinite(ms) ? ms : 0;
+}
+
+function messageTime(message: MessageRecord): string {
+  return message.created_at;
 }
 
 function formatLocalDate(ms: number): string {
@@ -53,7 +55,7 @@ function splitIntoChunks(env: Env, messages: MessageRecord[]): ConversationChunk
 
   const maxMessages = Math.max(Number(env.AUTO_CHUNK_MAX_MESSAGES || DEFAULT_MAX_MESSAGES), MIN_MESSAGES);
   const ordered = messages.slice().sort((a, b) => {
-    const byTime = toMs(a.timestamp) - toMs(b.timestamp);
+    const byTime = toMs(messageTime(a)) - toMs(messageTime(b));
     if (byTime !== 0) return byTime;
     return a.id.localeCompare(b.id);
   });
@@ -65,14 +67,12 @@ function splitIntoChunks(env: Env, messages: MessageRecord[]): ConversationChunk
 
   const flush = () => {
     if (current.length === 0) return;
-    const startTs = toMs(current[0]?.timestamp);
-    const endTs = toMs(current[current.length - 1]?.timestamp);
-    chunks.push({ messages: current, startTs, endTs, periodKey: currentKey, periodLabel: currentLabel });
+    chunks.push({ messages: current, periodKey: currentKey, periodLabel: currentLabel });
     current = [];
   };
 
   for (const message of ordered) {
-    const slot = periodSlot(toMs(message.timestamp));
+    const slot = periodSlot(toMs(messageTime(message)));
     if (current.length > 0 && (slot.key !== currentKey || current.length >= maxMessages)) {
       flush();
     }
@@ -89,7 +89,7 @@ function splitIntoChunks(env: Env, messages: MessageRecord[]): ConversationChunk
 function formatTranscript(messages: MessageRecord[]): string {
   return messages.map((message) => {
     const role = message.role || "message";
-    const timestamp = message.timestamp ? ` ${message.timestamp}` : "";
+    const timestamp = messageTime(message) ? ` ${messageTime(message)}` : "";
     return `[${role}${timestamp}] ${message.content}`;
   }).join("\n");
 }
@@ -216,129 +216,77 @@ async function summarizeChunk(env: Env, messages: MessageRecord[]): Promise<Chun
 }
 
 function diaryContent(periodLabel: string, summary: ChunkSummary, messages: MessageRecord[]): string {
-  const start = messages[0]?.timestamp || "unknown";
-  const end = messages[messages.length - 1]?.timestamp || start;
+  const start = messages[0] ? messageTime(messages[0]) : "unknown";
+  const end = messages[messages.length - 1] ? messageTime(messages[messages.length - 1]) : start;
   const keywordLine = summary.keywords.length > 0 ? `\n关键词：${summary.keywords.join("、")}` : "";
   return `【${periodLabel}】\n${summary.summary}\n\n时间范围：${start} 至 ${end}\n情感标签：${summary.emotion}${keywordLine}`;
 }
 
-function digestId(messages: MessageRecord[]): string {
-  const first = messages[0]?.id || "start";
-  const last = messages[messages.length - 1]?.id || first;
-  return `${first}:${last}`;
-}
-
-function diaryKey(conversationId: string, periodKey: string, messages: MessageRecord[]): string {
-  return `auto-diary:${conversationId}:${periodKey}:${digestId(messages)}`;
-}
-
 async function persistChunkMemory(env: Env, params: {
   namespace: string;
-  userId: string;
-  conversationId: string;
   chunk: ConversationChunk;
   summary: ChunkSummary;
 }): Promise<void> {
-  const { namespace, userId, conversationId, chunk, summary } = params;
-  const key = diaryKey(conversationId, chunk.periodKey, chunk.messages);
+  const { namespace, chunk, summary } = params;
   const content = diaryContent(chunk.periodLabel, summary, chunk.messages);
-  const now = new Date().toISOString();
-  const metadata = {
-    conversation_id: conversationId,
-    source: "cc-connect",
-    auto_generated: true,
-    diary_period: chunk.periodKey,
-    period_label: chunk.periodLabel,
-    start_timestamp: chunk.messages[0]?.timestamp || null,
-    end_timestamp: chunk.messages[chunk.messages.length - 1]?.timestamp || null,
-    message_count: chunk.messages.length,
-    message_digest: digestId(chunk.messages),
-    keywords: summary.keywords,
-    emotion: summary.emotion
-  };
+  const sourceMessageIds = chunk.messages.map((message) => message.id);
+  const tags = ["auto-diary", chunk.periodKey, ...summary.keywords].slice(0, 10);
 
-  const memory = await createMemory(env, {
+  const memory = await createMemory(env.DB, {
     namespace,
-    user_id: userId,
     type: "auto_diary",
     content,
-    metadata,
+    summary: summary.summary,
     importance: 0.62,
-    salience: 0.62,
-    access_count: 0,
+    confidence: 0.82,
+    tags,
     source: "conversation_chunker",
-    source_ref: key,
-    created_at: now,
-    updated_at: now
+    sourceMessageIds
   });
 
-  await updateMemory(env, memory.id, { supersedes: null });
-
   try {
-    const [embedding] = await embedTexts(env, [content]);
-    if (embedding) {
-      await upsertVector(env, {
-        id: memory.id,
-        values: embedding,
-        metadata: {
-          namespace,
-          user_id: userId,
-          type: "auto_diary",
-          content,
-          source_ref: key,
-          created_at: now
-        }
-      });
-    }
+    await upsertMemoryEmbedding(env, memory);
   } catch (error) {
     console.error("conversation chunk vector upsert failed", error);
   }
 }
 
-export async function runConversationChunking(env: Env): Promise<{ conversations: number; chunks: number; messages: number }> {
-  const maxMessages = Math.max(Number(env.AUTO_CHUNK_MAX_MESSAGES || DEFAULT_MAX_MESSAGES), MIN_MESSAGES);
-  const candidates = await listUnprocessedChunkMessages(env, maxMessages * 4);
-  const grouped = new Map<string, MessageRecord[]>();
+export async function runConversationChunking(
+  env: Env,
+  message: ConversationChunkQueueMessage
+): Promise<{ conversations: number; chunks: number; messages: number }> {
+  const maxMessages = Math.max(Number(message.maxMessages || env.AUTO_CHUNK_MAX_MESSAGES || DEFAULT_MAX_MESSAGES), MIN_MESSAGES);
+  const candidates = await listUnprocessedChunkMessages(env.DB, {
+    namespace: message.namespace,
+    conversationId: message.conversationId,
+    limit: maxMessages
+  });
 
-  for (const message of candidates) {
-    const key = `${message.namespace}\u0000${message.user_id}\u0000${message.conversation_id}`;
-    const group = grouped.get(key) || [];
-    group.push(message);
-    grouped.set(key, group);
+  if (candidates.length < MIN_MESSAGES) {
+    return { conversations: 0, chunks: 0, messages: 0 };
   }
 
   let chunkCount = 0;
   let messageCount = 0;
-  let conversationCount = 0;
+  const chunks = splitIntoChunks(env, candidates);
 
-  for (const group of grouped.values()) {
-    const messages = group.sort((a, b) => {
-      const byTime = toMs(a.timestamp) - toMs(b.timestamp);
-      if (byTime !== 0) return byTime;
-      return a.id.localeCompare(b.id);
+  for (const chunk of chunks) {
+    if (chunk.messages.length < MIN_MESSAGES) continue;
+    const summary = await summarizeChunk(env, chunk.messages);
+    if (!summary) continue;
+
+    await persistChunkMemory(env, {
+      namespace: message.namespace,
+      chunk,
+      summary
     });
-    if (messages.length < MIN_MESSAGES) continue;
-    const first = messages[0];
-    if (!first) continue;
-
-    conversationCount += 1;
-    const chunks = await splitIntoChunks(env, messages);
-    for (const chunk of chunks) {
-      if (chunk.messages.length < MIN_MESSAGES) continue;
-      const summary = await summarizeChunk(env, chunk.messages);
-      if (!summary) continue;
-      await persistChunkMemory(env, {
-        namespace: first.namespace,
-        userId: first.user_id,
-        conversationId: first.conversation_id,
-        chunk,
-        summary
-      });
-      await markMessagesChunkProcessed(env, chunk.messages.map((message) => message.id));
-      chunkCount += 1;
-      messageCount += chunk.messages.length;
-    }
+    await markMessagesChunkProcessed(env.DB, {
+      namespace: message.namespace,
+      ids: chunk.messages.map((item) => item.id)
+    });
+    chunkCount += 1;
+    messageCount += chunk.messages.length;
   }
 
-  return { conversations: conversationCount, chunks: chunkCount, messages: messageCount };
+  return { conversations: chunkCount > 0 ? 1 : 0, chunks: chunkCount, messages: messageCount };
 }
