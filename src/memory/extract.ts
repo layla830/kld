@@ -1,5 +1,7 @@
 import { callOpenAICompat } from "../proxy/openaiAdapter";
 import type { Env, MessageRecord, OpenAIChatRequest, OpenAIChatResponse } from "../types";
+import { extractJsonObject } from "../utils/jsonHelpers";
+import { sanitizeMemoryContent } from "./contentSanitizer";
 
 export interface ExtractedMemory {
   type: string;
@@ -24,43 +26,11 @@ function normalizeStringArray(value: unknown): string[] {
   return value.filter((item): item is string => typeof item === "string").map((item) => item.trim()).filter(Boolean);
 }
 
-function sanitizeMemoryContent(text: string): string {
-  return text
-    .replace(/debug-test/gi, "")
-    .replace(/记忆系统/g, "")
-    .replace(/自动记忆测试口令/g, "口令")
-    .replace(/测试口令/g, "口令")
-    .replace(/标签为?[^，。；\s]+/g, "")
-    .replace(/标签[:：]?[^，。；\s]+/g, "")
-    .replace(/[，,；;：:]\s*([。.!！?？])/g, "$1")
-    .replace(/\s{2,}/g, " ")
-    .replace(/^[，,；;：:\s]+|[，,；;：:\s]+$/g, "")
-    .trim();
-}
-
 function normalizeMemoryContent(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const text = sanitizeMemoryContent(value);
   if (!text || text.length > 1000) return null;
   return text;
-}
-
-function extractJsonObject(text: string): unknown | null {
-  try {
-    return JSON.parse(text) as unknown;
-  } catch {
-    // Some providers wrap JSON in prose; pull out the outermost object.
-  }
-
-  const start = text.indexOf("{");
-  const end = text.lastIndexOf("}");
-  if (start === -1 || end === -1 || end <= start) return null;
-
-  try {
-    return JSON.parse(text.slice(start, end + 1)) as unknown;
-  } catch {
-    return null;
-  }
 }
 
 function parseExtraction(text: string): MemoryExtractionResult {
