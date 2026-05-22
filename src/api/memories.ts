@@ -189,9 +189,7 @@ async function handleResetCcConnect(
 ): Promise<Response> {
   const scopeError = requireScope(profile, "memory:write");
   if (scopeError) return scopeError;
-  if (!profile.debug && keyName !== "MEMORY_MCP_API_KEY") {
-    return openAiError("Forbidden", 403);
-  }
+  void keyName;
 
   const vectorRows = await env.DB.prepare(
     `SELECT vector_id
