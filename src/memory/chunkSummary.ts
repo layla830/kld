@@ -1,6 +1,5 @@
 import { callOpenAICompat } from "../proxy/openaiAdapter";
-import type { Env } from "../types";
-import type { MessageRecord } from "../db/messages";
+import type { Env, MessageRecord } from "../types";
 import type { ChunkSummary } from "./chunkTypes";
 import { formatShanghaiDateTime, messageTime } from "./chunkPeriods";
 
