@@ -129,16 +129,11 @@ function readMessages(value: unknown): OpenAIChatMessage[] {
   return value.flatMap((item): OpenAIChatMessage[] => {
     if (!item || typeof item !== "object") return [];
     const record = item as { role?: unknown; content?: unknown; created_at?: unknown; timestamp?: unknown };
-    if (
-      record.role !== "system" &&
-      record.role !== "user" &&
-      record.role !== "assistant" &&
-      record.role !== "tool"
-    ) {
+    if (record.role !== "system" && record.role !== "user" && record.role !== "assistant") {
       return [];
     }
 
-    if (typeof record.content !== "string" && record.content !== null && !Array.isArray(record.content)) {
+    if (typeof record.content !== "string" || !record.content.trim()) {
       return [];
     }
 
