@@ -34,6 +34,7 @@ export interface Env {
   AUTO_CHUNK_MIN_MESSAGES?: string;
   AUTO_CHUNK_MAX_MESSAGES?: string;
   AUTO_CHUNK_SUMMARY_MODEL?: string;
+  CC_CONNECT_MESSAGE_RETENTION_DAYS?: string;
   INJECTION_MODE?: string;
   EMBEDDING_MODEL?: string;
   MEMORY_TOP_K?: string;

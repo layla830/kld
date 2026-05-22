@@ -1,5 +1,10 @@
 import { createMemory } from "../db/memories";
-import { listUnprocessedChunkMessages, markMessagesChunkProcessed, type MessageRecord } from "../db/messages";
+import {
+  deleteProcessedSourceMessagesBefore,
+  listUnprocessedChunkMessages,
+  markMessagesChunkProcessed,
+  type MessageRecord
+} from "../db/messages";
 import { upsertMemoryEmbedding } from "./embedding";
 import { callOpenAICompat } from "../proxy/openaiAdapter";
 import type { ConversationChunkQueueMessage, Env } from "../types";
@@ -10,6 +15,7 @@ const DEFAULT_MAX_MESSAGES = 80;
 const SUMMARY_MAX_TOKENS = 900;
 const MIN_MESSAGES = 10;
 const SHANGHAI_OFFSET_MS = 8 * 60 * 60 * 1000;
+const DEFAULT_CC_CONNECT_RETENTION_DAYS = 7;
 
 type ChunkSummary = {
   summary: string;
@@ -153,6 +159,32 @@ function readOpenAICompatText(result: unknown): string {
   if (typeof choice?.message?.content === "string") return choice.message.content;
   if (typeof choice?.text === "string") return choice.text;
   return "";
+}
+
+function readPositiveInt(value: string | undefined, fallback: number): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 1) return fallback;
+  return Math.floor(parsed);
+}
+
+function daysAgoIso(days: number): string {
+  return new Date(Date.now() - days * 86_400_000).toISOString();
+}
+
+async function pruneProcessedCcConnectMessages(env: Env, namespace: string): Promise<void> {
+  const retentionDays = readPositiveInt(env.CC_CONNECT_MESSAGE_RETENTION_DAYS, DEFAULT_CC_CONNECT_RETENTION_DAYS);
+  try {
+    const deleted = await deleteProcessedSourceMessagesBefore(env.DB, {
+      namespace,
+      source: "cc-connect",
+      before: daysAgoIso(retentionDays)
+    });
+    if (deleted > 0) {
+      console.log("cc-connect processed raw message retention completed", { namespace, deleted, retentionDays });
+    }
+  } catch (error) {
+    console.error("cc-connect processed raw message retention failed", error);
+  }
 }
 
 async function runSummaryModel(env: Env, model: string, prompt: string): Promise<string> {
@@ -303,6 +335,10 @@ export async function runConversationChunking(
     });
     chunkCount += 1;
     messageCount += chunk.messages.length;
+  }
+
+  if (chunkCount > 0 && message.source === "cc-connect") {
+    await pruneProcessedCcConnectMessages(env, message.namespace);
   }
 
   return { conversations: chunkCount > 0 ? 1 : 0, chunks: chunkCount, messages: messageCount };
