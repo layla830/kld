@@ -9,8 +9,8 @@ import {
   writeCursor,
   RETENTION_BATCH_SIZE,
 } from "../db/retention";
-import { deleteProcessedSourceMessagesBefore } from "../db/messages";
 import type { Env } from "../types";
+import { pruneProcessedCcConnectMessages } from "./ccConnectRetention";
 
 // ---------------------------------------------------------------------------
 // Default retention policy (hardcoded, not user-configurable)
@@ -19,7 +19,6 @@ import type { Env } from "../types";
 export const RETENTION_POLICY = {
   activeMemoryAutoExpiry: false,
   messagesDays: 14,
-  ccConnectProcessedMessagesDays: 7,
   usageLogsDays: 30,
   memoryEventsDays: 30,
   idempotencyKeysDays: 7,
@@ -37,12 +36,6 @@ function daysAgo(days: number): string {
 
 function hoursAgoMs(hours: number): number {
   return Date.now() - hours * 3_600_000;
-}
-
-function positiveInt(value: string | undefined, fallback: number): number {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed < 1) return fallback;
-  return Math.floor(parsed);
 }
 
 /**
@@ -82,17 +75,9 @@ export async function runMemoryRetention(
 
   const now = new Date().toISOString();
   const stats: Record<string, number> = {};
-  const ccConnectRetentionDays = positiveInt(
-    env.CC_CONNECT_MESSAGE_RETENTION_DAYS,
-    RETENTION_POLICY.ccConnectProcessedMessagesDays
-  );
 
   stats.messages = await deleteOldMessages(env.DB, namespace, daysAgo(RETENTION_POLICY.messagesDays));
-  stats.ccConnectProcessedMessages = await deleteProcessedSourceMessagesBefore(env.DB, {
-    namespace,
-    source: "cc-connect",
-    before: daysAgo(ccConnectRetentionDays)
-  });
+  stats.ccConnectProcessedMessages = await pruneProcessedCcConnectMessages(env, namespace);
   stats.usageLogs = await deleteOldUsageLogs(env.DB, namespace, daysAgo(RETENTION_POLICY.usageLogsDays));
   stats.memoryEvents = await deleteOldMemoryEvents(env.DB, namespace, daysAgo(RETENTION_POLICY.memoryEventsDays));
   stats.idempotencyKeys = await deleteOldIdempotencyKeys(env.DB, daysAgo(RETENTION_POLICY.idempotencyKeysDays));
