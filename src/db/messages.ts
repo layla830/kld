@@ -3,6 +3,9 @@ import { sha256Hex } from "../utils/hash";
 import { newId } from "../utils/ids";
 import { nowIso } from "../utils/time";
 
+const D1_BIND_LIMIT = 90;
+const D1_BATCH_LIMIT = 50;
+
 function contentToText(content: OpenAIChatMessage["content"]): string {
   if (typeof content === "string") return content;
   if (content == null) return "";
@@ -14,6 +17,20 @@ function safeCreatedAt(value: string | undefined): string {
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return nowIso();
   return parsed.toISOString();
+}
+
+function chunk<T>(items: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let index = 0; index < items.length; index += size) {
+    chunks.push(items.slice(index, index + size));
+  }
+  return chunks;
+}
+
+async function runBatched(db: D1Database, statements: D1PreparedStatement[]): Promise<void> {
+  for (const batch of chunk(statements, D1_BATCH_LIMIT)) {
+    await db.batch(batch);
+  }
 }
 
 export async function saveUserMessages(
@@ -31,6 +48,7 @@ export async function saveUserMessages(
 ): Promise<string[]> {
   const userMessages = input.messages.filter((message) => message.role === "user");
   const ids: string[] = [];
+  const statements: D1PreparedStatement[] = [];
 
   for (const message of userMessages) {
     const content = contentToText(message.content);
@@ -38,30 +56,32 @@ export async function saveUserMessages(
     const hash = await sha256Hex(`${input.conversationId}:${id}:${message.role}:${content}`);
     ids.push(id);
 
-    await db
-      .prepare(
-        `INSERT INTO messages (
-          id, conversation_id, namespace, role, content, source, client_message_hash,
-          upstream_model, upstream_provider, request_model, stream, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      )
-      .bind(
-        id,
-        input.conversationId,
-        input.namespace,
-        "user",
-        content,
-        input.source,
-        hash,
-        input.upstreamModel,
-        input.upstreamProvider,
-        input.requestModel,
-        input.stream ? 1 : 0,
-        nowIso()
-      )
-      .run();
+    statements.push(
+      db
+        .prepare(
+          `INSERT INTO messages (
+            id, conversation_id, namespace, role, content, source, client_message_hash,
+            upstream_model, upstream_provider, request_model, stream, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        )
+        .bind(
+          id,
+          input.conversationId,
+          input.namespace,
+          "user",
+          content,
+          input.source,
+          hash,
+          input.upstreamModel,
+          input.upstreamProvider,
+          input.requestModel,
+          input.stream ? 1 : 0,
+          nowIso()
+        )
+    );
   }
 
+  await runBatched(db, statements);
   return ids;
 }
 
@@ -127,18 +147,22 @@ export async function getMessagesByIds(
 ): Promise<MessageRecord[]> {
   if (input.ids.length === 0) return [];
 
-  const placeholders = input.ids.map(() => "?").join(", ");
-  const result = await db
-    .prepare(
-      `SELECT id, conversation_id, namespace, role, content, source, created_at
-       FROM messages
-       WHERE namespace = ? AND id IN (${placeholders})
-       ORDER BY created_at ASC`
-    )
-    .bind(input.namespace, ...input.ids)
-    .all<MessageRecord>();
+  const rows: MessageRecord[] = [];
+  const idsPerQuery = D1_BIND_LIMIT - 1;
+  for (const ids of chunk(input.ids, idsPerQuery)) {
+    const placeholders = ids.map(() => "?").join(", ");
+    const result = await db
+      .prepare(
+        `SELECT id, conversation_id, namespace, role, content, source, created_at
+         FROM messages
+         WHERE namespace = ? AND id IN (${placeholders})`
+      )
+      .bind(input.namespace, ...ids)
+      .all<MessageRecord>();
+    rows.push(...(result.results ?? []));
+  }
 
-  return result.results ?? [];
+  return rows.sort((a, b) => a.created_at.localeCompare(b.created_at));
 }
 
 export async function countUnprocessedChunkMessages(
@@ -188,16 +212,19 @@ export async function markMessagesChunkProcessed(
   input: { namespace: string; ids: string[] }
 ): Promise<void> {
   if (input.ids.length === 0) return;
-  const placeholders = input.ids.map(() => "?").join(", ");
 
-  await db
-    .prepare(
-      `UPDATE messages
-       SET chunk_processed_at = ?
-       WHERE namespace = ? AND id IN (${placeholders})`
-    )
-    .bind(nowIso(), input.namespace, ...input.ids)
-    .run();
+  const idsPerQuery = D1_BIND_LIMIT - 2;
+  for (const ids of chunk(input.ids, idsPerQuery)) {
+    const placeholders = ids.map(() => "?").join(", ");
+    await db
+      .prepare(
+        `UPDATE messages
+         SET chunk_processed_at = ?
+         WHERE namespace = ? AND id IN (${placeholders})`
+      )
+      .bind(nowIso(), input.namespace, ...ids)
+      .run();
+  }
 }
 
 export async function saveIngestMessages(
@@ -210,6 +237,7 @@ export async function saveIngestMessages(
   }
 ): Promise<string[]> {
   const ids: string[] = [];
+  const statements: D1PreparedStatement[] = [];
 
   for (const message of input.messages) {
     const content = contentToText(message.content);
@@ -218,25 +246,27 @@ export async function saveIngestMessages(
     const id = newId("msg");
     ids.push(id);
 
-    await db
-      .prepare(
-        `INSERT INTO messages (
-          id, conversation_id, namespace, role, content, source, stream, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-      )
-      .bind(
-        id,
-        input.conversationId,
-        input.namespace,
-        message.role,
-        content,
-        input.source,
-        0,
-        safeCreatedAt(message.created_at)
-      )
-      .run();
+    statements.push(
+      db
+        .prepare(
+          `INSERT INTO messages (
+            id, conversation_id, namespace, role, content, source, stream, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+        )
+        .bind(
+          id,
+          input.conversationId,
+          input.namespace,
+          message.role,
+          content,
+          input.source,
+          0,
+          safeCreatedAt(message.created_at)
+        )
+    );
   }
 
+  await runBatched(db, statements);
   return ids;
 }
 
