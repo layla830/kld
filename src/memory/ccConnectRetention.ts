@@ -13,7 +13,7 @@ function daysAgoIso(days: number): string {
   return new Date(Date.now() - days * 86_400_000).toISOString();
 }
 
-export async function pruneProcessedCcConnectMessages(env: Env, namespace: string): Promise<void> {
+export async function pruneProcessedCcConnectMessages(env: Env, namespace: string): Promise<number> {
   const retentionDays = readPositiveInt(env.CC_CONNECT_MESSAGE_RETENTION_DAYS, DEFAULT_CC_CONNECT_RETENTION_DAYS);
   try {
     const deleted = await deleteProcessedSourceMessagesBefore(env.DB, {
@@ -24,7 +24,9 @@ export async function pruneProcessedCcConnectMessages(env: Env, namespace: strin
     if (deleted > 0) {
       console.log("cc-connect processed raw message retention completed", { namespace, deleted, retentionDays });
     }
+    return deleted;
   } catch (error) {
     console.error("cc-connect processed raw message retention failed", error);
+    return 0;
   }
 }
