@@ -9,6 +9,13 @@ function contentToText(content: OpenAIChatMessage["content"]): string {
   return JSON.stringify(content);
 }
 
+function safeCreatedAt(value: string | undefined): string {
+  if (!value) return nowIso();
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return nowIso();
+  return parsed.toISOString();
+}
+
 export async function saveUserMessages(
   db: D1Database,
   input: {
@@ -225,7 +232,7 @@ export async function saveIngestMessages(
         content,
         input.source,
         0,
-        nowIso()
+        safeCreatedAt(message.created_at)
       )
       .run();
   }
