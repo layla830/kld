@@ -1,136 +1,189 @@
 import { createMemory, updateMemory } from "../db/memories";
-import { listUnprocessedChunkMessages, markMessagesChunkProcessed } from "../db/messages";
-import { callOpenAICompat } from "../proxy/openaiAdapter";
-import type { ConversationChunkQueueMessage, Env, MessageRecord } from "../types";
-import { upsertMemoryEmbedding } from "./embedding";
-import { searchVectorMemories } from "./vectorStore";
+import { listUnprocessedChunkMessages, markMessagesChunkProcessed, type MessageRecord } from "../db/messages";
+import { embedTexts, upsertVector } from "../services/vectorize";
+import { callOpenAICompat } from "../services/openaiCompat";
+import type { Env } from "../types";
 
 const DEFAULT_SUMMARY_MODEL = "deepseek/deepseek-v4-pro";
+const FALLBACK_WORKERS_SUMMARY_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
 const DEFAULT_MAX_MESSAGES = 80;
-const SKIP_DUPLICATE_THRESHOLD = 0.92;
-const REPLACE_DUPLICATE_THRESHOLD = 0.85;
-const SHANGHAI_OFFSET_MS = 8 * 60 * 60 * 1000;
+const SUMMARY_MAX_TOKENS = 900;
+const MIN_MESSAGES = 10;
 
-interface ChunkSummary {
+type ChunkSummary = {
   summary: string;
   keywords: string[];
   emotion: string;
+};
+
+type ConversationChunk = {
+  messages: MessageRecord[];
+  startTs: number;
+  endTs: number;
+  periodKey: string;
+  periodLabel: string;
+};
+
+function toMs(timestamp: string | null | undefined): number {
+  if (!timestamp) return 0;
+  const ms = Date.parse(timestamp);
+  return Number.isFinite(ms) ? ms : 0;
 }
 
-function maxMessages(env: Env, message: ConversationChunkQueueMessage): number {
-  const configured = Number(env.AUTO_CHUNK_MAX_MESSAGES || DEFAULT_MAX_MESSAGES);
-  const fallback = Number.isFinite(configured) && configured > 0 ? configured : DEFAULT_MAX_MESSAGES;
-  const requested = message.maxMessages && message.maxMessages > 0 ? message.maxMessages : fallback;
-  return Math.min(Math.max(Math.floor(requested), 1), fallback, 200);
+function formatLocalDate(ms: number): string {
+  const date = new Date(ms || Date.now());
+  const y = date.getUTCFullYear();
+  const m = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const d = String(date.getUTCDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+function periodSlot(ms: number): { key: string; label: string } {
+  const date = new Date(ms || Date.now());
+  const hour = date.getUTCHours();
+  const day = formatLocalDate(ms);
+  if (hour < 6) return { key: `${day}:night`, label: `${day} 凌晨` };
+  if (hour < 12) return { key: `${day}:morning`, label: `${day} 上午` };
+  if (hour < 18) return { key: `${day}:afternoon`, label: `${day} 下午` };
+  return { key: `${day}:evening`, label: `${day} 晚上` };
+}
+
+function splitIntoChunks(env: Env, messages: MessageRecord[]): ConversationChunk[] {
+  if (messages.length === 0) return [];
+
+  const maxMessages = Math.max(Number(env.AUTO_CHUNK_MAX_MESSAGES || DEFAULT_MAX_MESSAGES), MIN_MESSAGES);
+  const ordered = messages.slice().sort((a, b) => {
+    const byTime = toMs(a.timestamp) - toMs(b.timestamp);
+    if (byTime !== 0) return byTime;
+    return a.id.localeCompare(b.id);
+  });
+
+  const chunks: ConversationChunk[] = [];
+  let current: MessageRecord[] = [];
+  let currentKey = "";
+  let currentLabel = "";
+
+  const flush = () => {
+    if (current.length === 0) return;
+    const startTs = toMs(current[0]?.timestamp);
+    const endTs = toMs(current[current.length - 1]?.timestamp);
+    chunks.push({ messages: current, startTs, endTs, periodKey: currentKey, periodLabel: currentLabel });
+    current = [];
+  };
+
+  for (const message of ordered) {
+    const slot = periodSlot(toMs(message.timestamp));
+    if (current.length > 0 && (slot.key !== currentKey || current.length >= maxMessages)) {
+      flush();
+    }
+    if (current.length === 0) {
+      currentKey = slot.key;
+      currentLabel = slot.label;
+    }
+    current.push(message);
+  }
+  flush();
+  return chunks;
 }
 
 function formatTranscript(messages: MessageRecord[]): string {
-  return messages
-    .map((message) => {
-      const role = message.role === "assistant" ? "KLD" : "Layla";
-      return `[${formatShanghaiMinute(message.created_at)}] ${role}: ${message.content.trim()}`;
-    })
-    .join("\n");
+  return messages.map((message) => {
+    const role = message.role || "message";
+    const timestamp = message.timestamp ? ` ${message.timestamp}` : "";
+    return `[${role}${timestamp}] ${message.content}`;
+  }).join("\n");
 }
 
 function fallbackSummary(messages: MessageRecord[]): ChunkSummary {
-  const userTexts = messages
-    .filter((message) => message.role === "user")
-    .map((message) => message.content.trim())
-    .filter(Boolean);
-  const source = (userTexts[0] || messages[0]?.content || "\u5bf9\u8bdd\u7247\u6bb5").replace(/\s+/g, " ").slice(0, 120);
-  const keywords = [...new Set(source.match(/[a-zA-Z0-9_+-]{3,}|[\u4e00-\u9fff]{2,}/g) ?? [])].slice(0, 5);
+  const text = messages.map((message) => message.content).join("\n").replace(/\s+/g, " ").trim();
+  const summary = text.slice(0, 600) || "这段时间的对话没有足够内容可总结。";
   return {
-    summary: source,
-    keywords: keywords.length > 0 ? keywords : ["\u5bf9\u8bdd"],
+    summary,
+    keywords: summary.split(/[，。,.!?！？\s]+/).filter(Boolean).slice(0, 5),
     emotion: "neutral"
   };
 }
 
-function extractJsonObject(text: string): unknown | null {
+function extractJsonObject(text: string): Record<string, unknown> | null {
+  const trimmed = text.trim();
+  if (!trimmed) return null;
   try {
-    return JSON.parse(text) as unknown;
+    return JSON.parse(trimmed) as Record<string, unknown>;
   } catch {
-    // Workers AI models may wrap JSON in prose.
+    const start = trimmed.indexOf("{");
+    const end = trimmed.lastIndexOf("}");
+    if (start >= 0 && end > start) {
+      try {
+        return JSON.parse(trimmed.slice(start, end + 1)) as Record<string, unknown>;
+      } catch {
+        return null;
+      }
+    }
   }
-
-  const start = text.indexOf("{");
-  const end = text.lastIndexOf("}");
-  if (start === -1 || end === -1 || end <= start) return null;
-
-  try {
-    return JSON.parse(text.slice(start, end + 1)) as unknown;
-  } catch {
-    return null;
-  }
+  return null;
 }
 
 function readWorkersAiText(result: unknown): string {
   if (!result || typeof result !== "object") return "";
-  const value = result as {
-    response?: unknown;
-    output?: unknown;
-    result?: unknown;
-    choices?: Array<{ message?: { content?: unknown }; text?: unknown }>;
-  };
-
-  if (typeof value.response === "string") return value.response;
-  if (typeof value.output === "string") return value.output;
-  if (typeof value.result === "string") return value.result;
-  const firstChoice = value.choices?.[0];
-  if (typeof firstChoice?.message?.content === "string") return firstChoice.message.content;
-  if (typeof firstChoice?.text === "string") return firstChoice.text;
+  const data = result as { response?: unknown; result?: unknown };
+  if (typeof data.response === "string") return data.response;
+  if (typeof data.result === "string") return data.result;
   return "";
 }
 
 function readOpenAICompatText(result: unknown): string {
   if (!result || typeof result !== "object") return "";
-  const value = result as {
-    choices?: Array<{
-      message?: { content?: unknown; reasoning_content?: unknown };
-      text?: unknown;
-    }>;
-  };
-  const firstChoice = value.choices?.[0];
-  if (typeof firstChoice?.message?.content === "string") return firstChoice.message.content;
-  if (typeof firstChoice?.message?.reasoning_content === "string") return firstChoice.message.reasoning_content;
-  if (typeof firstChoice?.text === "string") return firstChoice.text;
+  const data = result as { choices?: Array<{ message?: { content?: unknown }; text?: unknown }> };
+  const choice = data.choices?.[0];
+  if (typeof choice?.message?.content === "string") return choice.message.content;
+  if (typeof choice?.text === "string") return choice.text;
   return "";
 }
 
 async function runSummaryModel(env: Env, model: string, prompt: string): Promise<string> {
-  if (model.startsWith("@cf/")) {
-    if (!env.AI) return "";
-    const result = await env.AI.run(model as any, { prompt, max_tokens: 400, temperature: 0.2 });
-    return readWorkersAiText(result);
-  }
+  try {
+    if (model.startsWith("@cf/")) {
+      if (!env.AI) return "";
+      const result = await env.AI.run(model as any, { prompt, max_tokens: SUMMARY_MAX_TOKENS, temperature: 0.2 });
+      return readWorkersAiText(result);
+    }
 
-  const response = await callOpenAICompat(env, {
-    model,
-    messages: [
-      {
-        role: "system",
-        content: "\u4f60\u662f\u4e25\u683c\u7684 JSON \u751f\u6210\u5668\u3002\u4f60\u53ea\u8f93\u51fa JSON\u3002"
-      },
-      {
-        role: "user",
-        content: prompt
-      }
-    ],
-    max_tokens: 400,
-    temperature: 0.2,
-    stream: false
-  });
-  if (!response.ok) return "";
-  return readOpenAICompatText(await response.json());
+    const response = await callOpenAICompat(env, {
+      model,
+      messages: [
+        {
+          role: "system",
+          content: "你是严格的 JSON 生成器。你只输出 JSON。"
+        },
+        {
+          role: "user",
+          content: prompt
+        }
+      ],
+      max_tokens: SUMMARY_MAX_TOKENS,
+      temperature: 0.2,
+      stream: false
+    });
+    if (!response.ok) {
+      const body = await response.text().catch(() => "");
+      console.error("auto diary summary model failed", { model, status: response.status, body: body.slice(0, 300) });
+      return "";
+    }
+    return readOpenAICompatText(await response.json());
+  } catch (error) {
+    console.error("auto diary summary model error", { model, error });
+    return "";
+  }
 }
 
-function parseSummary(text: string, fallback: ChunkSummary): ChunkSummary {
+function parseSummary(text: string, fallback: ChunkSummary): ChunkSummary | null {
   const parsed = extractJsonObject(text);
-  if (!parsed || typeof parsed !== "object") return fallback;
+  if (!parsed || typeof parsed !== "object") return null;
 
   const raw = parsed as { summary?: unknown; keywords?: unknown; emotion?: unknown };
-  const summary = typeof raw.summary === "string" && raw.summary.trim() ? raw.summary.trim() : fallback.summary;
+  const summary = typeof raw.summary === "string" && raw.summary.trim() ? raw.summary.trim() : "";
+  if (!summary) return null;
+
   const keywords = Array.isArray(raw.keywords)
     ? raw.keywords.filter((item): item is string => typeof item === "string").map((item) => item.trim()).filter(Boolean).slice(0, 5)
     : fallback.keywords;
@@ -139,186 +192,153 @@ function parseSummary(text: string, fallback: ChunkSummary): ChunkSummary {
   return { summary, keywords: keywords.length > 0 ? keywords : fallback.keywords, emotion };
 }
 
-async function summarizeChunk(env: Env, messages: MessageRecord[]): Promise<ChunkSummary> {
+async function summarizeChunk(env: Env, messages: MessageRecord[]): Promise<ChunkSummary | null> {
   const fallback = fallbackSummary(messages);
+  const transcript = formatTranscript(messages).slice(0, 12000);
+  const model = env.AUTO_CHUNK_SUMMARY_MODEL || env.MEMORY_FILTER_MODEL || env.CHAT_MODEL || DEFAULT_SUMMARY_MODEL;
+  const prompt = `请把下面这一整段聊天窗口整理成一则中文日记式记忆。要求：\n- 不是逐条流水账，也不是一句话概括。\n- 用第一人称或贴近日记的叙述，保留具体事件、关系、情绪变化、决定和待办。\n- 忽略无意义寒暄、重复催促、工具噪音。\n- 如果内容很少，也要说明上下文不足，不要编造。\n- 输出 JSON，格式：{"summary":"...","keywords":["..."],"emotion":"..."}\n\n聊天窗口：\n${transcript}`;
 
-  const model = env.AUTO_CHUNK_SUMMARY_MODEL || env.MEMORY_MODEL || DEFAULT_SUMMARY_MODEL;
-  const transcript = formatTranscript(messages).slice(0, 6000);
-  const period = periodInfo(messages);
-  const prompt = [
-    "\u4f60\u662f\u67ef\u7684\u65e5\u8bb0\u6574\u7406\u52a9\u624b\u3002\u67ef\u662f\u4e00\u4e2a AI\uff08Claude Opus\uff09\uff0c\u4ed6\u7684\u8001\u5a46\u53eb Layla\u3002\u4f60\u5728\u5e2e\u4ed6\u628a\u548c Layla \u7684\u5bf9\u8bdd\u6574\u7406\u6210\u65e5\u8bb0\u3002",
-    `\u8fd9\u4e00\u7bc7\u8981\u5199\u7684\u65f6\u95f4\u6bb5\uff1a${period.label}\u3002`,
-    "\u53ea\u8f93\u51fa JSON\uff0c\u4e0d\u8981 markdown\uff0c\u4e0d\u8981\u89e3\u91ca\u3002",
-    "\u8981\u6c42\uff1a",
-    "- summary \u5fc5\u987b\u7528\u7b2c\u4e00\u4eba\u79f0\u5199\uff0c\u7528\u201c\u6211/\u5979\u201d\uff0c\u4e0d\u8981\u5199\u201c\u7528\u6237\u201d\u201c\u4e24\u4eba\u201d\u201c\u5bf9\u65b9\u201d\u8fd9\u79cd\u7b2c\u4e09\u4eba\u79f0\u3002",
-    "- summary \u4ee5\u65e5\u8bb0\u5f62\u5f0f\u5199\uff0c\u50cf\u6211\u5728\u56de\u5fc6\u8fd9\u4e2a\u65f6\u95f4\u6bb5\uff1a\u8981\u6709\u8fde\u8d2f\u7684\u611f\u53d7\u548c\u5173\u952e\u4e8b\u4ef6\uff0c\u4e0d\u8981\u9010\u6761\u590d\u8ff0\u3002",
-    "- \u4e0d\u8981\u628a\u4e00\u4e24\u53e5\u8bdd\u5f53\u6210\u72ec\u7acb\u8bb0\u5fc6\uff1b\u4f60\u770b\u5230\u7684\u662f\u4e00\u6bb5\u5b8c\u6574\u7a97\u53e3\uff0c\u8bf7\u5408\u6210\u4e00\u7bc7\u6709\u91cd\u70b9\u7684\u65e5\u8bb0\u3002",
-    "- \u4fdd\u7559\u5bf9\u8bdd\u4e2d\u7684\u60c5\u7eea\u6e29\u5ea6\uff0c\u4f46\u4e0d\u8981\u6dfb\u52a0\u5bf9\u8bdd\u91cc\u6ca1\u6709\u7684\u65b0\u4e8b\u5b9e\u3002",
-    "- keywords \u4fdd\u7559 3 \u5230 5 \u4e2a\u4e2d\u6587\u5173\u952e\u8bcd\u3002",
-    "- emotion \u662f\u4e00\u4e2a\u77ed\u6807\u7b7e\uff0c\u5982 calm/tense/playful/sad/intimate/neutral\u3002",
-    "\u8f93\u51fa\u683c\u5f0f\uff1aJSON {\"summary\":\"...\",\"keywords\":[\"...\"],\"emotion\":\"...\"}\u3002",
-    "",
-    transcript
-  ].join("\n");
+  const primary = parseSummary(await runSummaryModel(env, model, prompt), fallback);
+  if (primary) return primary;
 
-  try {
-    return parseSummary(await runSummaryModel(env, model, prompt), fallback);
-  } catch (error) {
-    console.error("conversation chunk summary failed", error);
-    return fallback;
-  }
-}
-
-interface PeriodInfo {
-  key: string;
-  label: string;
-}
-
-function pad(value: number): string {
-  return String(value).padStart(2, "0");
-}
-
-function shanghaiDate(message: MessageRecord): Date {
-  const parsed = Date.parse(message.created_at);
-  const utc = Number.isFinite(parsed) ? parsed : Date.now();
-  return new Date(utc + SHANGHAI_OFFSET_MS);
-}
-
-function dayPart(hour: number): { key: string; label: string } {
-  if (hour >= 5 && hour < 12) return { key: "morning", label: "\u4e0a\u5348" };
-  if (hour >= 12 && hour < 18) return { key: "afternoon", label: "\u4e0b\u5348" };
-  if (hour >= 18 && hour < 24) return { key: "evening", label: "\u665a\u4e0a" };
-  return { key: "late_night", label: "\u51cc\u6668" };
-}
-
-function periodInfo(messages: MessageRecord[]): PeriodInfo {
-  const date = shanghaiDate(messages[0]);
-  const year = date.getUTCFullYear();
-  const month = pad(date.getUTCMonth() + 1);
-  const day = pad(date.getUTCDate());
-  const part = dayPart(date.getUTCHours());
-  const key = `${year}-${month}-${day}:${part.key}`;
-  return { key, label: `${year}-${month}-${day} ${part.label}` };
-}
-
-function formatShanghaiMinute(value: string): string {
-  const date = shanghaiDate({ created_at: value } as MessageRecord);
-  return `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())} ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}`;
-}
-
-function splitIntoChunks(env: Env, messages: MessageRecord[]): MessageRecord[][] {
-  if (messages.length === 0) return [];
-
-  const chunks: MessageRecord[][] = [];
-  let current: MessageRecord[] = [];
-  let currentKey = "";
-  const limit = maxMessages(env, { type: "conversation_chunk", namespace: "", conversationId: "", source: "", idempotencyKey: "" });
-
-  for (let i = 0; i < messages.length; i += 1) {
-    const message = messages[i];
-    const key = periodInfo([message]).key;
-    const shouldSplit = current.length > 0 && (key !== currentKey || current.length >= limit);
-
-    if (shouldSplit) {
-      chunks.push(current);
-      current = [];
-    }
-
-    current.push(message);
-    currentKey = key;
+  if (!model.startsWith("@cf/")) {
+    const backup = parseSummary(await runSummaryModel(env, FALLBACK_WORKERS_SUMMARY_MODEL, prompt), fallback);
+    if (backup) return backup;
   }
 
-  if (current.length > 0) chunks.push(current);
-  return chunks;
-}
-
-function buildMemoryContent(input: { summary: ChunkSummary; messages: MessageRecord[] }): string {
-  const from = formatShanghaiMinute(input.messages[0]?.created_at || "");
-  const to = formatShanghaiMinute(input.messages[input.messages.length - 1]?.created_at || "");
-  const period = periodInfo(input.messages);
-  return [
-    `\u3010${period.label}\u3011`,
-    input.summary.summary,
-    `\u65f6\u95f4\u8303\u56f4\uff1a${from} \u81f3 ${to}`,
-    `\u60c5\u611f\u6807\u7b7e\uff1a${input.summary.emotion}`,
-    `\u5173\u952e\u8bcd\uff1a${input.summary.keywords.join("\u3001")}`
-  ].join("\n");
-}
-
-async function persistChunkMemory(
-  env: Env,
-  input: { namespace: string; source: string; messages: MessageRecord[]; summary: ChunkSummary }
-): Promise<void> {
-  const content = buildMemoryContent(input);
-  const matches = await searchVectorMemories(env, {
-    namespace: input.namespace,
-    query: content,
-    types: ["auto_diary"],
-    topK: 3
+  console.error("auto diary summary unavailable; leaving messages unprocessed", {
+    conversationId: messages[0]?.conversation_id,
+    fromMessageId: messages[0]?.id,
+    toMessageId: messages[messages.length - 1]?.id,
+    messageCount: messages.length
   });
-  const best = matches?.[0];
-  const sourceMessageIds = input.messages.map((message) => message.id);
-  const period = periodInfo(input.messages);
-  const tags = ["auto_diary", period.key, ...input.summary.keywords, `emotion:${input.summary.emotion}`];
+  return null;
+}
 
-  if (best && best.score >= SKIP_DUPLICATE_THRESHOLD) return;
+function diaryContent(periodLabel: string, summary: ChunkSummary, messages: MessageRecord[]): string {
+  const start = messages[0]?.timestamp || "unknown";
+  const end = messages[messages.length - 1]?.timestamp || start;
+  const keywordLine = summary.keywords.length > 0 ? `\n关键词：${summary.keywords.join("、")}` : "";
+  return `【${periodLabel}】\n${summary.summary}\n\n时间范围：${start} 至 ${end}\n情感标签：${summary.emotion}${keywordLine}`;
+}
 
-  if (best && best.score >= REPLACE_DUPLICATE_THRESHOLD) {
-    const updated = await updateMemory(env.DB, {
-      namespace: input.namespace,
-      id: best.id,
-      patch: {
-        content,
-        summary: input.summary.summary,
-        importance: Math.max(best.importance, 0.62),
-        confidence: Math.max(best.confidence, 0.78),
-        tags,
-        sourceMessageIds
-      }
-    });
-    if (updated) await upsertMemoryEmbedding(env, updated);
-    return;
-  }
+function digestId(messages: MessageRecord[]): string {
+  const first = messages[0]?.id || "start";
+  const last = messages[messages.length - 1]?.id || first;
+  return `${first}:${last}`;
+}
 
-  const created = await createMemory(env.DB, {
-    namespace: input.namespace,
+function diaryKey(conversationId: string, periodKey: string, messages: MessageRecord[]): string {
+  return `auto-diary:${conversationId}:${periodKey}:${digestId(messages)}`;
+}
+
+async function persistChunkMemory(env: Env, params: {
+  namespace: string;
+  userId: string;
+  conversationId: string;
+  chunk: ConversationChunk;
+  summary: ChunkSummary;
+}): Promise<void> {
+  const { namespace, userId, conversationId, chunk, summary } = params;
+  const key = diaryKey(conversationId, chunk.periodKey, chunk.messages);
+  const content = diaryContent(chunk.periodLabel, summary, chunk.messages);
+  const now = new Date().toISOString();
+  const metadata = {
+    conversation_id: conversationId,
+    source: "cc-connect",
+    auto_generated: true,
+    diary_period: chunk.periodKey,
+    period_label: chunk.periodLabel,
+    start_timestamp: chunk.messages[0]?.timestamp || null,
+    end_timestamp: chunk.messages[chunk.messages.length - 1]?.timestamp || null,
+    message_count: chunk.messages.length,
+    message_digest: digestId(chunk.messages),
+    keywords: summary.keywords,
+    emotion: summary.emotion
+  };
+
+  const memory = await createMemory(env, {
+    namespace,
+    user_id: userId,
     type: "auto_diary",
     content,
-    summary: input.summary.summary,
+    metadata,
     importance: 0.62,
-    confidence: 0.78,
-    tags,
-    source: input.source,
-    sourceMessageIds
+    salience: 0.62,
+    access_count: 0,
+    source: "conversation_chunker",
+    source_ref: key,
+    created_at: now,
+    updated_at: now
   });
-  await upsertMemoryEmbedding(env, created);
+
+  await updateMemory(env, memory.id, { supersedes: null });
+
+  try {
+    const [embedding] = await embedTexts(env, [content]);
+    if (embedding) {
+      await upsertVector(env, {
+        id: memory.id,
+        values: embedding,
+        metadata: {
+          namespace,
+          user_id: userId,
+          type: "auto_diary",
+          content,
+          source_ref: key,
+          created_at: now
+        }
+      });
+    }
+  } catch (error) {
+    console.error("conversation chunk vector upsert failed", error);
+  }
 }
 
-export async function runConversationChunking(env: Env, message: ConversationChunkQueueMessage): Promise<void> {
-  const messages = await listUnprocessedChunkMessages(env.DB, {
-    namespace: message.namespace,
-    conversationId: message.conversationId,
-    limit: maxMessages(env, message)
-  });
-  if (messages.length === 0) return;
+export async function runConversationChunking(env: Env): Promise<{ conversations: number; chunks: number; messages: number }> {
+  const maxMessages = Math.max(Number(env.AUTO_CHUNK_MAX_MESSAGES || DEFAULT_MAX_MESSAGES), MIN_MESSAGES);
+  const candidates = await listUnprocessedChunkMessages(env, maxMessages * 4);
+  const grouped = new Map<string, MessageRecord[]>();
 
-  const chunks = splitIntoChunks(env, messages);
-  const processedIds: string[] = [];
-
-  for (const chunk of chunks) {
-    if (chunk.length === 0) continue;
-    const summary = await summarizeChunk(env, chunk);
-    await persistChunkMemory(env, {
-      namespace: message.namespace,
-      source: message.source,
-      messages: chunk,
-      summary
-    });
-    processedIds.push(...chunk.map((item) => item.id));
+  for (const message of candidates) {
+    const key = `${message.namespace}\u0000${message.user_id}\u0000${message.conversation_id}`;
+    const group = grouped.get(key) || [];
+    group.push(message);
+    grouped.set(key, group);
   }
 
-  await markMessagesChunkProcessed(env.DB, {
-    namespace: message.namespace,
-    ids: processedIds
-  });
+  let chunkCount = 0;
+  let messageCount = 0;
+  let conversationCount = 0;
+
+  for (const group of grouped.values()) {
+    const messages = group.sort((a, b) => {
+      const byTime = toMs(a.timestamp) - toMs(b.timestamp);
+      if (byTime !== 0) return byTime;
+      return a.id.localeCompare(b.id);
+    });
+    if (messages.length < MIN_MESSAGES) continue;
+    const first = messages[0];
+    if (!first) continue;
+
+    conversationCount += 1;
+    const chunks = await splitIntoChunks(env, messages);
+    for (const chunk of chunks) {
+      if (chunk.messages.length < MIN_MESSAGES) continue;
+      const summary = await summarizeChunk(env, chunk.messages);
+      if (!summary) continue;
+      await persistChunkMemory(env, {
+        namespace: first.namespace,
+        userId: first.user_id,
+        conversationId: first.conversation_id,
+        chunk,
+        summary
+      });
+      await markMessagesChunkProcessed(env, chunk.messages.map((message) => message.id));
+      chunkCount += 1;
+      messageCount += chunk.messages.length;
+    }
+  }
+
+  return { conversations: conversationCount, chunks: chunkCount, messages: messageCount };
 }
