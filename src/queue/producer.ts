@@ -60,6 +60,7 @@ export async function enqueueConversationChunkingIfNeeded(
     namespace: string;
     conversationId: string;
     source: string;
+    force?: boolean;
   }
 ): Promise<void> {
   if (env.ENABLE_AUTO_MEMORY === "false") return;
@@ -70,7 +71,8 @@ export async function enqueueConversationChunkingIfNeeded(
     conversationId: input.conversationId
   });
   const threshold = chunkThreshold(env);
-  if (unprocessedCount < threshold) return;
+  if (unprocessedCount < threshold && !input.force) return;
+  if (unprocessedCount <= 0) return;
 
   await sendQueueMessage(env, {
     type: "conversation_chunk",
