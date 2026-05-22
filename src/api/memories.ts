@@ -157,7 +157,7 @@ function readMessages(value: unknown): OpenAIChatMessage[] {
 
   return value.flatMap((item): OpenAIChatMessage[] => {
     if (!item || typeof item !== "object") return [];
-    const record = item as { role?: unknown; content?: unknown };
+    const record = item as { role?: unknown; content?: unknown; created_at?: unknown; timestamp?: unknown };
     if (
       record.role !== "system" &&
       record.role !== "user" &&
@@ -174,9 +174,58 @@ function readMessages(value: unknown): OpenAIChatMessage[] {
     return [
       {
         role: record.role,
-        content: record.content
+        content: record.content,
+        created_at: readString(record.created_at) || readString(record.timestamp)
       }
     ];
+  });
+}
+
+async function handleResetCcConnect(
+  env: Env,
+  profile: KeyProfile,
+  keyName: string,
+  namespace: string
+): Promise<Response> {
+  const scopeError = requireScope(profile, "memory:write");
+  if (scopeError) return scopeError;
+  if (!profile.debug && keyName !== "MEMORY_MCP_API_KEY") {
+    return openAiError("Forbidden", 403);
+  }
+
+  const vectorRows = await env.DB.prepare(
+    `SELECT vector_id
+     FROM memories
+     WHERE namespace = ?
+       AND vector_id IS NOT NULL
+       AND vector_id != ''
+       AND (source = 'cc-connect' OR type IN ('auto_chunk', 'auto_diary'))`
+  ).bind(namespace).all<{ vector_id: string }>();
+  const vectorIds = (vectorRows.results ?? []).map((row) => row.vector_id).filter(Boolean);
+
+  if (env.VECTORIZE && vectorIds.length > 0) {
+    for (let i = 0; i < vectorIds.length; i += 100) {
+      await env.VECTORIZE.deleteByIds(vectorIds.slice(i, i + 100));
+    }
+  }
+
+  const memories = await env.DB.prepare(
+    `DELETE FROM memories
+     WHERE namespace = ?
+       AND (source = 'cc-connect' OR type IN ('auto_chunk', 'auto_diary'))`
+  ).bind(namespace).run();
+
+  const messages = await env.DB.prepare(
+    "DELETE FROM messages WHERE namespace = ? AND source = 'cc-connect'"
+  ).bind(namespace).run();
+
+  return json({
+    data: {
+      namespace,
+      deleted_memories: memories.meta.changes ?? 0,
+      deleted_messages: messages.meta.changes ?? 0,
+      deleted_vectors: vectorIds.length
+    }
   });
 }
 
@@ -332,6 +381,11 @@ export async function handleMemories(request: Request, env: Env, ctx: ExecutionC
 
   if (tail.length === 1 && tail[0] === "ingest" && request.method === "POST") {
     return handleIngestMemories(request, env, ctx, auth.profile);
+  }
+
+  if (tail.length === 2 && tail[0] === "reset" && tail[1] === "cc-connect" && request.method === "POST") {
+    const body = await readBody(request);
+    return handleResetCcConnect(env, auth.profile, auth.keyName, resolveNamespace(auth.profile, body?.namespace || "kld"));
   }
 
   if (tail.length === 1) {

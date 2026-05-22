@@ -109,6 +109,7 @@ export interface AuthResult {
 export interface OpenAIChatMessage {
   role: "system" | "user" | "assistant" | "tool";
   content: string | Array<unknown> | null;
+  created_at?: string;
   name?: string;
   reasoning_content?: string;
   tool_call_id?: string;

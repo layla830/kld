@@ -82,6 +82,10 @@ function applyTabWhere(input: PageInput, binds: unknown[]): string {
     binds.push("diary", "layla_diary", like("日记"));
     return " AND (type IN (?, ?) OR tags LIKE ? ESCAPE '\\')";
   }
+  if (input.tab === "auto_diary") {
+    binds.push("auto_diary", "cc-connect");
+    return " AND type = ? AND source = ?";
+  }
   if (input.tab === "quote") {
     binds.push(like("语录"));
     let clause = " AND tags LIKE ? ESCAPE '\\'";
@@ -95,7 +99,7 @@ function applyTabWhere(input: PageInput, binds: unknown[]): string {
 }
 
 function orderByForTab(tab: string): string {
-  return tab === "message" || tab === "diary" || tab === "quote"
+  return tab === "message" || tab === "diary" || tab === "auto_diary" || tab === "quote"
     ? "ORDER BY created_at DESC, updated_at DESC"
     : "ORDER BY pinned DESC, updated_at DESC, created_at DESC";
 }
