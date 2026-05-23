@@ -18,6 +18,8 @@ export interface Env {
   ENABLE_AUTO_MEMORY?: string;
   MEMORY_MODE?: string;
   MEMORY_MODEL?: string;
+  MEMORY_EXTRACT_MODEL?: string;
+  MEMORY_MERGE_MODEL?: string;
   ENABLE_MEMORY_FILTER?: string;
   MEMORY_FILTER_PROVIDER?: string;
   MEMORY_FILTER_MODEL?: string;
