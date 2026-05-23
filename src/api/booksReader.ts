@@ -19,12 +19,13 @@ html{min-height:100vh;background:linear-gradient(135deg,#fff0f3 0%,#fce4ec 100%)
 body{min-height:100vh;padding:24px 16px 56px;color:var(--text);font-family:"Noto Serif SC",Georgia,serif}
 button,input,textarea{font:inherit}
 button{cursor:pointer}
+button:disabled{cursor:default;opacity:.45}
 .page{max-width:620px;margin:0 auto}
 .page-header{text-align:center;padding:28px 0 22px}
 .heart{font-size:1.7rem;margin-bottom:10px}
 h1{font-size:1.25rem;font-weight:400;color:var(--pink-dark);margin-bottom:6px}
 .subtitle{font-size:.7rem;color:var(--text-light);letter-spacing:2px}
-.card,.book-item,.content-panel{background:var(--white);border:1px solid var(--line);border-radius:16px;box-shadow:0 4px 20px var(--shadow)}
+.card,.book-item,.content-panel,.toc{background:var(--white);border:1px solid var(--line);border-radius:16px;box-shadow:0 4px 20px var(--shadow)}
 .book-item{padding:18px;margin-bottom:14px;cursor:pointer}
 .book-title{font-size:.96rem;margin-bottom:8px}
 .book-meta,.muted{font-size:.74rem;color:var(--text-light)}
@@ -42,27 +43,36 @@ h1{font-size:1.25rem;font-weight:400;color:var(--pink-dark);margin-bottom:6px}
 .btn{background:linear-gradient(135deg,var(--pink),var(--pink-dark));border:none;color:white}
 .text-btn{border:0;background:transparent;color:var(--text-light);font-size:.72rem;padding:4px 0}
 .text-btn:hover{color:var(--pink-dark)}
+.text-btn.danger{color:#b86f7f}
 .reader-switch,.tools-row{display:flex;gap:8px;margin-bottom:12px}
 .reader-switch button,.tools-row button{flex:1}
 .reader-switch .active{background:var(--pink);color:white}
 .search-row{display:flex;gap:8px;margin-bottom:12px}
 .search-row input{flex:1;min-width:0}
 input,textarea{width:100%;border:1px solid rgba(232,160,176,.45);border-radius:14px;background:white;color:var(--text);outline:none;padding:9px 11px}
-.content-panel{white-space:pre-wrap;line-height:1.85;font-size:.92rem;min-height:320px;padding:22px}
+.toc{margin-bottom:12px;padding:10px 12px}
+.toc summary{cursor:pointer;color:var(--pink-dark);font-size:.78rem;list-style:none}
+.toc summary::-webkit-details-marker{display:none}
+.toc-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(70px,1fr));gap:8px;margin-top:10px;max-height:190px;overflow:auto;padding-right:2px}
+.toc-btn{border:1px solid rgba(232,160,176,.35);border-radius:12px;background:white;color:var(--text);padding:8px 6px;font-size:.72rem;text-align:center}
+.toc-btn.active{background:var(--pink-light);border-color:var(--pink);color:var(--pink-dark)}
+.content-panel{white-space:pre-wrap;line-height:1.85;font-size:.92rem;min-height:320px;padding:22px;outline:none}
+.content-panel::selection{background:rgba(232,160,176,.32)}
 .pager{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:14px 0}
 .page-info{display:flex;align-items:center;gap:6px;font-size:.76rem;color:var(--text-light)}
 .jump-input{width:62px;text-align:center;border-radius:999px;padding:6px 4px}
 .section{margin-top:18px}
-.section-title{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;color:var(--text-light);font-size:.74rem}
+.section-title{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;color:var(--text-light);font-size:.74rem;gap:10px}
 .annotation,.comment,.search-result{display:block;width:100%;text-align:left;padding:12px;margin-bottom:10px;background:rgba(255,251,252,.72);border:1px solid var(--line);border-radius:12px;color:var(--text)}
 .annotation.reply{margin-left:18px;border-color:rgba(143,168,192,.35)}
 .annotation-meta,.comment-author{font-size:.7rem;color:var(--pink-dark);margin-bottom:5px}
 .annotation-note,.comment-content,.search-snippet{white-space:pre-wrap;line-height:1.65;font-size:.84rem}
-.annotation-quote{margin-bottom:7px;color:var(--text-light);font-size:.78rem;line-height:1.55}
+.annotation-quote,.quote-preview{margin-bottom:7px;color:var(--text-light);font-size:.78rem;line-height:1.55}
+.quote-preview{min-height:34px;border:1px dashed rgba(232,160,176,.45);border-radius:12px;padding:8px 10px;background:rgba(255,240,243,.55)}
 .comment-time{margin-top:6px;font-size:.62rem;color:var(--text-light)}
 .composer{padding:14px;margin-top:10px}
 .composer textarea{min-height:78px;border:none;border-bottom:1px dashed var(--pink);border-radius:0;background:transparent;resize:vertical;line-height:1.7;padding:8px 0}
-.composer-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:10px}
+.composer-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:10px;flex-wrap:wrap}
 .status{margin-top:8px;color:var(--text-light);font-size:.74rem;line-height:1.6}
 .empty{text-align:center;color:var(--text-light);font-size:.82rem;padding:28px 0}
 @media(max-width:440px){
@@ -79,6 +89,7 @@ var state = {
   page: 1,
   totalPages: 1,
   reader: "layla",
+  selectedQuote: "",
   sessionId: "reading-ui-" + new Date().toISOString().slice(0, 10)
 };
 
@@ -87,8 +98,8 @@ function byId(id) {
 }
 
 function esc(value) {
-  return String(value || "").replace(/[&<>"']/g, function (char) {
-    return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char];
+  return String(value || "").replace(/[&<>\"']/g, function (char) {
+    return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '\"': "&quot;", "'": "&#39;" }[char];
   });
 }
 
@@ -174,6 +185,7 @@ async function openBook(id) {
   state.totalPages = data.total_pages;
   byId("shelf").style.display = "none";
   byId("reader").classList.add("active");
+  await loadToc();
   await loadPage();
 }
 
@@ -181,6 +193,41 @@ function closeReader() {
   byId("reader").classList.remove("active");
   byId("shelf").style.display = "block";
   loadBooks();
+}
+
+function clearSelectedQuote() {
+  state.selectedQuote = "";
+  byId("selectedQuote").textContent = "还没有选中正文。用鼠标拖选正文里的一段，再写批注就会自动带上它。";
+}
+
+function captureSelection() {
+  var selection = window.getSelection ? window.getSelection() : null;
+  var text = selection ? String(selection).trim() : "";
+  var content = byId("content");
+  if (!text || !selection || !content.contains(selection.anchorNode) || !content.contains(selection.focusNode)) return;
+  state.selectedQuote = text.slice(0, 600);
+  byId("selectedQuote").textContent = "已选中：“" + state.selectedQuote + "”";
+}
+
+async function loadToc() {
+  var data = await api("/books/api/chunks?bookId=" + encodeURIComponent(state.bookId) + "&reader=" + encodeURIComponent(state.reader));
+  var chunks = data.chunks || [];
+  byId("tocList").innerHTML = chunks.map(function (chunk) {
+    var count = chunk.annotationCount ? ' · ' + chunk.annotationCount : '';
+    return '<button class="toc-btn' + (chunk.page === state.page ? ' active' : '') + '" type="button" data-toc-page="' + chunk.page + '">第 ' + chunk.page + ' 页' + count + '</button>';
+  }).join("");
+  Array.prototype.forEach.call(document.querySelectorAll("[data-toc-page]"), function (button) {
+    button.addEventListener("click", async function () {
+      state.page = parseInt(button.getAttribute("data-toc-page") || "1", 10);
+      await loadPage();
+    });
+  });
+}
+
+function refreshTocActive() {
+  Array.prototype.forEach.call(document.querySelectorAll("[data-toc-page]"), function (button) {
+    button.classList.toggle("active", parseInt(button.getAttribute("data-toc-page") || "0", 10) === state.page);
+  });
 }
 
 async function loadPage() {
@@ -194,6 +241,8 @@ async function loadPage() {
   byId("totalPages").textContent = data.total_pages;
   byId("prevBtn").disabled = state.page <= 1;
   byId("nextBtn").disabled = state.page >= state.totalPages;
+  clearSelectedQuote();
+  refreshTocActive();
   renderComments(data.comments || []);
   await loadAnnotations();
   await postJson("/books/api/progress", { book_id: state.bookId, reader: state.reader, page: state.page });
@@ -270,19 +319,32 @@ function renderAnnotation(annotation, replies) {
     '<div class="annotation-meta">' + esc(annotationLabel(annotation)) + '</div>',
     annotation.quote ? '<div class="annotation-quote">“' + esc(annotation.quote) + '”</div>' : '',
     '<div class="annotation-note">' + esc(annotation.note) + '</div>',
-    '<div class="composer-actions"><button class="text-btn" type="button" data-reply-id="' + esc(annotation.id) + '">回复</button></div>',
+    '<div class="composer-actions">',
+    '<button class="text-btn" type="button" data-reply-id="' + esc(annotation.id) + '">回复</button>',
+    '<button class="text-btn danger" type="button" data-delete-annotation-id="' + esc(annotation.id) + '">删除</button>',
+    '</div>',
     '</article>',
     replyHtml
   ].join("");
 }
 
-function bindAnnotationReplies() {
+function bindAnnotationActions() {
   Array.prototype.forEach.call(document.querySelectorAll("[data-reply-id]"), function (button) {
     button.addEventListener("click", async function () {
       var note = prompt("写一句回复：");
       if (!note || !note.trim()) return;
       await postJson("/books/api/replies", { parentId: button.getAttribute("data-reply-id"), note: note.trim() });
       await loadAnnotations();
+      await loadToc();
+    });
+  });
+  Array.prototype.forEach.call(document.querySelectorAll("[data-delete-annotation-id]"), function (button) {
+    button.addEventListener("click", async function () {
+      var id = button.getAttribute("data-delete-annotation-id") || "";
+      if (!id || !confirm("删除这条批注吗？如果它下面有回复，也会一起删除。")) return;
+      await postJson("/books/api/delete-annotation", { id: id });
+      await loadAnnotations();
+      await loadToc();
     });
   });
 }
@@ -303,26 +365,28 @@ async function loadAnnotations() {
   byId("annotationsList").innerHTML = roots.length
     ? roots.map(function (annotation) { return renderAnnotation(annotation, replies); }).join("")
     : '<div class="empty">这一页还没有新批注</div>';
-  bindAnnotationReplies();
+  bindAnnotationActions();
 }
 
 async function saveAnnotation(status) {
   var input = byId("annotationInput");
   var note = input.value.trim();
   if (!note) return;
-  var selection = String(window.getSelection ? window.getSelection() : "").trim();
+  captureSelection();
   await postJson("/books/api/annotations", {
     bookId: state.bookId,
     chunkId: chunkId(),
     page: state.page,
-    quote: selection,
+    quote: state.selectedQuote,
     note: note,
     author: status === "open" ? "user" : state.reader,
     kind: status === "open" ? "question" : "annotation",
     status: status
   });
   input.value = "";
+  clearSelectedQuote();
   await loadAnnotations();
+  await loadToc();
 }
 
 async function submitNotes() {
@@ -396,7 +460,12 @@ const HTML = `<!DOCTYPE html>
       </div>
       <div id="searchResults"></div>
 
-      <div class="content-panel" id="content"></div>
+      <details class="toc">
+        <summary>目录</summary>
+        <div class="toc-grid" id="tocList"></div>
+      </details>
+
+      <div class="content-panel" id="content" tabindex="0" onmouseup="captureSelection()" onkeyup="captureSelection()"></div>
 
       <div class="pager">
         <button class="icon-btn" id="prevBtn" type="button" onclick="changePage(-1)">上一页</button>
@@ -416,7 +485,8 @@ const HTML = `<!DOCTYPE html>
         </div>
         <div id="annotationsList"></div>
         <div class="card composer">
-          <textarea id="annotationInput" placeholder="选中正文里的句子后，可以把这一页的想法存在边注里..."></textarea>
+          <div class="quote-preview" id="selectedQuote">还没有选中正文。用鼠标拖选正文里的一段，再写批注就会自动带上它。</div>
+          <textarea id="annotationInput" placeholder="写这段/这一页的想法..."></textarea>
           <div class="composer-actions">
             <button class="icon-btn" type="button" onclick="saveAnnotation('open')">先存给我</button>
             <button class="btn" type="button" onclick="saveAnnotation('published')">保存批注</button>
