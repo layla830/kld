@@ -139,12 +139,13 @@ export async function extractMemoriesFromMessages(
   env: Env,
   messages: MessageRecord[]
 ): Promise<MemoryExtractionResult> {
-  if (!env.MEMORY_MODEL || messages.length === 0) {
+  const model = env.MEMORY_EXTRACT_MODEL || env.MEMORY_MODEL;
+  if (!model || messages.length === 0) {
     return { memories: [] };
   }
 
   const request: OpenAIChatRequest = {
-    model: env.MEMORY_MODEL,
+    model,
     messages: [
       {
         role: "system",
