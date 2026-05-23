@@ -9,6 +9,7 @@ import { json, openAiError } from "../utils/json";
 import { readBody, readNumber, readString, resolveNamespace } from "./common";
 
 const DEFAULT_LOCAL_DIARY_MIN_MESSAGES = 4;
+const DEFAULT_LOCAL_DIARY_MAX_MESSAGES = 160;
 
 function parseTimestamp(value: unknown): string {
   const raw = readString(value);
@@ -41,6 +42,10 @@ function readLocalDiaryMessages(
         created_at: parseTimestamp(record.created_at || record.timestamp)
       }
     ];
+  }).sort((a, b) => {
+    const byTime = a.created_at.localeCompare(b.created_at);
+    if (byTime !== 0) return byTime;
+    return a.id.localeCompare(b.id);
   });
 }
 
@@ -62,9 +67,19 @@ function localPeriodLabel(body: Record<string, unknown>, messages: MessageRecord
   return `${formatShanghaiDateTime(start)} 至 ${formatShanghaiDateTime(end)}`;
 }
 
+function positiveInteger(value: unknown, fallback: number): number {
+  const parsed = typeof value === "number" ? value : Number(value || fallback);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return Math.max(1, Math.floor(parsed));
+}
+
 function localDiaryMinMessages(env: Env, value: unknown): number {
-  const configured = Number(env.CC_CONNECT_AUTO_DIARY_MIN_MESSAGES || DEFAULT_LOCAL_DIARY_MIN_MESSAGES);
-  return Math.max(1, readNumber(value, Number.isFinite(configured) ? configured : DEFAULT_LOCAL_DIARY_MIN_MESSAGES));
+  return positiveInteger(value, positiveInteger(env.CC_CONNECT_AUTO_DIARY_MIN_MESSAGES, DEFAULT_LOCAL_DIARY_MIN_MESSAGES));
+}
+
+function localDiaryMaxMessages(env: Env, value: unknown): number {
+  const fallback = positiveInteger(env.CC_CONNECT_AUTO_DIARY_MAX_MESSAGES || env.AUTO_CHUNK_MAX_MESSAGES, DEFAULT_LOCAL_DIARY_MAX_MESSAGES);
+  return positiveInteger(value, fallback);
 }
 
 export async function handleResetCcConnect(
@@ -153,7 +168,7 @@ export async function handleGenerateCcConnectDiary(
 export async function handleGenerateCcConnectDiaryFromMessages(
   request: Request,
   env: Env,
-  ctx: ExecutionContext,
+  _ctx: ExecutionContext,
   profile: KeyProfile
 ): Promise<Response> {
   const scopeError = requireScope(profile, "memory:write");
@@ -167,6 +182,11 @@ export async function handleGenerateCcConnectDiaryFromMessages(
   const source = readString(body.source) || "cc-connect-vps";
   const messages = readLocalDiaryMessages(body.messages, { namespace, conversationId, source });
   const minMessages = localDiaryMinMessages(env, body.min_messages);
+  const maxMessages = localDiaryMaxMessages(env, body.max_messages);
+
+  if (messages.length > maxMessages) {
+    return openAiError(`messages must contain at most ${maxMessages} items`, 400);
+  }
 
   if (messages.length < minMessages) {
     return json({
@@ -192,8 +212,6 @@ export async function handleGenerateCcConnectDiaryFromMessages(
     chunk: { messages, periodKey, periodLabel },
     summary
   });
-
-  ctx.waitUntil(Promise.resolve());
 
   return json({
     data: {
