@@ -13,7 +13,7 @@ import { deleteMemoryEmbedding, upsertMemoryEmbedding } from "../memory/embeddin
 import { filterAndCompressMemoriesWithMeta } from "../memory/filter";
 import { searchMemories, toMemoryApiRecord } from "../memory/search";
 import { enqueueMemoryMaintenanceIfNeeded } from "../queue/producer";
-import type { Env, KeyProfile, OpenAIChatMessage } from "../types";
+import type { Env, KeyProfile, MemoryApiRecord, OpenAIChatMessage } from "../types";
 import { json, openAiError } from "../utils/json";
 import {
   readBody,
@@ -26,10 +26,17 @@ import {
 } from "./common";
 import { handleGenerateCcConnectDiary, handleResetCcConnect } from "./ccConnect";
 
+const AUTO_DIARY_TYPE = "auto_diary";
+
 function normalizeLimit(value: string | null, fallback = 50): number {
   const parsed = Number(value || fallback);
   if (!Number.isFinite(parsed)) return fallback;
   return Math.min(Math.max(Math.floor(parsed), 1), 100);
+}
+
+function excludeAutoDiaryUnlessRequested(records: MemoryApiRecord[], requestedTypes: string[]): MemoryApiRecord[] {
+  if (requestedTypes.includes(AUTO_DIARY_TYPE)) return records;
+  return records.filter((record) => record.type !== AUTO_DIARY_TYPE);
 }
 
 async function handleCreateMemory(
@@ -81,15 +88,18 @@ async function handleListMemories(request: Request, env: Env, profile: KeyProfil
 
   const url = new URL(request.url);
   const namespace = resolveNamespace(profile, url.searchParams.get("namespace"));
+  const type = url.searchParams.get("type") || undefined;
+  const limit = normalizeLimit(url.searchParams.get("limit"), 50);
   const records = await listMemories(env.DB, {
     namespace,
-    type: url.searchParams.get("type") || undefined,
+    type,
     status: url.searchParams.get("status") || "active",
-    limit: normalizeLimit(url.searchParams.get("limit"), 50)
+    limit: type ? limit : 100
   });
+  const apiRecords = records.map((record) => toMemoryApiRecord(record));
 
   return json({
-    data: records.map((record) => toMemoryApiRecord(record))
+    data: type ? apiRecords : excludeAutoDiaryUnlessRequested(apiRecords, []).slice(0, limit)
   });
 }
 
@@ -102,12 +112,16 @@ async function handleSearchMemories(request: Request, env: Env, profile: KeyProf
 
   const query = readString(body.query) || "";
   const topK = readNumber(body.top_k, Number(env.MEMORY_TOP_K || 8));
-  const raw = await searchMemories(env, {
-    namespace: resolveNamespace(profile, body.namespace),
-    query,
-    topK,
-    types: readStringArray(body.types)
-  });
+  const requestedTypes = readStringArray(body.types);
+  const raw = excludeAutoDiaryUnlessRequested(
+    await searchMemories(env, {
+      namespace: resolveNamespace(profile, body.namespace),
+      query,
+      topK,
+      types: requestedTypes
+    }),
+    requestedTypes
+  );
 
   if (body.filter !== true && body.compress !== true) {
     return json({ data: raw });

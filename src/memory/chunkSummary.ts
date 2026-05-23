@@ -97,7 +97,7 @@ function parseSummary(text: string, fallback: ChunkSummary): ChunkSummary | null
 
 function buildSummaryPrompt(messages: MessageRecord[], periodLabel: string): string {
   const transcript = formatTranscript(messages).slice(0, 12000);
-  return `请把下面这一整段聊天窗口整理成一则中文日记式记忆。\n时间段：${periodLabel}（东八区）。\n要求：\n- 不是逐条流水账，也不是一句话概括。\n- 用第一人称或贴近日记的叙述，保留具体事件、关系、情绪变化、决定和待办。\n- 忽略无意义寒暄、重复催促、工具噪音。\n- 如果内容很少，也要说明上下文不足，不要编造。\n- 输出 JSON，格式：{"summary":"...","keywords":["..."],"emotion":"..."}\n\n聊天窗口：\n${transcript}`;
+  return `请把下面这一整段聊天窗口整理成一则中文日记式记忆。\n时间段：${periodLabel}（东八区）。\n要求：\n- 不是逐条流水账，也不是一句话概括。\n- 用第三人称日记式叙述，不要用“我”指代任何人。\n- “她”指人类用户 Layla/Yuxin；“kld/助手”指 AI 助手。可以写“她和 kld 讨论了……”“她希望……”“kld 做了……”。\n- 保留具体事件、关系、情绪变化、决定和待办，不要写成客服工单或系统日志。\n- 忽略无意义寒暄、重复催促、工具噪音。\n- 如果内容很少，也要说明上下文不足，不要编造。\n- 输出 JSON，格式：{"summary":"...","keywords":["..."],"emotion":"..."}\n\n聊天窗口：\n${transcript}`;
 }
 
 export async function summarizeChunk(env: Env, messages: MessageRecord[], periodLabel: string): Promise<ChunkSummary | null> {

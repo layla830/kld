@@ -4,6 +4,8 @@ import { filterAndCompressMemories } from "./filter";
 import { searchMemories, toMemoryApiRecord } from "./search";
 import { sanitizeMemoryContent } from "./contentSanitizer";
 
+const AUTO_DIARY_TYPE = "auto_diary";
+
 function contentToText(content: OpenAIChatMessage["content"]): string {
   if (typeof content === "string") return content;
   if (content == null) return "";
@@ -36,16 +38,21 @@ function getTopK(env: Env): number {
   return Number.isFinite(value) ? Math.min(Math.max(value, 1), 50) : 8;
 }
 
+function excludeAutoDiary(memories: MemoryApiRecord[]): MemoryApiRecord[] {
+  return memories.filter((memory) => memory.type !== AUTO_DIARY_TYPE);
+}
+
 async function searchMemoriesForInjection(
   env: Env,
   input: { namespace: string; query: string; topK: number }
 ): Promise<MemoryApiRecord[]> {
   try {
-    return await searchMemories(env, {
+    const memories = await searchMemories(env, {
       namespace: input.namespace,
       query: input.query,
       topK: input.topK
     });
+    return excludeAutoDiary(memories);
   } catch (error) {
     console.error("memory injection search failed", error);
     return [];
@@ -83,7 +90,7 @@ export async function selectMemoriesForInjection(
 
     return filterAndCompressMemories(env, {
       query: input.query,
-      memories: records.map((record) => toMemoryApiRecord(record))
+      memories: excludeAutoDiary(records.map((record) => toMemoryApiRecord(record)))
     });
   }
 
@@ -107,7 +114,7 @@ export async function selectMemoriesForInjection(
     status: "active",
     limit: 100
   });
-  const pinned = records.filter((record) => record.pinned).map((record) => toMemoryApiRecord(record));
+  const pinned = excludeAutoDiary(records.filter((record) => record.pinned).map((record) => toMemoryApiRecord(record)));
 
   return filterAndCompressMemories(env, {
     query: input.query,
