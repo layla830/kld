@@ -219,10 +219,11 @@ export interface SummaryRecord {
   id: string;
   namespace: string;
   conversation_id: string | null;
-  summary_type: "long_term" | "session" | string;
   content: string;
-  model: string | null;
-  version: number;
+  from_message_id: string | null;
+  to_message_id: string | null;
+  message_count: number;
+  vector_id: string | null;
   created_at: string;
   updated_at: string;
 }
