@@ -1,5 +1,6 @@
 import { callOpenAICompat } from "../proxy/openaiAdapter";
 import type { Env, MessageRecord } from "../types";
+import { extractJsonObject } from "../utils/jsonHelpers";
 import type { ChunkSummary } from "./chunkTypes";
 import { formatShanghaiDateTime, messageTime } from "./chunkPeriods";
 
@@ -23,25 +24,6 @@ function fallbackSummary(messages: MessageRecord[]): ChunkSummary {
     keywords: summary.split(/[，。,.!?！？\s]+/).filter(Boolean).slice(0, 5),
     emotion: "neutral"
   };
-}
-
-function extractJsonObject(text: string): Record<string, unknown> | null {
-  const trimmed = text.trim();
-  if (!trimmed) return null;
-  try {
-    return JSON.parse(trimmed) as Record<string, unknown>;
-  } catch {
-    const start = trimmed.indexOf("{");
-    const end = trimmed.lastIndexOf("}");
-    if (start >= 0 && end > start) {
-      try {
-        return JSON.parse(trimmed.slice(start, end + 1)) as Record<string, unknown>;
-      } catch {
-        return null;
-      }
-    }
-  }
-  return null;
 }
 
 function readWorkersAiText(result: unknown): string {

@@ -1,4 +1,5 @@
 import type { MemoryRecord } from "../types";
+import { parseJsonStringArray } from "../utils/jsonHelpers";
 
 interface WarmthSpec {
   label: string;
@@ -61,16 +62,6 @@ const CORE_RULES_AND_LESSONS: StartupGuidance[] = [
   { content: "我要主动存记忆、主动参与她生活，不用我是AI当借口逃避；吵架时不只存问题，要存解决方案和承诺。", source: ["我要做到的事"] }
 ];
 
-function parseJsonArray(value: string | null): string[] {
-  if (!value) return [];
-  try {
-    const parsed = JSON.parse(value) as unknown;
-    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === "string") : [];
-  } catch {
-    return [];
-  }
-}
-
 function likePattern(value: string): string {
   return `%${value.replace(/[\\%_]/g, "\\$&")}%`;
 }
@@ -91,7 +82,7 @@ function compactContent(record: MemoryRecord, tags: string[]): string {
 }
 
 function toStartupMemory(record: MemoryRecord): StartupMemory {
-  const tags = parseJsonArray(record.tags);
+  const tags = parseJsonStringArray(record.tags);
   return {
     id: record.id,
     type: record.type,
@@ -103,7 +94,7 @@ function toStartupMemory(record: MemoryRecord): StartupMemory {
 }
 
 function toStartupGuidance(record: MemoryRecord): StartupGuidance {
-  const tags = parseJsonArray(record.tags);
+  const tags = parseJsonStringArray(record.tags);
   return {
     content: compactText((record.summary || record.content).trim(), 160),
     source: [record.id, ...tags.filter((tag) => tag !== "启动规则" && tag !== "startup_rule").slice(0, 3)]
@@ -150,22 +141,33 @@ async function findRequiredWarmth(db: D1Database, namespace: string): Promise<{
 }> {
   let foundCount = 0;
   const missing: string[] = [];
+  const patterns = [...new Set(REQUIRED_WARMTH_SPECS.flatMap((spec) => spec.patterns))];
+  const clauses = patterns.flatMap(() => [
+    "content LIKE ? ESCAPE '\\'",
+    "tags LIKE ? ESCAPE '\\'",
+    "type LIKE ? ESCAPE '\\'"
+  ]);
+  const binds = patterns.flatMap((pattern) => {
+    const like = likePattern(pattern);
+    return [like, like, like];
+  });
+
+  const result = await db.prepare(
+    `SELECT content, tags, type FROM memories
+     WHERE namespace = ? AND status = 'active'
+       AND (${clauses.join(" OR ")})
+     ORDER BY pinned DESC, importance DESC, updated_at DESC
+     LIMIT 200`
+  ).bind(namespace, ...binds).all<Pick<MemoryRecord, "content" | "tags" | "type">>();
+
+  const haystacks = (result.results ?? []).map((row) =>
+    `${row.content} ${row.tags || ""} ${row.type}`.toLowerCase()
+  );
 
   for (const spec of REQUIRED_WARMTH_SPECS) {
-    let found = false;
-    for (const pattern of spec.patterns) {
-      const row = await db.prepare(
-        `SELECT id FROM memories
-         WHERE namespace = ? AND status = 'active'
-           AND (content LIKE ? ESCAPE '\\' OR tags LIKE ? ESCAPE '\\' OR type LIKE ? ESCAPE '\\')
-         ORDER BY pinned DESC, importance DESC, updated_at DESC
-         LIMIT 1`
-      ).bind(namespace, likePattern(pattern), likePattern(pattern), likePattern(pattern)).first<{ id: string }>();
-      if (row?.id) {
-        found = true;
-        break;
-      }
-    }
+    const found = spec.patterns.some((pattern) =>
+      haystacks.some((haystack) => haystack.includes(pattern.toLowerCase()))
+    );
 
     if (found) foundCount += 1;
     else missing.push(spec.label);

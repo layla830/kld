@@ -1,5 +1,6 @@
 import { callOpenAICompat } from "../proxy/openaiAdapter";
 import type { Env, MemoryApiRecord, OpenAIChatRequest, OpenAIChatResponse } from "../types";
+import { sanitizeMemoryContent } from "./contentSanitizer";
 
 const DEFAULT_WORKERS_AI_FILTER_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
 
@@ -19,22 +20,8 @@ export interface MemoryFilterMeta {
   output_shape?: string;
 }
 
-function sanitizeMemoryContent(text: string): string {
-  return text
-    .replace(/<time_reminder>[^|。\n]*/gi, "")
-    .replace(/对话摘要（\d+ 条消息）：?/g, "")
-    .replace(/用户话题[:：]/g, "")
-    .replace(/助手要点[:：]/g, "")
-    .replace(/debug-test/gi, "")
-    .replace(/记忆系统/g, "")
-    .replace(/自动记忆测试口令/g, "口令")
-    .replace(/测试口令/g, "口令")
-    .replace(/标签为?[^，。；\s]+/g, "")
-    .replace(/标签[:：]?[^，。；\s]+/g, "")
-    .replace(/[，,；;：:]\s*([。.!！?？])/g, "$1")
-    .replace(/\s{2,}/g, " ")
-    .replace(/^[，,；;：:\s]+|[，,；;：:\s]+$/g, "")
-    .trim();
+function cleanRecallMemoryContent(text: string): string {
+  return sanitizeMemoryContent(text, { stripRecallWrappers: true });
 }
 
 function getProvider(env: Env): "workers-ai" | "openai-compatible" {
@@ -104,7 +91,7 @@ function prepareCandidates(env: Env, memories: MemoryApiRecord[]): MemoryApiReco
   const minScore = getFilterMinScore(env);
   const sorted = memories
     .flatMap((memory): MemoryApiRecord[] => {
-      const content = sanitizeMemoryContent(memory.content);
+      const content = cleanRecallMemoryContent(memory.content);
       if (!content) return [];
       if (!memory.pinned && typeof memory.score === "number" && memory.score < minScore) return [];
       return [{ ...memory, content }];
@@ -199,7 +186,7 @@ function parseFilteredItems(value: unknown): FilteredMemoryItem[] | null {
           : null;
 
     if (id && content) {
-      const sanitized = sanitizeMemoryContent(content);
+      const sanitized = cleanRecallMemoryContent(content);
       if (sanitized) items.push({ id, content: sanitized });
     }
   }

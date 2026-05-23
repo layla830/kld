@@ -1,6 +1,7 @@
 import { createMemory, getMemoryById, updateMemory } from "../db/memories";
 import { callOpenAICompat } from "../proxy/openaiAdapter";
 import type { Env, MemoryApiRecord, MemoryRecord, OpenAIChatRequest, OpenAIChatResponse } from "../types";
+import { extractJsonObject, parseJsonStringArray } from "../utils/jsonHelpers";
 import { deleteMemoryEmbedding, upsertMemoryEmbedding } from "./embedding";
 import type { ExtractedMemory } from "./extract";
 import { searchMemories } from "./search";
@@ -28,18 +29,6 @@ interface PersistMemoryInput {
   sourceMessageIds: string[];
 }
 
-function parseJsonArray(value: string | null): string[] {
-  if (!value) return [];
-  try {
-    const parsed = JSON.parse(value) as unknown;
-    return Array.isArray(parsed)
-      ? parsed.filter((item): item is string => typeof item === "string").map((item) => item.trim()).filter(Boolean)
-      : [];
-  } catch {
-    return [];
-  }
-}
-
 function uniqueStrings(values: string[]): string[] {
   return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
 }
@@ -54,24 +43,6 @@ function normalizeText(value: string): string {
 
 function isCorrection(text: string): boolean {
   return CORRECTION_PATTERN.test(text);
-}
-
-function extractJsonObject(text: string): unknown | null {
-  try {
-    return JSON.parse(text) as unknown;
-  } catch {
-    // Some models wrap JSON in prose.
-  }
-
-  const start = text.indexOf("{");
-  const end = text.lastIndexOf("}");
-  if (start === -1 || end === -1 || end <= start) return null;
-
-  try {
-    return JSON.parse(text.slice(start, end + 1)) as unknown;
-  } catch {
-    return null;
-  }
 }
 
 function parseDecision(text: string): MemoryMergeDecision | null {
@@ -284,17 +255,20 @@ export async function persistMemoryWithMerge(
     const merged = await updateMemory(env.DB, {
       namespace: input.namespace,
       id: existing.id,
+      expectedStatus: "active",
+      requireUnpinned: true,
       patch: {
         type: decision.type ?? input.memory.type ?? existing.type,
         content: decision.content,
         importance: Math.max(existing.importance, clampScore(decision.importance, input.memory.importance)),
         confidence: Math.max(existing.confidence, clampScore(decision.confidence, input.memory.confidence)),
-        tags: uniqueStrings([...parseJsonArray(existing.tags), ...input.memory.tags, ...(decision.tags ?? [])]),
-        sourceMessageIds: uniqueStrings([...parseJsonArray(existing.source_message_ids), ...input.sourceMessageIds])
+        tags: uniqueStrings([...parseJsonStringArray(existing.tags), ...input.memory.tags, ...(decision.tags ?? [])]),
+        sourceMessageIds: uniqueStrings([...parseJsonStringArray(existing.source_message_ids), ...input.sourceMessageIds])
       }
     });
 
-    if (merged) await upsertMemoryEmbedding(env, merged);
+    if (!merged) return createNewMemory(env, input);
+    await upsertMemoryEmbedding(env, merged);
     return merged;
   }
 
@@ -302,16 +276,18 @@ export async function persistMemoryWithMerge(
     const superseded = await updateMemory(env.DB, {
       namespace: input.namespace,
       id: existing.id,
+      expectedStatus: "active",
+      requireUnpinned: true,
       patch: { status: "superseded" }
     });
-    if (superseded) {
-      try {
-        await deleteMemoryEmbedding(env, superseded);
-      } catch (error) {
-        // D1 status is already superseded, and search filters inactive D1 records.
-        // A stale vector is annoying but should not block writing the corrected memory.
-        console.error("failed to delete superseded memory embedding", error);
-      }
+    if (!superseded) return createNewMemory(env, input);
+
+    try {
+      await deleteMemoryEmbedding(env, superseded);
+    } catch (error) {
+      // D1 status is already superseded, and search filters inactive D1 records.
+      // A stale vector is annoying but should not block writing the corrected memory.
+      console.error("failed to delete superseded memory embedding", error);
     }
 
     return createNewMemory(env, {

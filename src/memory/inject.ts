@@ -2,6 +2,7 @@ import { listMemories } from "../db/memories";
 import type { Env, InjectionMode, KeyProfile, MemoryApiRecord, OpenAIChatMessage, OpenAIChatRequest } from "../types";
 import { filterAndCompressMemories } from "./filter";
 import { searchMemories, toMemoryApiRecord } from "./search";
+import { sanitizeMemoryContent } from "./contentSanitizer";
 
 function contentToText(content: OpenAIChatMessage["content"]): string {
   if (typeof content === "string") return content;
@@ -62,20 +63,6 @@ function dedupeMemories(memories: MemoryApiRecord[]): MemoryApiRecord[] {
   }
 
   return result;
-}
-
-function sanitizeMemoryContent(text: string): string {
-  return text
-    .replace(/debug-test/gi, "")
-    .replace(/记忆系统/g, "")
-    .replace(/自动记忆测试口令/g, "口令")
-    .replace(/测试口令/g, "口令")
-    .replace(/标签为?[^，。；\s]+/g, "")
-    .replace(/标签[:：]?[^，。；\s]+/g, "")
-    .replace(/[，,；;：:]\s*([。.!！?？])/g, "$1")
-    .replace(/\s{2,}/g, " ")
-    .replace(/^[，,；;：:\s]+|[，,；;：:\s]+$/g, "")
-    .trim();
 }
 
 export async function selectMemoriesForInjection(
