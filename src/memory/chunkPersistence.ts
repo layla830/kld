@@ -1,6 +1,6 @@
 import { createMemory } from "../db/memories";
 import { upsertMemoryEmbedding } from "./embedding";
-import type { Env } from "../types";
+import type { Env, MemoryRecord } from "../types";
 import type { ChunkSummary, ConversationChunk } from "./chunkTypes";
 import { formatShanghaiDateTime, messageTime } from "./chunkPeriods";
 
@@ -17,7 +17,7 @@ export async function persistChunkMemory(env: Env, params: {
   source: string;
   chunk: ConversationChunk;
   summary: ChunkSummary;
-}): Promise<void> {
+}): Promise<MemoryRecord> {
   const { namespace, source, chunk, summary } = params;
   const content = diaryContent(chunk.periodLabel, summary, chunk);
   const sourceMessageIds = chunk.messages.map((message) => message.id);
@@ -40,4 +40,6 @@ export async function persistChunkMemory(env: Env, params: {
   } catch (error) {
     console.error("conversation chunk vector upsert failed", error);
   }
+
+  return memory;
 }
