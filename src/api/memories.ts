@@ -24,7 +24,7 @@ import {
   readStringArray,
   resolveNamespace
 } from "./common";
-import { handleGenerateCcConnectDiary, handleGenerateCcConnectDiaryFromMessages, handleResetCcConnect } from "./ccConnect";
+import { handleGenerateCcConnectDiaryFromMessages, handleResetCcConnect } from "./ccConnect";
 
 const AUTO_DIARY_TYPE = "auto_diary";
 
@@ -313,10 +313,6 @@ export async function handleMemories(request: Request, env: Env, ctx: ExecutionC
 
   if (tail.length === 1 && tail[0] === "ingest" && request.method === "POST") {
     return handleIngestMemories(request, env, ctx, auth.profile);
-  }
-
-  if (tail.length === 2 && tail[0] === "auto-diary" && tail[1] === "cc-connect" && request.method === "POST") {
-    return handleGenerateCcConnectDiary(request, env, ctx, auth.profile);
   }
 
   if (tail.length === 2 && tail[0] === "auto-diary" && tail[1] === "cc-connect-local" && request.method === "POST") {

@@ -2,7 +2,6 @@ import { requireScope } from "../auth/scopes";
 import { persistChunkMemory } from "../memory/chunkPersistence";
 import { formatShanghaiDateTime } from "../memory/chunkPeriods";
 import { summarizeChunk } from "../memory/chunkSummary";
-import { enqueueConversationChunkingIfNeeded } from "../queue/producer";
 import type { Env, KeyProfile, MessageRecord } from "../types";
 import { newId } from "../utils/ids";
 import { json, openAiError } from "../utils/json";
@@ -124,45 +123,6 @@ export async function handleResetCcConnect(
       deleted_memories: memories.meta.changes ?? 0,
       deleted_messages: messages.meta.changes ?? 0,
       deleted_vectors: vectorIds.length
-    }
-  });
-}
-
-export async function handleGenerateCcConnectDiary(
-  request: Request,
-  env: Env,
-  ctx: ExecutionContext,
-  profile: KeyProfile
-): Promise<Response> {
-  const scopeError = requireScope(profile, "memory:write");
-  if (scopeError) return scopeError;
-
-  const body = await readBody(request);
-  if (!body) return openAiError("Request body must be a JSON object", 400);
-
-  const conversationId = readString(body.conversation_id);
-  if (!conversationId) return openAiError("conversation_id is required", 400);
-
-  const namespace = resolveNamespace(profile, body.namespace);
-  const source = readString(body.source) || LEGACY_CC_CONNECT_SOURCE;
-  const force = body.force !== false;
-
-  ctx.waitUntil(
-    enqueueConversationChunkingIfNeeded(env, {
-      namespace,
-      conversationId,
-      source,
-      force
-    })
-  );
-
-  return json({
-    data: {
-      queued: true,
-      namespace,
-      conversation_id: conversationId,
-      source,
-      force
     }
   });
 }
