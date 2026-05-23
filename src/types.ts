@@ -34,6 +34,7 @@ export interface Env {
   AUTO_CHUNK_MIN_MESSAGES?: string;
   AUTO_CHUNK_MAX_MESSAGES?: string;
   AUTO_CHUNK_SUMMARY_MODEL?: string;
+  CC_CONNECT_AUTO_DIARY_MIN_MESSAGES?: string;
   CC_CONNECT_MESSAGE_RETENTION_DAYS?: string;
   INJECTION_MODE?: string;
   EMBEDDING_MODEL?: string;
@@ -218,11 +219,10 @@ export interface SummaryRecord {
   id: string;
   namespace: string;
   conversation_id: string | null;
+  summary_type: "long_term" | "session" | string;
   content: string;
-  from_message_id: string | null;
-  to_message_id: string | null;
-  message_count: number;
-  vector_id: string | null;
+  model: string | null;
+  version: number;
   created_at: string;
   updated_at: string;
 }
