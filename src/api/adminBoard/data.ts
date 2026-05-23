@@ -85,8 +85,8 @@ function applyTabWhere(input: PageInput, binds: unknown[]): string {
     return " AND type != ? AND (type IN (?, ?) OR tags LIKE ? ESCAPE '\\')";
   }
   if (input.tab === "auto_diary") {
-    binds.push("auto_diary", "cc-connect");
-    return " AND type = ? AND source = ?";
+    binds.push(AUTO_DIARY_TYPE);
+    return " AND type = ?";
   }
   if (input.tab === "quote") {
     binds.push(AUTO_DIARY_TYPE, like("语录"));
