@@ -97,6 +97,42 @@ async function ensureBooksSchema(db: D1Database): Promise<void> {
   ]);
 }
 
+async function ensureReadingExtraSchema(db: D1Database): Promise<void> {
+  await db.batch([
+    db.prepare(
+      `CREATE TABLE IF NOT EXISTS book_annotations (
+        id TEXT PRIMARY KEY,
+        book_id TEXT NOT NULL,
+        chunk_id TEXT NOT NULL,
+        page INTEGER NOT NULL,
+        quote TEXT,
+        quote_offset INTEGER,
+        note TEXT NOT NULL,
+        author TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        mood TEXT,
+        tags TEXT,
+        status TEXT NOT NULL,
+        parent_id TEXT,
+        created_at TEXT NOT NULL,
+        submitted_at TEXT
+      )`
+    ),
+    db.prepare("CREATE INDEX IF NOT EXISTS idx_book_annotations_chunk ON book_annotations(book_id, chunk_id, status, created_at)"),
+    db.prepare("CREATE INDEX IF NOT EXISTS idx_book_annotations_parent ON book_annotations(parent_id)"),
+    db.prepare(
+      `CREATE TABLE IF NOT EXISTS reading_session_chunks (
+        session_id TEXT NOT NULL,
+        book_id TEXT NOT NULL,
+        chunk_id TEXT NOT NULL,
+        sent_at TEXT NOT NULL,
+        context_mode TEXT NOT NULL,
+        PRIMARY KEY (session_id, book_id, chunk_id)
+      )`
+    )
+  ]);
+}
+
 async function readProgress(db: D1Database, bookId: string): Promise<Record<string, number>> {
   const rows = await db.prepare("SELECT reader, page FROM book_progress WHERE book_id = ?").bind(bookId).all<ProgressRow>();
   const progress: Record<string, number> = { layla: 1, kld: 1 };
@@ -199,6 +235,7 @@ async function addComment(env: Env, request: Request): Promise<Response> {
 
 async function deleteBook(env: Env, request: Request): Promise<Response> {
   await ensureBooksSchema(env.DB);
+  await ensureReadingExtraSchema(env.DB);
   const body = await request.json().catch(() => null) as Record<string, unknown> | null;
   if (!body) return json({ error: "Invalid JSON" }, { status: 400 });
   const bookId = String(body.book_id || "").trim();
@@ -208,6 +245,8 @@ async function deleteBook(env: Env, request: Request): Promise<Response> {
   if (!book) return json({ error: "Book not found" }, { status: 404 });
 
   await env.DB.batch([
+    env.DB.prepare("DELETE FROM book_annotations WHERE book_id = ?").bind(bookId),
+    env.DB.prepare("DELETE FROM reading_session_chunks WHERE book_id = ?").bind(bookId),
     env.DB.prepare("DELETE FROM book_comments WHERE book_id = ?").bind(bookId),
     env.DB.prepare("DELETE FROM book_progress WHERE book_id = ?").bind(bookId),
     env.DB.prepare("DELETE FROM book_pages WHERE book_id = ?").bind(bookId),
@@ -215,6 +254,17 @@ async function deleteBook(env: Env, request: Request): Promise<Response> {
   ]);
 
   return json({ success: true, deleted_book_id: bookId });
+}
+
+async function deleteAnnotation(env: Env, request: Request): Promise<Response> {
+  await ensureReadingExtraSchema(env.DB);
+  const body = await request.json().catch(() => null) as Record<string, unknown> | null;
+  if (!body) return json({ error: "Invalid JSON" }, { status: 400 });
+  const id = String(body.id || body.annotationId || "").trim();
+  if (!id) return json({ error: "id is required" }, { status: 400 });
+
+  const result = await env.DB.prepare("DELETE FROM book_annotations WHERE id = ? OR parent_id = ?").bind(id, id).run();
+  return json({ success: true, deletedId: id, deletedCount: result.meta?.changes ?? 0 });
 }
 
 async function importBooks(env: Env, request: Request): Promise<Response> {
@@ -312,6 +362,7 @@ export async function handleBooks(request: Request, env: Env): Promise<Response>
   if (request.method === "POST" && url.pathname === "/books/api/submit-notes") return readingJson(env, "reading_submit_user_notes", await readJsonBody(request));
   if (request.method === "POST" && url.pathname === "/books/api/replies") return readingJson(env, "reading_reply_to_annotation", await readJsonBody(request));
   if (request.method === "POST" && url.pathname === "/books/api/mark-read") return readingJson(env, "reading_mark_read", await readJsonBody(request));
+  if (request.method === "POST" && url.pathname === "/books/api/delete-annotation") return deleteAnnotation(env, request);
 
   return json({ error: "Not found" }, { status: 404 });
 }
