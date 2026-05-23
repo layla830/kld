@@ -150,7 +150,7 @@ function toAnnotation(row: AnnotationRow): Record<string, unknown> {
   };
 }
 
-async function ensureReadingSchema(db: D1Database): Promise<void> {
+export async function ensureReadingSchema(db: D1Database): Promise<void> {
   await db.batch([
     db.prepare("CREATE TABLE IF NOT EXISTS books (id TEXT PRIMARY KEY, title TEXT NOT NULL, author TEXT, total_pages INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)"),
     db.prepare("CREATE TABLE IF NOT EXISTS book_pages (book_id TEXT NOT NULL, page INTEGER NOT NULL, content TEXT NOT NULL, PRIMARY KEY (book_id, page))"),
@@ -436,6 +436,23 @@ async function replyToAnnotation(db: D1Database, args: Record<string, unknown>):
   });
 }
 
+async function updateAnnotation(db: D1Database, args: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const id = readString(args.id) || readString(args.annotationId) || readString(args.annotation_id);
+  const note = readString(args.note) || readString(args.content);
+  if (!id || !note) return { error: "id and note are required" };
+
+  const result = await db.prepare("UPDATE book_annotations SET note = ? WHERE id = ?").bind(note, id).run();
+  return { success: true, updatedId: id, updatedCount: result.meta?.changes ?? 0 };
+}
+
+async function deleteAnnotation(db: D1Database, args: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const id = readString(args.id) || readString(args.annotationId) || readString(args.annotation_id);
+  if (!id) return { error: "id is required" };
+
+  const result = await db.prepare("DELETE FROM book_annotations WHERE id = ? OR parent_id = ?").bind(id, id).run();
+  return { success: true, deletedId: id, deletedCount: result.meta?.changes ?? 0 };
+}
+
 async function markRead(db: D1Database, args: Record<string, unknown>): Promise<Record<string, unknown>> {
   const bookId = readString(args.bookId) || readString(args.book_id);
   if (!bookId) return { error: "bookId is required" };
@@ -484,41 +501,6 @@ async function getProgress(db: D1Database, args: Record<string, unknown>): Promi
   };
 }
 
-export function getReadingTools(): Array<Record<string, unknown>> {
-  const bookSchema = {
-    type: "object",
-    properties: {
-      bookId: { type: "string" },
-      book_id: { type: "string" },
-      reader: { type: "string", enum: ["layla", "kld"] }
-    }
-  };
-  const chunkSchema = {
-    type: "object",
-    properties: {
-      bookId: { type: "string" },
-      book_id: { type: "string" },
-      chunkId: { type: "string" },
-      chunk_id: { type: "string" },
-      page: { type: "number", minimum: 1 }
-    },
-    required: ["bookId"]
-  };
-  return [
-    { name: "reading_list_books", description: "List shared-reading books with progress and annotation counts.", inputSchema: { type: "object", properties: {} } },
-    { name: "reading_list_chunks", description: "List page-backed reading chunks with prev/next ids.", inputSchema: bookSchema },
-    { name: "reading_read_chunk", description: "Read one page-backed chunk with annotations.", inputSchema: chunkSchema },
-    { name: "reading_continue", description: "Continue the most recent or selected book.", inputSchema: bookSchema },
-    { name: "reading_search_chunks", description: "Search text inside a shared-reading book.", inputSchema: { type: "object", properties: { ...bookSchema.properties, query: { type: "string" }, limit: { type: "number", minimum: 1, maximum: 50 } }, required: ["bookId", "query"] } },
-    { name: "reading_annotate_passage", description: "Save an anchored margin annotation.", inputSchema: { type: "object", properties: { ...chunkSchema.properties, quote: { type: "string" }, note: { type: "string" }, author: { type: "string" }, kind: { type: "string" }, mood: { type: "string" }, tags: { type: "array", items: { type: "string" } }, status: { type: "string" }, parentId: { type: "string" } }, required: ["bookId", "note"] } },
-    { name: "reading_list_annotations", description: "List margin annotations for a book or chunk.", inputSchema: { type: "object", properties: { ...chunkSchema.properties, kind: { type: "string" }, status: { type: "string" }, author: { type: "string" } }, required: ["bookId"] } },
-    { name: "reading_submit_user_notes", description: "Submit open user notes once and include chunk context by session policy.", inputSchema: { type: "object", properties: { ...bookSchema.properties, sessionId: { type: "string" }, contextMode: { type: "string" }, forceChunkContext: { type: "boolean" } }, required: ["bookId", "sessionId"] } },
-    { name: "reading_reply_to_annotation", description: "Save a Claude reply under an existing annotation.", inputSchema: { type: "object", properties: { parentId: { type: "string" }, note: { type: "string" }, kind: { type: "string" }, mood: { type: "string" }, tags: { type: "array", items: { type: "string" } } }, required: ["parentId", "note"] } },
-    { name: "reading_mark_read", description: "Mark one chunk read and advance progress.", inputSchema: { type: "object", properties: { ...chunkSchema.properties, reader: { type: "string", enum: ["layla", "kld"] } }, required: ["bookId", "chunkId"] } },
-    { name: "reading_get_progress", description: "Get shared-reading progress for a book.", inputSchema: bookSchema }
-  ];
-}
-
 export async function handleReadingTool(db: D1Database, name: unknown, args: Record<string, unknown>): Promise<ReadingToolResult> {
   if (typeof name !== "string" || !name.startsWith("reading_")) return { handled: false };
   await ensureReadingSchema(db);
@@ -532,6 +514,8 @@ export async function handleReadingTool(db: D1Database, name: unknown, args: Rec
     if (name === "reading_list_annotations") return { handled: true, data: await listAnnotations(db, args) };
     if (name === "reading_submit_user_notes") return { handled: true, data: await submitUserNotes(db, args) };
     if (name === "reading_reply_to_annotation") return { handled: true, data: await replyToAnnotation(db, args) };
+    if (name === "reading_update_annotation") return { handled: true, data: await updateAnnotation(db, args) };
+    if (name === "reading_delete_annotation") return { handled: true, data: await deleteAnnotation(db, args) };
     if (name === "reading_mark_read") return { handled: true, data: await markRead(db, args) };
     if (name === "reading_get_progress") return { handled: true, data: await getProgress(db, args) };
     return { handled: true, error: `Unknown reading tool: ${name}` };
