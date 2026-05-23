@@ -12,6 +12,8 @@ import {
   type PageInput
 } from "./utils";
 
+const AUTO_DIARY_TYPE = "auto_diary";
+
 export interface HeatDay {
   day: string;
   count: number;
@@ -26,12 +28,12 @@ export interface BoardStats {
 }
 
 export async function fetchTypes(env: Env): Promise<Array<{ type: string; count: number }>> {
-  const result = await env.DB.prepare("SELECT type, COUNT(*) AS count FROM memories WHERE namespace = 'default' AND status = 'active' GROUP BY type ORDER BY type").all<{ type: string; count: number }>();
+  const result = await env.DB.prepare("SELECT type, COUNT(*) AS count FROM memories WHERE namespace = 'default' AND status = 'active' AND type != ? GROUP BY type ORDER BY type").bind(AUTO_DIARY_TYPE).all<{ type: string; count: number }>();
   return result.results ?? [];
 }
 
 export async function fetchQuoteCategories(env: Env): Promise<string[]> {
-  const result = await env.DB.prepare("SELECT tags FROM memories WHERE namespace = 'default' AND status = 'active' AND tags LIKE ? ESCAPE '\\' ORDER BY updated_at DESC LIMIT 300").bind(like("语录")).all<{ tags: string | null }>();
+  const result = await env.DB.prepare("SELECT tags FROM memories WHERE namespace = 'default' AND status = 'active' AND type != ? AND tags LIKE ? ESCAPE '\\' ORDER BY updated_at DESC LIMIT 300").bind(AUTO_DIARY_TYPE, like("语录")).all<{ tags: string | null }>();
   const categories = new Set<string>();
   for (const row of result.results ?? []) {
     for (const tag of parseTags(row.tags)) {
@@ -42,13 +44,13 @@ export async function fetchQuoteCategories(env: Env): Promise<string[]> {
 }
 
 export async function fetchStats(env: Env): Promise<BoardStats> {
-  const result = await env.DB.prepare("SELECT COUNT(*) AS total, SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) AS active, SUM(CASE WHEN status = 'deleted' THEN 1 ELSE 0 END) AS deleted, SUM(CASE WHEN vector_id IS NOT NULL AND vector_id != '' THEN 1 ELSE 0 END) AS vectorized FROM memories WHERE namespace = 'default'").first<BoardStats>();
+  const result = await env.DB.prepare("SELECT COUNT(*) AS total, SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) AS active, SUM(CASE WHEN status = 'deleted' THEN 1 ELSE 0 END) AS deleted, SUM(CASE WHEN vector_id IS NOT NULL AND vector_id != '' THEN 1 ELSE 0 END) AS vectorized FROM memories WHERE namespace = 'default' AND type != ?").bind(AUTO_DIARY_TYPE).first<BoardStats>();
   return { active: result?.active ?? 0, deleted: result?.deleted ?? 0, total: result?.total ?? 0, vectorized: result?.vectorized ?? 0 };
 }
 
 export async function fetchHeatmap(env: Env): Promise<HeatDay[]> {
   const since = new Date(Date.now() - 90 * 86400000).toISOString().slice(0, 19).replace("T", " ");
-  const rows = await env.DB.prepare("SELECT created_at, tags FROM memories WHERE namespace = 'default' AND status = 'active' AND created_at >= ?").bind(since).all<{ created_at: string | null; tags: string | null }>();
+  const rows = await env.DB.prepare("SELECT created_at, tags FROM memories WHERE namespace = 'default' AND status = 'active' AND type != ? AND created_at >= ?").bind(AUTO_DIARY_TYPE, since).all<{ created_at: string | null; tags: string | null }>();
   const counts = new Map<string, number>();
   const moods = new Map<string, Map<string, number>>();
   for (const row of rows.results ?? []) {
@@ -75,27 +77,28 @@ export async function fetchHeatmap(env: Env): Promise<HeatDay[]> {
 
 function applyTabWhere(input: PageInput, binds: unknown[]): string {
   if (input.tab === "message") {
-    binds.push(like("留言"), like("unread"), "message");
-    return " AND (tags LIKE ? ESCAPE '\\' OR tags LIKE ? ESCAPE '\\' OR type = ?)";
+    binds.push(AUTO_DIARY_TYPE, like("留言"), like("unread"), "message");
+    return " AND type != ? AND (tags LIKE ? ESCAPE '\\' OR tags LIKE ? ESCAPE '\\' OR type = ?)";
   }
   if (input.tab === "diary") {
-    binds.push("diary", "layla_diary", like("日记"));
-    return " AND (type IN (?, ?) OR tags LIKE ? ESCAPE '\\')";
+    binds.push(AUTO_DIARY_TYPE, "diary", "layla_diary", like("日记"));
+    return " AND type != ? AND (type IN (?, ?) OR tags LIKE ? ESCAPE '\\')";
   }
   if (input.tab === "auto_diary") {
     binds.push("auto_diary", "cc-connect");
     return " AND type = ? AND source = ?";
   }
   if (input.tab === "quote") {
-    binds.push(like("语录"));
-    let clause = " AND tags LIKE ? ESCAPE '\\'";
+    binds.push(AUTO_DIARY_TYPE, like("语录"));
+    let clause = " AND type != ? AND tags LIKE ? ESCAPE '\\'";
     if (input.category) {
       clause += " AND tags LIKE ? ESCAPE '\\'";
       binds.push(like(input.category));
     }
     return clause;
   }
-  return "";
+  binds.push(AUTO_DIARY_TYPE);
+  return " AND type != ?";
 }
 
 function orderByForTab(tab: string): string {
@@ -128,6 +131,7 @@ function apiRecordToMemoryRecord(record: MemoryApiRecord): MemoryRecord {
 }
 
 function matchesBrowseFilters(record: MemoryRecord, input: PageInput): boolean {
+  if (record.type === AUTO_DIARY_TYPE) return false;
   if (input.status !== "all" && record.status !== input.status) return false;
   if (input.type && record.type !== input.type) return false;
 
@@ -187,6 +191,7 @@ async function fetchKeywordMemories(env: Env, input: PageInput): Promise<{ total
 async function fetchSemanticMemories(env: Env, input: PageInput): Promise<{ total: number; records: MemoryRecord[] }> {
   if (!input.q || input.tab !== "browse") return { total: 0, records: [] };
   if (input.status !== "active" && input.status !== "all") return { total: 0, records: [] };
+  if (input.type === AUTO_DIARY_TYPE) return { total: 0, records: [] };
 
   try {
     const apiRecords = await searchMemories(env, {
