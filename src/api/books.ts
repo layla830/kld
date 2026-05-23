@@ -1,4 +1,5 @@
 import { isAuthorized, unauthorized } from "./adminBoard/auth";
+import { handleReadingTool } from "./readingMcp";
 import type { Env } from "../types";
 import { json } from "../utils/json";
 
@@ -275,6 +276,21 @@ async function importBooks(env: Env, request: Request): Promise<Response> {
   return json({ success: true, imported_books: importedBooks, imported_pages: importedPages, imported_comments: importedComments });
 }
 
+function argsFromSearch(url: URL): Record<string, unknown> {
+  return Object.fromEntries(url.searchParams.entries());
+}
+
+async function readJsonBody(request: Request): Promise<Record<string, unknown>> {
+  const body = await request.json().catch(() => ({})) as unknown;
+  return body && typeof body === "object" && !Array.isArray(body) ? body as Record<string, unknown> : {};
+}
+
+async function readingJson(env: Env, toolName: string, args: Record<string, unknown>): Promise<Response> {
+  const result = await handleReadingTool(env.DB, toolName, args);
+  if (result.error) return json({ error: result.error }, { status: 400 });
+  return json(result.data ?? {});
+}
+
 export async function handleBooks(request: Request, env: Env): Promise<Response> {
   if (!isAuthorized(request, env)) return unauthorized();
   const url = new URL(request.url);
@@ -286,6 +302,16 @@ export async function handleBooks(request: Request, env: Env): Promise<Response>
   if (request.method === "POST" && url.pathname === "/books/api/delete") return deleteBook(env, request);
   if (request.method === "DELETE" && url.pathname === "/books/api/delete") return deleteBook(env, request);
   if (request.method === "POST" && url.pathname === "/admin/books/import") return importBooks(env, request);
+  if (request.method === "GET" && url.pathname === "/books/api/chunks") return readingJson(env, "reading_list_chunks", argsFromSearch(url));
+  if (request.method === "GET" && url.pathname === "/books/api/read-chunk") return readingJson(env, "reading_read_chunk", argsFromSearch(url));
+  if (request.method === "GET" && url.pathname === "/books/api/continue") return readingJson(env, "reading_continue", argsFromSearch(url));
+  if (request.method === "GET" && url.pathname === "/books/api/search") return readingJson(env, "reading_search_chunks", argsFromSearch(url));
+  if (request.method === "GET" && url.pathname === "/books/api/annotations") return readingJson(env, "reading_list_annotations", argsFromSearch(url));
+  if (request.method === "GET" && url.pathname === "/books/api/reading-progress") return readingJson(env, "reading_get_progress", argsFromSearch(url));
+  if (request.method === "POST" && url.pathname === "/books/api/annotations") return readingJson(env, "reading_annotate_passage", await readJsonBody(request));
+  if (request.method === "POST" && url.pathname === "/books/api/submit-notes") return readingJson(env, "reading_submit_user_notes", await readJsonBody(request));
+  if (request.method === "POST" && url.pathname === "/books/api/replies") return readingJson(env, "reading_reply_to_annotation", await readJsonBody(request));
+  if (request.method === "POST" && url.pathname === "/books/api/mark-read") return readingJson(env, "reading_mark_read", await readJsonBody(request));
 
   return json({ error: "Not found" }, { status: 404 });
 }
