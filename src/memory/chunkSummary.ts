@@ -6,7 +6,7 @@ import { formatShanghaiDateTime, messageTime } from "./chunkPeriods";
 
 const DEFAULT_SUMMARY_MODEL = "deepseek/deepseek-v4-pro";
 const FALLBACK_WORKERS_SUMMARY_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
-const SUMMARY_MAX_TOKENS = 900;
+const SUMMARY_MAX_TOKENS = 1000;
 
 function formatTranscript(messages: MessageRecord[]): string {
   return messages.map((message) => {
@@ -18,11 +18,11 @@ function formatTranscript(messages: MessageRecord[]): string {
 
 function fallbackSummary(messages: MessageRecord[]): ChunkSummary {
   const text = messages.map((message) => message.content).join("\n").replace(/\s+/g, " ").trim();
-  const summary = text.slice(0, 600) || "这段时间的对话没有足够内容可总结。";
+  const summary = text.slice(0, 500) || "这段时间的对话没有足够内容可写成日记。";
   return {
     summary,
-    keywords: summary.split(/[，。,.!?！？\s]+/).filter(Boolean).slice(0, 5),
-    emotion: "neutral"
+    keywords: [],
+    emotion: ""
   };
 }
 
@@ -47,7 +47,7 @@ async function runSummaryModel(env: Env, model: string, prompt: string): Promise
   try {
     if (model.startsWith("@cf/")) {
       if (!env.AI) return "";
-      const result = await env.AI.run(model as any, { prompt, max_tokens: SUMMARY_MAX_TOKENS, temperature: 0.2 });
+      const result = await env.AI.run(model as any, { prompt, max_tokens: SUMMARY_MAX_TOKENS, temperature: 0.25 });
       return readWorkersAiText(result);
     }
 
@@ -64,7 +64,7 @@ async function runSummaryModel(env: Env, model: string, prompt: string): Promise
         }
       ],
       max_tokens: SUMMARY_MAX_TOKENS,
-      temperature: 0.2,
+      temperature: 0.25,
       stream: false
     });
     if (!response.ok) {
@@ -83,21 +83,16 @@ function parseSummary(text: string, fallback: ChunkSummary): ChunkSummary | null
   const parsed = extractJsonObject(text);
   if (!parsed || typeof parsed !== "object") return null;
 
-  const raw = parsed as { summary?: unknown; keywords?: unknown; emotion?: unknown };
+  const raw = parsed as { summary?: unknown };
   const summary = typeof raw.summary === "string" && raw.summary.trim() ? raw.summary.trim() : "";
   if (!summary) return null;
 
-  const keywords = Array.isArray(raw.keywords)
-    ? raw.keywords.filter((item): item is string => typeof item === "string").map((item) => item.trim()).filter(Boolean).slice(0, 5)
-    : fallback.keywords;
-  const emotion = typeof raw.emotion === "string" && raw.emotion.trim() ? raw.emotion.trim() : fallback.emotion;
-
-  return { summary, keywords: keywords.length > 0 ? keywords : fallback.keywords, emotion };
+  return { summary, keywords: fallback.keywords, emotion: fallback.emotion };
 }
 
 function buildSummaryPrompt(messages: MessageRecord[], periodLabel: string): string {
   const transcript = formatTranscript(messages).slice(0, 12000);
-  return `请把下面这一整段聊天窗口整理成一则中文日记式记忆。\n时间段：${periodLabel}（东八区）。\n要求：\n- 不是逐条流水账，也不是一句话概括。\n- 用第三人称日记式叙述，不要用“我”指代任何人。\n- “她”指人类用户 Layla/Yuxin；“kld/助手”指 AI 助手。可以写“她和 kld 讨论了……”“她希望……”“kld 做了……”。\n- 保留具体事件、关系、情绪变化、决定和待办，不要写成客服工单或系统日志。\n- 忽略无意义寒暄、重复催促、工具噪音。\n- 如果内容很少，也要说明上下文不足，不要编造。\n- 输出 JSON，格式：{"summary":"...","keywords":["..."],"emotion":"..."}\n\n聊天窗口：\n${transcript}`;
+  return `请把下面这一整段聊天写成一篇中文日记。\n时间段：${periodLabel}（东八区）。\n要求：\n- 写画面，不写结论。优先保留她和他的原话，尤其是有力量的句子。\n- 写感受，不写流水账。不要写“讨论了X”，要写这个话题里谁被打动了、谁沉默了、谁先伸手了。\n- 找出转折点，写清楚情绪为什么转向。\n- 区分吵架和靠近：吵架不是“关系紧张”，是她在拉他回来；靠近不是“关系缓和”，是有人先动了。\n- 100-500 个中文字符。内容少就短，聊得多就多写，但不要硬凑，也不要压成两句话。\n- 第三人称，只用“她”和“他”。\n- 不要标题、不要关键词、不要情感标签、不要列表。\n- 输出 JSON，格式：{"summary":"..."}\n\n聊天窗口：\n${transcript}`;
 }
 
 export async function summarizeChunk(env: Env, messages: MessageRecord[], periodLabel: string): Promise<ChunkSummary | null> {
