@@ -28,10 +28,34 @@ import { handleGenerateCcConnectDiaryFromMessages, handleResetCcConnect } from "
 
 const AUTO_DIARY_TYPE = "auto_diary";
 
+type MemoryResponseRecord = MemoryApiRecord | Omit<
+  MemoryApiRecord,
+  "source" | "source_message_ids" | "vector_id" | "last_recalled_at" | "recall_count" | "expires_at"
+>;
+
 function normalizeLimit(value: string | null, fallback = 50): number {
   const parsed = Number(value || fallback);
   if (!Number.isFinite(parsed)) return fallback;
   return Math.min(Math.max(Math.floor(parsed), 1), 100);
+}
+
+function cleanMemoryForResponse(record: MemoryApiRecord): MemoryResponseRecord {
+  if (record.type !== AUTO_DIARY_TYPE) return record;
+
+  const {
+    source: _source,
+    source_message_ids: _sourceMessageIds,
+    vector_id: _vectorId,
+    last_recalled_at: _lastRecalledAt,
+    recall_count: _recallCount,
+    expires_at: _expiresAt,
+    ...clean
+  } = record;
+  return clean;
+}
+
+function cleanMemoriesForResponse(records: MemoryApiRecord[]): MemoryResponseRecord[] {
+  return records.map((record) => cleanMemoryForResponse(record));
 }
 
 function excludeAutoDiaryUnlessRequested(records: MemoryApiRecord[], requestedTypes: string[]): MemoryApiRecord[] {
@@ -79,7 +103,7 @@ async function handleCreateMemory(
     })
   );
 
-  return json({ data: toMemoryApiRecord(memory) }, { status: 201 });
+  return json({ data: cleanMemoryForResponse(toMemoryApiRecord(memory)) }, { status: 201 });
 }
 
 async function handleListMemories(request: Request, env: Env, profile: KeyProfile): Promise<Response> {
@@ -97,10 +121,9 @@ async function handleListMemories(request: Request, env: Env, profile: KeyProfil
     limit: type ? limit : 100
   });
   const apiRecords = records.map((record) => toMemoryApiRecord(record));
+  const visibleRecords = type ? apiRecords : excludeAutoDiaryUnlessRequested(apiRecords, []).slice(0, limit);
 
-  return json({
-    data: type ? apiRecords : excludeAutoDiaryUnlessRequested(apiRecords, []).slice(0, limit)
-  });
+  return json({ data: cleanMemoriesForResponse(visibleRecords) });
 }
 
 async function handleSearchMemories(request: Request, env: Env, profile: KeyProfile): Promise<Response> {
@@ -124,12 +147,12 @@ async function handleSearchMemories(request: Request, env: Env, profile: KeyProf
   );
 
   if (body.filter !== true && body.compress !== true) {
-    return json({ data: raw });
+    return json({ data: cleanMemoriesForResponse(raw) });
   }
 
   const filtered = await filterAndCompressMemoriesWithMeta(env, { query, memories: raw });
   return json({
-    data: filtered.data,
+    data: cleanMemoriesForResponse(filtered.data),
     meta: {
       raw_count: raw.length,
       filter: filtered.meta
@@ -250,7 +273,7 @@ async function handlePatchMemory(
     })
   );
 
-  return json({ data: toMemoryApiRecord(updated) });
+  return json({ data: cleanMemoryForResponse(toMemoryApiRecord(updated)) });
 }
 
 async function handleDeleteMemory(
@@ -275,7 +298,7 @@ async function handleDeleteMemory(
     })
   );
 
-  return json({ data: toMemoryApiRecord(deleted) });
+  return json({ data: cleanMemoryForResponse(toMemoryApiRecord(deleted)) });
 }
 
 async function handleGetMemory(env: Env, profile: KeyProfile, id: string): Promise<Response> {
@@ -288,7 +311,7 @@ async function handleGetMemory(env: Env, profile: KeyProfile, id: string): Promi
   });
 
   if (!memory) return openAiError("Memory not found", 404);
-  return json({ data: toMemoryApiRecord(memory) });
+  return json({ data: cleanMemoryForResponse(toMemoryApiRecord(memory)) });
 }
 
 export async function handleMemories(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
