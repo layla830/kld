@@ -50,11 +50,11 @@ h1{font-size:1.25rem;font-weight:400;color:var(--pink-dark);margin-bottom:6px}
 .search-row{display:flex;gap:8px;margin-bottom:12px}
 .search-row input{flex:1;min-width:0}
 input,textarea{width:100%;border:1px solid rgba(232,160,176,.45);border-radius:14px;background:white;color:var(--text);outline:none;padding:9px 11px}
-.toc{margin-bottom:12px;padding:10px 12px}
-.toc summary{cursor:pointer;color:var(--pink-dark);font-size:.78rem;list-style:none}
+.toc{margin-bottom:12px;padding:8px 10px}
+.toc summary{cursor:pointer;color:var(--pink-dark);font-size:.7rem;list-style:none}
 .toc summary::-webkit-details-marker{display:none}
-.toc-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(70px,1fr));gap:8px;margin-top:10px;max-height:190px;overflow:auto;padding-right:2px}
-.toc-btn{border:1px solid rgba(232,160,176,.35);border-radius:12px;background:white;color:var(--text);padding:8px 6px;font-size:.72rem;text-align:center}
+.toc-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(62px,1fr));gap:6px;margin-top:8px;max-height:150px;overflow:auto;padding-right:2px}
+.toc-btn{border:1px solid rgba(232,160,176,.35);border-radius:10px;background:white;color:var(--text);padding:5px 4px;font-size:.64rem;text-align:center}
 .toc-btn.active{background:var(--pink-light);border-color:var(--pink);color:var(--pink-dark)}
 .content-panel{white-space:pre-wrap;line-height:1.85;font-size:.92rem;min-height:320px;padding:22px;outline:none}
 .content-panel::selection{background:rgba(232,160,176,.32)}
@@ -63,12 +63,15 @@ input,textarea{width:100%;border:1px solid rgba(232,160,176,.45);border-radius:1
 .jump-input{width:62px;text-align:center;border-radius:999px;padding:6px 4px}
 .section{margin-top:18px}
 .section-title{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;color:var(--text-light);font-size:.74rem;gap:10px}
+.section-title .text-btn{font-size:.66rem}
 .annotation,.comment,.search-result{display:block;width:100%;text-align:left;padding:12px;margin-bottom:10px;background:rgba(255,251,252,.72);border:1px solid var(--line);border-radius:12px;color:var(--text)}
 .annotation.reply{margin-left:18px;border-color:rgba(143,168,192,.35)}
 .annotation-meta,.comment-author{font-size:.7rem;color:var(--pink-dark);margin-bottom:5px}
 .annotation-note,.comment-content,.search-snippet{white-space:pre-wrap;line-height:1.65;font-size:.84rem}
-.annotation-quote,.quote-preview{margin-bottom:7px;color:var(--text-light);font-size:.78rem;line-height:1.55}
-.quote-preview{min-height:34px;border:1px dashed rgba(232,160,176,.45);border-radius:12px;padding:8px 10px;background:rgba(255,240,243,.55)}
+.annotation-quote,.quote-preview{margin-bottom:7px;color:var(--text-light);font-size:.7rem;line-height:1.45}
+.quote-preview{min-height:28px;border:1px dashed rgba(232,160,176,.45);border-radius:10px;padding:6px 8px;background:rgba(255,240,243,.55)}
+.annotation-actions{display:flex;gap:10px;justify-content:flex-end;margin-top:7px;flex-wrap:wrap}
+.annotation-actions .text-btn{font-size:.66rem;padding:2px 0}
 .comment-time{margin-top:6px;font-size:.62rem;color:var(--text-light)}
 .composer{padding:14px;margin-top:10px}
 .composer textarea{min-height:78px;border:none;border-bottom:1px dashed var(--pink);border-radius:0;background:transparent;resize:vertical;line-height:1.7;padding:8px 0}
@@ -92,6 +95,7 @@ var state = {
   selectedQuote: "",
   sessionId: "reading-ui-" + new Date().toISOString().slice(0, 10)
 };
+var annotationCache = {};
 
 function byId(id) {
   return document.getElementById(id);
@@ -311,6 +315,7 @@ function annotationLabel(annotation) {
 }
 
 function renderAnnotation(annotation, replies) {
+  annotationCache[annotation.id] = annotation;
   var replyHtml = (replies[annotation.id] || []).map(function (reply) {
     return renderAnnotation(reply, replies);
   }).join("");
@@ -319,7 +324,8 @@ function renderAnnotation(annotation, replies) {
     '<div class="annotation-meta">' + esc(annotationLabel(annotation)) + '</div>',
     annotation.quote ? '<div class="annotation-quote">“' + esc(annotation.quote) + '”</div>' : '',
     '<div class="annotation-note">' + esc(annotation.note) + '</div>',
-    '<div class="composer-actions">',
+    '<div class="annotation-actions">',
+    '<button class="text-btn" type="button" data-edit-annotation-id="' + esc(annotation.id) + '">编辑</button>',
     '<button class="text-btn" type="button" data-reply-id="' + esc(annotation.id) + '">回复</button>',
     '<button class="text-btn danger" type="button" data-delete-annotation-id="' + esc(annotation.id) + '">删除</button>',
     '</div>',
@@ -329,6 +335,16 @@ function renderAnnotation(annotation, replies) {
 }
 
 function bindAnnotationActions() {
+  Array.prototype.forEach.call(document.querySelectorAll("[data-edit-annotation-id]"), function (button) {
+    button.addEventListener("click", async function () {
+      var id = button.getAttribute("data-edit-annotation-id") || "";
+      var current = annotationCache[id] || {};
+      var note = prompt("修改批注：", current.note || "");
+      if (!note || !note.trim() || note.trim() === current.note) return;
+      await postJson("/books/api/update-annotation", { id: id, note: note.trim() });
+      await loadAnnotations();
+    });
+  });
   Array.prototype.forEach.call(document.querySelectorAll("[data-reply-id]"), function (button) {
     button.addEventListener("click", async function () {
       var note = prompt("写一句回复：");
@@ -350,6 +366,7 @@ function bindAnnotationActions() {
 }
 
 async function loadAnnotations() {
+  annotationCache = {};
   var data = await api("/books/api/annotations?bookId=" + encodeURIComponent(state.bookId) + "&chunkId=" + chunkId());
   var annotations = data.annotations || [];
   var roots = [];
