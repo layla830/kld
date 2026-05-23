@@ -2,6 +2,8 @@ import type { Env, MemoryRecord } from "../types";
 import { callOpenAICompatEmbeddings } from "../proxy/openaiAdapter";
 
 const DEFAULT_EMBEDDING_MODEL = "workers-ai/@cf/google/embeddinggemma-300m";
+const MAX_METADATA_CONTENT_CHARS = 1_000;
+const MAX_METADATA_SUMMARY_CHARS = 500;
 
 function workersAiModelName(model: string): string | null {
   const normalized = model.trim();
@@ -36,6 +38,10 @@ function readEmbedding(result: unknown): number[] | null {
   }
 
   return null;
+}
+
+function truncateMetadata(value: string, maxChars: number): string {
+  return value.length > maxChars ? value.slice(0, maxChars) : value;
 }
 
 export async function createEmbedding(env: Env, text: string): Promise<number[] | null> {
@@ -82,8 +88,8 @@ export async function upsertMemoryEmbedding(env: Env, memory: MemoryRecord): Pro
         kind: "memory",
         ref_id: memory.id,
         type: memory.type,
-        content: memory.content,
-        summary: memory.summary || "",
+        content: truncateMetadata(memory.content, MAX_METADATA_CONTENT_CHARS),
+        summary: truncateMetadata(memory.summary || "", MAX_METADATA_SUMMARY_CHARS),
         importance: memory.importance,
         confidence: memory.confidence,
         status: memory.status,
