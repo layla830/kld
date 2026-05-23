@@ -1,5 +1,5 @@
 import { isAuthorized, unauthorized } from "./adminBoard/auth";
-import { handleReadingTool } from "./readingMcp";
+import { ensureReadingSchema, handleReadingTool } from "./readingMcp";
 import type { Env } from "../types";
 import { json } from "../utils/json";
 
@@ -94,42 +94,6 @@ async function ensureBooksSchema(db: D1Database): Promise<void> {
       )`
     ),
     db.prepare("CREATE INDEX IF NOT EXISTS idx_book_comments_page ON book_comments(book_id, page, created_at)")
-  ]);
-}
-
-async function ensureReadingExtraSchema(db: D1Database): Promise<void> {
-  await db.batch([
-    db.prepare(
-      `CREATE TABLE IF NOT EXISTS book_annotations (
-        id TEXT PRIMARY KEY,
-        book_id TEXT NOT NULL,
-        chunk_id TEXT NOT NULL,
-        page INTEGER NOT NULL,
-        quote TEXT,
-        quote_offset INTEGER,
-        note TEXT NOT NULL,
-        author TEXT NOT NULL,
-        kind TEXT NOT NULL,
-        mood TEXT,
-        tags TEXT,
-        status TEXT NOT NULL,
-        parent_id TEXT,
-        created_at TEXT NOT NULL,
-        submitted_at TEXT
-      )`
-    ),
-    db.prepare("CREATE INDEX IF NOT EXISTS idx_book_annotations_chunk ON book_annotations(book_id, chunk_id, status, created_at)"),
-    db.prepare("CREATE INDEX IF NOT EXISTS idx_book_annotations_parent ON book_annotations(parent_id)"),
-    db.prepare(
-      `CREATE TABLE IF NOT EXISTS reading_session_chunks (
-        session_id TEXT NOT NULL,
-        book_id TEXT NOT NULL,
-        chunk_id TEXT NOT NULL,
-        sent_at TEXT NOT NULL,
-        context_mode TEXT NOT NULL,
-        PRIMARY KEY (session_id, book_id, chunk_id)
-      )`
-    )
   ]);
 }
 
@@ -235,7 +199,7 @@ async function addComment(env: Env, request: Request): Promise<Response> {
 
 async function deleteBook(env: Env, request: Request): Promise<Response> {
   await ensureBooksSchema(env.DB);
-  await ensureReadingExtraSchema(env.DB);
+  await ensureReadingSchema(env.DB);
   const body = await request.json().catch(() => null) as Record<string, unknown> | null;
   if (!body) return json({ error: "Invalid JSON" }, { status: 400 });
   const bookId = String(body.book_id || "").trim();
@@ -254,29 +218,6 @@ async function deleteBook(env: Env, request: Request): Promise<Response> {
   ]);
 
   return json({ success: true, deleted_book_id: bookId });
-}
-
-async function updateAnnotation(env: Env, request: Request): Promise<Response> {
-  await ensureReadingExtraSchema(env.DB);
-  const body = await request.json().catch(() => null) as Record<string, unknown> | null;
-  if (!body) return json({ error: "Invalid JSON" }, { status: 400 });
-  const id = String(body.id || body.annotationId || "").trim();
-  const note = String(body.note || "").trim();
-  if (!id || !note) return json({ error: "id and note are required" }, { status: 400 });
-
-  const result = await env.DB.prepare("UPDATE book_annotations SET note = ? WHERE id = ?").bind(note, id).run();
-  return json({ success: true, updatedId: id, updatedCount: result.meta?.changes ?? 0 });
-}
-
-async function deleteAnnotation(env: Env, request: Request): Promise<Response> {
-  await ensureReadingExtraSchema(env.DB);
-  const body = await request.json().catch(() => null) as Record<string, unknown> | null;
-  if (!body) return json({ error: "Invalid JSON" }, { status: 400 });
-  const id = String(body.id || body.annotationId || "").trim();
-  if (!id) return json({ error: "id is required" }, { status: 400 });
-
-  const result = await env.DB.prepare("DELETE FROM book_annotations WHERE id = ? OR parent_id = ?").bind(id, id).run();
-  return json({ success: true, deletedId: id, deletedCount: result.meta?.changes ?? 0 });
 }
 
 async function importBooks(env: Env, request: Request): Promise<Response> {
@@ -374,8 +315,8 @@ export async function handleBooks(request: Request, env: Env): Promise<Response>
   if (request.method === "POST" && url.pathname === "/books/api/submit-notes") return readingJson(env, "reading_submit_user_notes", await readJsonBody(request));
   if (request.method === "POST" && url.pathname === "/books/api/replies") return readingJson(env, "reading_reply_to_annotation", await readJsonBody(request));
   if (request.method === "POST" && url.pathname === "/books/api/mark-read") return readingJson(env, "reading_mark_read", await readJsonBody(request));
-  if (request.method === "POST" && url.pathname === "/books/api/update-annotation") return updateAnnotation(env, request);
-  if (request.method === "POST" && url.pathname === "/books/api/delete-annotation") return deleteAnnotation(env, request);
+  if (request.method === "POST" && url.pathname === "/books/api/update-annotation") return readingJson(env, "reading_update_annotation", await readJsonBody(request));
+  if (request.method === "POST" && url.pathname === "/books/api/delete-annotation") return readingJson(env, "reading_delete_annotation", await readJsonBody(request));
 
   return json({ error: "Not found" }, { status: 404 });
 }
