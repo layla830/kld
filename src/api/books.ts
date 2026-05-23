@@ -256,6 +256,18 @@ async function deleteBook(env: Env, request: Request): Promise<Response> {
   return json({ success: true, deleted_book_id: bookId });
 }
 
+async function updateAnnotation(env: Env, request: Request): Promise<Response> {
+  await ensureReadingExtraSchema(env.DB);
+  const body = await request.json().catch(() => null) as Record<string, unknown> | null;
+  if (!body) return json({ error: "Invalid JSON" }, { status: 400 });
+  const id = String(body.id || body.annotationId || "").trim();
+  const note = String(body.note || "").trim();
+  if (!id || !note) return json({ error: "id and note are required" }, { status: 400 });
+
+  const result = await env.DB.prepare("UPDATE book_annotations SET note = ? WHERE id = ?").bind(note, id).run();
+  return json({ success: true, updatedId: id, updatedCount: result.meta?.changes ?? 0 });
+}
+
 async function deleteAnnotation(env: Env, request: Request): Promise<Response> {
   await ensureReadingExtraSchema(env.DB);
   const body = await request.json().catch(() => null) as Record<string, unknown> | null;
@@ -362,6 +374,7 @@ export async function handleBooks(request: Request, env: Env): Promise<Response>
   if (request.method === "POST" && url.pathname === "/books/api/submit-notes") return readingJson(env, "reading_submit_user_notes", await readJsonBody(request));
   if (request.method === "POST" && url.pathname === "/books/api/replies") return readingJson(env, "reading_reply_to_annotation", await readJsonBody(request));
   if (request.method === "POST" && url.pathname === "/books/api/mark-read") return readingJson(env, "reading_mark_read", await readJsonBody(request));
+  if (request.method === "POST" && url.pathname === "/books/api/update-annotation") return updateAnnotation(env, request);
   if (request.method === "POST" && url.pathname === "/books/api/delete-annotation") return deleteAnnotation(env, request);
 
   return json({ error: "Not found" }, { status: 404 });
