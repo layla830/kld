@@ -10,6 +10,7 @@ import { readBody, readNumber, readString, resolveNamespace } from "./common";
 
 const DEFAULT_LOCAL_DIARY_MIN_MESSAGES = 4;
 const DEFAULT_LOCAL_DIARY_MAX_MESSAGES = 160;
+const LEGACY_CC_CONNECT_SOURCE = "cc-connect";
 
 function parseTimestamp(value: unknown): string {
   const raw = readString(value);
@@ -96,8 +97,8 @@ export async function handleResetCcConnect(
      WHERE namespace = ?
        AND vector_id IS NOT NULL
        AND vector_id != ''
-       AND (source = 'cc-connect' OR type IN ('auto_chunk', 'auto_diary'))`
-  ).bind(namespace).all<{ vector_id: string }>();
+       AND source = ?`
+  ).bind(namespace, LEGACY_CC_CONNECT_SOURCE).all<{ vector_id: string }>();
   const vectorIds = (vectorRows.results ?? []).map((row) => row.vector_id).filter(Boolean);
 
   if (env.VECTORIZE && vectorIds.length > 0) {
@@ -109,16 +110,17 @@ export async function handleResetCcConnect(
   const memories = await env.DB.prepare(
     `DELETE FROM memories
      WHERE namespace = ?
-       AND (source = 'cc-connect' OR type IN ('auto_chunk', 'auto_diary'))`
-  ).bind(namespace).run();
+       AND source = ?`
+  ).bind(namespace, LEGACY_CC_CONNECT_SOURCE).run();
 
   const messages = await env.DB.prepare(
-    "DELETE FROM messages WHERE namespace = ? AND source = 'cc-connect'"
-  ).bind(namespace).run();
+    "DELETE FROM messages WHERE namespace = ? AND source = ?"
+  ).bind(namespace, LEGACY_CC_CONNECT_SOURCE).run();
 
   return json({
     data: {
       namespace,
+      deleted_legacy_source: LEGACY_CC_CONNECT_SOURCE,
       deleted_memories: memories.meta.changes ?? 0,
       deleted_messages: messages.meta.changes ?? 0,
       deleted_vectors: vectorIds.length
@@ -142,7 +144,7 @@ export async function handleGenerateCcConnectDiary(
   if (!conversationId) return openAiError("conversation_id is required", 400);
 
   const namespace = resolveNamespace(profile, body.namespace);
-  const source = readString(body.source) || "cc-connect";
+  const source = readString(body.source) || LEGACY_CC_CONNECT_SOURCE;
   const force = body.force !== false;
 
   ctx.waitUntil(
