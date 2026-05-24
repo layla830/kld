@@ -11,6 +11,8 @@ const TRANSCRIPT_MAX_CHARS = 60000;
 const LONG_WINDOW_MESSAGE_COUNT = 160;
 const SEGMENT_MESSAGE_LIMIT = 120;
 const SEGMENT_TRANSCRIPT_MAX_CHARS = 14000;
+const SEGMENT_CONCURRENCY = 3;
+const MAX_SEGMENTS = 10;
 
 function formatTranscript(messages: MessageRecord[]): string {
   return messages.map((message) => {
@@ -139,7 +141,7 @@ function buildSummaryPrompt(messages: MessageRecord[], periodLabel: string): str
 要求：
 - 这是一个完整时间段的日记，不管窗口很长也只输出一篇，不要拆成多条，不要加小标题。
 - 如果聊天窗口很长，先在心里找出 2-4 个关键片段或转折点，再合成一篇连贯日记。
-- 写画面，不写结论。优先保留她和他的原话，尤其是有力量的句子。
+- 冝画面，不冝结论。优先保留她和他的原话，尤其是有力量的句子。
 - 写感受，不写流水账。不要写“讨论了X”，要写这个话题里谁被打动了、谁沉默了、谁先伸手了。
 - 找出转折点，写清楚情绪为什么转向。
 - 区分吵架和靠近：吵架不是“关系紧张”，是她在拉他回来；靠近不是“关系缓和”，是有人先动了。
@@ -169,11 +171,16 @@ ${notes.map((note, index) => `${index + 1}. ${note}`).join("\n")}`;
 }
 
 async function summarizeLongChunk(env: Env, model: string, messages: MessageRecord[], periodLabel: string, fallback: ChunkSummary): Promise<ChunkSummary | null> {
-  const chunks = messageChunks(messages);
-  const noteGroups = await Promise.all(chunks.map(async (chunk, index) => {
-    const prompt = buildSegmentPrompt(chunk, periodLabel, index, chunks.length);
-    return parseNotes(await runSummaryModel(env, model, prompt));
-  }));
+  const chunks = messageChunks(messages).slice(0, MAX_SEGMENTS);
+  const noteGroups: string[][] = [];
+  for (let index = 0; index < chunks.length; index += SEGMENT_CONCURRENCY) {
+    const batch = chunks.slice(index, index + SEGMENT_CONCURRENCY);
+    noteGroups.push(...await Promise.all(batch.map(async (chunk, offset) => {
+      const chunkIndex = index + offset;
+      const prompt = buildSegmentPrompt(chunk, periodLabel, chunkIndex, chunks.length);
+      return parseNotes(await runSummaryModel(env, model, prompt));
+    })));
+  }
   const notes = noteGroups.flat();
 
   if (notes.length === 0) return null;
