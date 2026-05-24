@@ -47,6 +47,29 @@ function normalizeOpenAICompatBaseUrl(env: Env): string {
     .replace(/\/embeddings$/i, "");
 }
 
+function isDirectDeepSeekUpstream(env: Env): boolean {
+  if (!hasDirectOpenAIUpstream(env)) return false;
+  try {
+    return new URL(normalizeOpenAICompatBaseUrl(env)).hostname.toLowerCase().includes("deepseek");
+  } catch {
+    return normalizeOpenAICompatBaseUrl(env).toLowerCase().includes("deepseek");
+  }
+}
+
+export function normalizeOpenAICompatModel(env: Env, model: string): string {
+  if (isDirectDeepSeekUpstream(env) && model.startsWith("deepseek/")) {
+    return model.slice("deepseek/".length);
+  }
+  return model;
+}
+
+function normalizeOpenAICompatChatBody(env: Env, body: OpenAIChatRequest): OpenAIChatRequest {
+  return {
+    ...body,
+    model: normalizeOpenAICompatModel(env, body.model)
+  };
+}
+
 export function getOpenAICompatUrl(env: Env): string {
   if (hasDirectOpenAIUpstream(env)) {
     return `${normalizeOpenAICompatBaseUrl(env)}/chat/completions`;
@@ -92,7 +115,7 @@ export async function callOpenAICompat(env: Env, body: OpenAIChatRequest): Promi
   return fetch(getOpenAICompatUrl(env), {
     method: "POST",
     headers: buildOpenAICompatHeaders(env),
-    body: JSON.stringify(body)
+    body: JSON.stringify(normalizeOpenAICompatChatBody(env, body))
   });
 }
 
@@ -107,6 +130,6 @@ export async function callOpenAICompatEmbeddings(
   return fetch(url, {
     method: "POST",
     headers: buildOpenAICompatHeaders(env),
-    body: JSON.stringify(body)
+    body: JSON.stringify({ ...body, model: normalizeOpenAICompatModel(env, body.model) })
   });
 }
