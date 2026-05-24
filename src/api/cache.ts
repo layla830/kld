@@ -71,7 +71,7 @@ function serializeEntry(record: NonNullable<Awaited<ReturnType<typeof getCacheEn
 }
 
 function canAccessNamespace(profile: KeyProfile, namespace: string): boolean {
-  return profile.debug || namespace === profile.namespace || profile.scopes.includes("cache:read");
+  return profile.debug || namespace === profile.namespace;
 }
 
 function getCachePath(request: Request): { namespace: string; key: string } | Response {
