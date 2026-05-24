@@ -31,7 +31,26 @@ export function buildOpenAIRequestFromAssembled(
   return buildOpenAICompatRequest({ ...req, messages }, targetModel);
 }
 
+function hasDirectOpenAIUpstream(env: Env): boolean {
+  return Boolean(env.UPSTREAM_BASE_URL);
+}
+
+function normalizeOpenAICompatBaseUrl(env: Env): string {
+  const base = env.UPSTREAM_BASE_URL;
+  if (!base) {
+    throw new Error("Missing UPSTREAM_BASE_URL");
+  }
+
+  return base
+    .replace(/\/+$/, "")
+    .replace(/\/chat\/completions$/i, "")
+    .replace(/\/embeddings$/i, "");
+}
+
 export function getOpenAICompatUrl(env: Env): string {
+  if (hasDirectOpenAIUpstream(env)) {
+    return `${normalizeOpenAICompatBaseUrl(env)}/chat/completions`;
+  }
   return `${normalizeAiGatewayBaseUrl(env)}/compat/chat/completions`;
 }
 
@@ -54,6 +73,14 @@ export function buildOpenAICompatHeaders(env: Env): Headers {
     "content-type": "application/json"
   });
 
+  if (hasDirectOpenAIUpstream(env)) {
+    if (!env.UPSTREAM_API_KEY) {
+      throw new Error("Missing UPSTREAM_API_KEY");
+    }
+    headers.set("authorization", `Bearer ${env.UPSTREAM_API_KEY}`);
+    return headers;
+  }
+
   if (env.CF_AIG_TOKEN) {
     headers.set("cf-aig-authorization", `Bearer ${env.CF_AIG_TOKEN}`);
   }
@@ -73,7 +100,11 @@ export async function callOpenAICompatEmbeddings(
   env: Env,
   body: { model: string; input: string | string[] }
 ): Promise<Response> {
-  return fetch(`${normalizeAiGatewayBaseUrl(env)}/compat/embeddings`, {
+  const url = hasDirectOpenAIUpstream(env)
+    ? `${normalizeOpenAICompatBaseUrl(env)}/embeddings`
+    : `${normalizeAiGatewayBaseUrl(env)}/compat/embeddings`;
+
+  return fetch(url, {
     method: "POST",
     headers: buildOpenAICompatHeaders(env),
     body: JSON.stringify(body)

@@ -19,6 +19,7 @@ const vectorizeDimensions = process.env.CMP_VECTORIZE_DIMENSIONS || "768";
 const vectorizeMetric = process.env.CMP_VECTORIZE_METRIC || "cosine";
 const queueName = process.env.CMP_QUEUE_NAME || "companion-memory";
 const visibleVarNames = [
+  "UPSTREAM_BASE_URL",
   "AI_GATEWAY_BASE_URL",
   "CHATBOX_API_KEY",
   "CF_AIG_TOKEN",
