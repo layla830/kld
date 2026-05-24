@@ -27,7 +27,7 @@ function sortMessagesChronologically(messages: MessageRecord[]): MessageRecord[]
     const leftTime = messageTime(left).getTime();
     const rightTime = messageTime(right).getTime();
     if (leftTime !== rightTime) return leftTime - rightTime;
-    return left.id.localeCompare(right.id);
+    return String(left.id || "").localeCompare(String(right.id || ""));
   });
 }
 
