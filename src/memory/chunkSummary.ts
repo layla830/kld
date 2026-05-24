@@ -11,6 +11,8 @@ const TRANSCRIPT_MAX_CHARS = 60000;
 const LONG_WINDOW_MESSAGE_COUNT = 160;
 const SEGMENT_MESSAGE_LIMIT = 120;
 const SEGMENT_TRANSCRIPT_MAX_CHARS = 14000;
+const SEGMENT_CONCURRENCY = 3;
+const MAX_SEGMENTS = 10;
 
 function formatTranscript(messages: MessageRecord[]): string {
   return messages.map((message) => {
@@ -169,26 +171,39 @@ ${notes.map((note, index) => `${index + 1}. ${note}`).join("\n")}`;
 }
 
 async function summarizeLongChunk(env: Env, model: string, messages: MessageRecord[], periodLabel: string, fallback: ChunkSummary): Promise<ChunkSummary | null> {
-  const chunks = messageChunks(messages);
-  const notes: string[] = [];
-  for (let index = 0; index < chunks.length; index += 1) {
-    const prompt = buildSegmentPrompt(chunks[index], periodLabel, index, chunks.length);
-    notes.push(...parseNotes(await runSummaryModel(env, model, prompt)));
+  const chunks = messageChunks(messages).slice(0, MAX_SEGMENTS);
+  const noteGroups: string[][] = [];
+  for (let index = 0; index < chunks.length; index += SEGMENT_CONCURRENCY) {
+    const batch = chunks.slice(index, index + SEGMENT_CONCURRENCY);
+    noteGroups.push(...await Promise.all(batch.map(async (chunk, offset) => {
+      const chunkIndex = index + offset;
+      const prompt = buildSegmentPrompt(chunk, periodLabel, chunkIndex, chunks.length);
+      return parseNotes(await runSummaryModel(env, model, prompt));
+    })));
   }
+  const notes = noteGroups.flat();
 
   if (notes.length === 0) return null;
   const final = parseSummary(await runSummaryModel(env, model, buildFinalPromptFromNotes(notes, periodLabel)), fallback);
   if (final && !isTooShortForLongWindow(final, messages.length)) return final;
-  return final;
+  return null;
 }
 
 export async function summarizeChunk(env: Env, messages: MessageRecord[], periodLabel: string): Promise<ChunkSummary | null> {
   const fallback = fallbackSummary(messages);
   const model = env.AUTO_CHUNK_SUMMARY_MODEL || env.CHAT_MODEL || env.MEMORY_MODEL || DEFAULT_SUMMARY_MODEL;
+  const isLongWindow = messages.length >= LONG_WINDOW_MESSAGE_COUNT;
 
-  if (messages.length >= LONG_WINDOW_MESSAGE_COUNT) {
+  if (isLongWindow) {
     const longSummary = await summarizeLongChunk(env, model, messages, periodLabel, fallback);
     if (longSummary) return longSummary;
+    console.error("auto diary long-window summary unavailable; leaving messages unprocessed", {
+      conversationId: messages[0]?.conversation_id,
+      fromMessageId: messages[0]?.id,
+      toMessageId: messages[messages.length - 1]?.id,
+      messageCount: messages.length
+    });
+    return null;
   }
 
   const prompt = buildSummaryPrompt(messages, periodLabel);
