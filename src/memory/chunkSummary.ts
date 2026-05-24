@@ -6,7 +6,7 @@ import { formatShanghaiDateTime, messageTime } from "./chunkPeriods";
 
 const DEFAULT_SUMMARY_MODEL = "deepseek/deepseek-v4-pro";
 const FALLBACK_WORKERS_SUMMARY_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
-const SUMMARY_MAX_TOKENS = 1400;
+const SUMMARY_MAX_TOKENS = 1800;
 const TRANSCRIPT_MAX_CHARS = 60000;
 
 function formatTranscript(messages: MessageRecord[]): string {
@@ -91,6 +91,10 @@ function parseSummary(text: string, fallback: ChunkSummary): ChunkSummary | null
   return { summary, keywords: fallback.keywords, emotion: fallback.emotion };
 }
 
+function isTooShortForLongWindow(summary: ChunkSummary, messageCount: number): boolean {
+  return messageCount >= 80 && summary.summary.length < 350;
+}
+
 function buildSummaryPrompt(messages: MessageRecord[], periodLabel: string): string {
   const transcript = formatTranscript(messages).slice(0, TRANSCRIPT_MAX_CHARS);
   return `请把下面这一整段聊天写成一篇中文日记。
@@ -113,16 +117,18 @@ ${transcript}`;
 
 export async function summarizeChunk(env: Env, messages: MessageRecord[], periodLabel: string): Promise<ChunkSummary | null> {
   const fallback = fallbackSummary(messages);
-  const model = env.AUTO_CHUNK_SUMMARY_MODEL || env.MEMORY_FILTER_MODEL || env.CHAT_MODEL || DEFAULT_SUMMARY_MODEL;
+  const model = env.AUTO_CHUNK_SUMMARY_MODEL || env.CHAT_MODEL || env.MEMORY_MODEL || DEFAULT_SUMMARY_MODEL;
   const prompt = buildSummaryPrompt(messages, periodLabel);
 
   const primary = parseSummary(await runSummaryModel(env, model, prompt), fallback);
-  if (primary) return primary;
+  if (primary && !isTooShortForLongWindow(primary, messages.length)) return primary;
 
   if (!model.startsWith("@cf/")) {
     const backup = parseSummary(await runSummaryModel(env, FALLBACK_WORKERS_SUMMARY_MODEL, prompt), fallback);
-    if (backup) return backup;
+    if (backup && !isTooShortForLongWindow(backup, messages.length)) return backup;
   }
+
+  if (primary) return primary;
 
   console.error("auto diary summary unavailable; leaving messages unprocessed", {
     conversationId: messages[0]?.conversation_id,
