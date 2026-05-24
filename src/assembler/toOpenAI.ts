@@ -1,9 +1,8 @@
 /**
- * Pure conversion: AssembledPrompt → OpenAI wire format types.
+ * Pure conversion: AssembledPrompt -> OpenAI wire format types.
  *
- * These helpers do NOT call any adapter, DB, or external service.
- * The existing openaiAdapter.ts is untouched; adapters will import
- * these functions in P1.3 integration (a later step).
+ * These helpers do NOT call any adapter, DB, or external service. The chat
+ * adapter uses them to build the upstream OpenAI-compatible request body.
  *
  * Determinism: given the same AssembledPrompt, output is bit-for-bit identical.
  */
@@ -12,7 +11,7 @@ import type { OpenAIChatMessage } from "../types";
 import type { AssembledPrompt, SystemBlock } from "./types";
 
 // ---------------------------------------------------------------------------
-// System blocks → single OpenAI system message
+// System blocks -> single OpenAI system message
 // ---------------------------------------------------------------------------
 
 /**
@@ -29,7 +28,7 @@ export function assembledToOpenAISystem(
 }
 
 // ---------------------------------------------------------------------------
-// Messages → OpenAIChatMessage[]
+// Messages -> OpenAIChatMessage[]
 // ---------------------------------------------------------------------------
 
 /**
@@ -55,8 +54,8 @@ export function assembledToOpenAIMessages(
 /**
  * Build a complete OpenAI messages array from an AssembledPrompt.
  *
- * 1. System blocks → single system message (first)
- * 2. Conversation messages → appended as-is
+ * 1. System blocks -> single system message (first)
+ * 2. Conversation messages -> appended as-is
  *
  * Returns a ready-to-use messages array for /v1/chat/completions.
  */
