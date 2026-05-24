@@ -34,15 +34,18 @@ function sortMessagesChronologically(messages: MessageRecord[]): MessageRecord[]
 function fallbackSummary(messages: MessageRecord[]): ChunkSummary {
   const text = messages.map((message) => message.content).join("\n").replace(/\s+/g, " ").trim();
   const summary = text.slice(0, 900) || "这段时间的对话没有足够内容可写成日记。";
-  return {
-    summary,
-    keywords: [],
-    emotion: ""
-  };
+  return { summary, keywords: [], emotion: "" };
 }
 
 function cleanModelText(text: string): string {
   return text.replace(/^```(?:json)?\s*/i, "").replace(/```$/i, "").trim();
+}
+
+function unwrapSummaryText(text: string): string {
+  const cleaned = cleanModelText(text);
+  const match = cleaned.match(/^\{\s*"summary"\s*:\s*"([\s\S]*)"\s*\}\s*$/);
+  if (!match) return cleaned;
+  return match[1].replace(/\\n/g, "\n").replace(/\\"/g, "\"").replace(/\\\\/g, "\\").trim();
 }
 
 function readWorkersAiText(result: unknown): string {
@@ -69,19 +72,9 @@ async function runSummaryModel(env: Env, model: string, prompt: string): Promise
       const result = await env.AI.run(model as any, { prompt, max_tokens: SUMMARY_MAX_TOKENS, temperature: 0.25 });
       return readWorkersAiText(result);
     }
-
     const response = await callOpenAICompat(env, {
       model,
-      messages: [
-        {
-          role: "system",
-          content: "你是严格的 JSON 生成器。你只输出 JSON。"
-        },
-        {
-          role: "user",
-          content: prompt
-        }
-      ],
+      messages: [{ role: "system", content: "你是严格的 JSON 生成器。你只输出 JSON。" }, { role: "user", content: prompt }],
       max_tokens: SUMMARY_MAX_TOKENS,
       temperature: 0.25,
       stream: false
@@ -105,8 +98,7 @@ function parseSummary(text: string, fallback: ChunkSummary): ChunkSummary | null
     const summary = typeof raw.summary === "string" && raw.summary.trim() ? raw.summary.trim() : "";
     if (summary) return { summary, keywords: fallback.keywords, emotion: fallback.emotion };
   }
-
-  const summary = cleanModelText(text);
+  const summary = unwrapSummaryText(text);
   if (summary.length < 80) return null;
   return { summary, keywords: fallback.keywords, emotion: fallback.emotion };
 }
@@ -116,15 +108,10 @@ function parseNotes(text: string): string[] {
   if (parsed && typeof parsed === "object") {
     const raw = parsed as { notes?: unknown };
     if (Array.isArray(raw.notes)) {
-      const notes = raw.notes
-        .filter((item): item is string => typeof item === "string")
-        .map((item) => item.trim())
-        .filter(Boolean)
-        .slice(0, 4);
+      const notes = raw.notes.filter((item): item is string => typeof item === "string").map((item) => item.trim()).filter(Boolean).slice(0, 4);
       if (notes.length > 0) return notes;
     }
   }
-
   return cleanModelText(text)
     .split(/\r?\n/)
     .map((line) => line.replace(/^\s*(?:[-*]|\d+[.、)]|note\s*\d*[:：])\s*/i, "").trim())
@@ -144,9 +131,7 @@ function isTooShortForLongWindow(summary: ChunkSummary, messageCount: number): b
 
 function messageChunks(messages: MessageRecord[]): MessageRecord[][] {
   const chunks: MessageRecord[][] = [];
-  for (let index = 0; index < messages.length; index += SEGMENT_MESSAGE_LIMIT) {
-    chunks.push(messages.slice(index, index + SEGMENT_MESSAGE_LIMIT));
-  }
+  for (let index = 0; index < messages.length; index += SEGMENT_MESSAGE_LIMIT) chunks.push(messages.slice(index, index + SEGMENT_MESSAGE_LIMIT));
   return chunks;
 }
 
@@ -210,14 +195,9 @@ async function summarizeLongChunk(env: Env, model: string, messages: MessageReco
   const noteGroups: string[][] = [];
   for (let index = 0; index < chunks.length; index += SEGMENT_CONCURRENCY) {
     const batch = chunks.slice(index, index + SEGMENT_CONCURRENCY);
-    noteGroups.push(...await Promise.all(batch.map(async (chunk, offset) => {
-      const chunkIndex = index + offset;
-      const prompt = buildSegmentPrompt(chunk, periodLabel, chunkIndex, chunks.length);
-      return parseNotes(await runSummaryModel(env, model, prompt));
-    })));
+    noteGroups.push(...await Promise.all(batch.map(async (chunk, offset) => parseNotes(await runSummaryModel(env, model, buildSegmentPrompt(chunk, periodLabel, index + offset, chunks.length))))));
   }
   const notes = noteGroups.flat();
-
   if (notes.length === 0) return null;
   const final = parseSummary(await runSummaryModel(env, model, buildFinalPromptFromNotes(notes, periodLabel)), fallback);
   if (final && !isTooShortForLongWindow(final, messages.length)) return final;
@@ -229,35 +209,20 @@ export async function summarizeChunk(env: Env, messages: MessageRecord[], period
   const fallback = fallbackSummary(orderedMessages);
   const model = env.AUTO_CHUNK_SUMMARY_MODEL || env.CHAT_MODEL || env.MEMORY_MODEL || DEFAULT_SUMMARY_MODEL;
   const isLongWindow = orderedMessages.length >= LONG_WINDOW_MESSAGE_COUNT;
-
   if (isLongWindow) {
     const longSummary = await summarizeLongChunk(env, model, orderedMessages, periodLabel, fallback);
     if (longSummary) return longSummary;
-    console.error("auto diary long-window summary unavailable; leaving messages unprocessed", {
-      conversationId: orderedMessages[0]?.conversation_id,
-      fromMessageId: orderedMessages[0]?.id,
-      toMessageId: orderedMessages[orderedMessages.length - 1]?.id,
-      messageCount: orderedMessages.length
-    });
+    console.error("auto diary long-window summary unavailable; leaving messages unprocessed", { conversationId: orderedMessages[0]?.conversation_id, fromMessageId: orderedMessages[0]?.id, toMessageId: orderedMessages[orderedMessages.length - 1]?.id, messageCount: orderedMessages.length });
     return null;
   }
-
   const prompt = buildSummaryPrompt(orderedMessages, periodLabel);
   const primary = parseSummary(await runSummaryModel(env, model, prompt), fallback);
   if (primary && !isTooShortForLongWindow(primary, orderedMessages.length)) return primary;
-
   if (!model.startsWith("@cf/")) {
     const backup = parseSummary(await runSummaryModel(env, FALLBACK_WORKERS_SUMMARY_MODEL, prompt), fallback);
     if (backup && !isTooShortForLongWindow(backup, orderedMessages.length)) return backup;
   }
-
   if (primary) return primary;
-
-  console.error("auto diary summary unavailable; leaving messages unprocessed", {
-    conversationId: messages[0]?.conversation_id,
-    fromMessageId: messages[0]?.id,
-    toMessageId: messages[messages.length - 1]?.id,
-    messageCount: messages.length
-  });
+  console.error("auto diary summary unavailable; leaving messages unprocessed", { conversationId: messages[0]?.conversation_id, fromMessageId: messages[0]?.id, toMessageId: messages[messages.length - 1]?.id, messageCount: messages.length });
   return null;
 }
