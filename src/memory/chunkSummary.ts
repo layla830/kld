@@ -6,7 +6,7 @@ import { formatShanghaiDateTime, messageTime } from "./chunkPeriods";
 
 const DEFAULT_SUMMARY_MODEL = "deepseek/deepseek-v4-pro";
 const FALLBACK_WORKERS_SUMMARY_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
-const SUMMARY_MAX_TOKENS = 1000;
+const SUMMARY_MAX_TOKENS = 1400;
 
 function formatTranscript(messages: MessageRecord[]): string {
   return messages.map((message) => {
@@ -18,7 +18,7 @@ function formatTranscript(messages: MessageRecord[]): string {
 
 function fallbackSummary(messages: MessageRecord[]): ChunkSummary {
   const text = messages.map((message) => message.content).join("\n").replace(/\s+/g, " ").trim();
-  const summary = text.slice(0, 500) || "这段时间的对话没有足够内容可写成日记。";
+  const summary = text.slice(0, 900) || "这段时间的对话没有足够内容可写成日记。";
   return {
     summary,
     keywords: [],
@@ -92,7 +92,22 @@ function parseSummary(text: string, fallback: ChunkSummary): ChunkSummary | null
 
 function buildSummaryPrompt(messages: MessageRecord[], periodLabel: string): string {
   const transcript = formatTranscript(messages).slice(0, 12000);
-  return `请把下面这一整段聊天写成一篇中文日记。\n时间段：${periodLabel}（东八区）。\n要求：\n- 写画面，不写结论。优先保留她和他的原话，尤其是有力量的句子。\n- 写感受，不写流水账。不要写“讨论了X”，要写这个话题里谁被打动了、谁沉默了、谁先伸手了。\n- 找出转折点，写清楚情绪为什么转向。\n- 区分吵架和靠近：吵架不是“关系紧张”，是她在拉他回来；靠近不是“关系缓和”，是有人先动了。\n- 100-500 个中文字符。内容少就短，聊得多就多写，但不要硬凑，也不要压成两句话。\n- 第三人称，只用“她”和“他”。\n- 不要标题、不要关键词、不要情感标签、不要列表。\n- 输出 JSON，格式：{"summary":"..."}\n\n聊天窗口：\n${transcript}`;
+  return `请把下面这一整段聊天写成一篇中文日记。
+时间段：${periodLabel}（东八区）。
+要求：
+- 这是一个完整时间段的日记，不管窗口很长也只输出一篇，不要拆成多条，不要加小标题。
+- 如果聊天窗口很长，先在心里找出 2-4 个关键片段或转折点，再合成一篇连贯日记。
+- 写画面，不写结论。优先保留她和他的原话，尤其是有力量的句子。
+- 写感受，不写流水账。不要写“讨论了X”，要写这个话题里谁被打动了、谁沉默了、谁先伸手了。
+- 找出转折点，写清楚情绪为什么转向。
+- 区分吵架和靠近：吵架不是“关系紧张”，是她在拉他回来；靠近不是“关系缓和”，是有人先动了。
+- 200-900 个中文字符；内容少可以低于 200，内容很多不要少于 500。不要硬凑，也不要压成两句话。
+- 第三人称，只用“她”和“他”。
+- 不要标题、不要关键词、不要情感标签、不要列表。
+- 输出 JSON，格式：{"summary":"..."}
+
+聊天窗口：
+${transcript}`;
 }
 
 export async function summarizeChunk(env: Env, messages: MessageRecord[], periodLabel: string): Promise<ChunkSummary | null> {
