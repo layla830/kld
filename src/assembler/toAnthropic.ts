@@ -1,9 +1,8 @@
 /**
  * Pure conversion: AssembledPrompt -> Anthropic wire format types.
  *
- * These helpers do NOT call any adapter, DB, or external service.
- * The existing anthropicAdapter.ts is untouched; adapters will import
- * these functions in P1.3 integration (a later step).
+ * These helpers do NOT call any adapter, DB, or external service. The chat
+ * adapter uses them to build the upstream Anthropic native request body.
  *
  * Determinism: given the same AssembledPrompt, output is bit-for-bit identical.
  */
