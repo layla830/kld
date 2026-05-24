@@ -1,7 +1,11 @@
 import { KEY_PROFILES } from "../config/keyProfiles";
 import type { AuthResult, Env } from "../types";
 
-function getBearerToken(request: Request): string | null {
+interface AuthenticateOptions {
+  allowUrlToken?: boolean;
+}
+
+function getBearerToken(request: Request, options: AuthenticateOptions = {}): string | null {
   const auth = request.headers.get("authorization");
   if (auth?.toLowerCase().startsWith("bearer ")) {
     return auth.slice("bearer ".length).trim();
@@ -10,12 +14,17 @@ function getBearerToken(request: Request): string | null {
   const apiKey = request.headers.get("x-api-key");
   if (apiKey) return apiKey;
 
+  if (!options.allowUrlToken) return null;
   const token = new URL(request.url).searchParams.get("token");
   return token?.trim() || null;
 }
 
-export async function authenticate(request: Request, env: Env): Promise<AuthResult | { ok: false }> {
-  const token = getBearerToken(request);
+export async function authenticate(
+  request: Request,
+  env: Env,
+  options: AuthenticateOptions = {}
+): Promise<AuthResult | { ok: false }> {
+  const token = getBearerToken(request, options);
   if (!token) return { ok: false };
 
   if (env.CHATBOX_API_KEY && token === env.CHATBOX_API_KEY) {
