@@ -32,7 +32,7 @@ export function buildOpenAIRequestFromAssembled(
 }
 
 function hasDirectOpenAIUpstream(env: Env): boolean {
-  return Boolean(env.UPSTREAM_BASE_URL);
+  return Boolean(env.UPSTREAM_BASE_URL && env.UPSTREAM_API_KEY);
 }
 
 function normalizeOpenAICompatBaseUrl(env: Env): string {
@@ -97,9 +97,6 @@ export function buildOpenAICompatHeaders(env: Env): Headers {
   });
 
   if (hasDirectOpenAIUpstream(env)) {
-    if (!env.UPSTREAM_API_KEY) {
-      throw new Error("Missing UPSTREAM_API_KEY");
-    }
     headers.set("authorization", `Bearer ${env.UPSTREAM_API_KEY}`);
     return headers;
   }
