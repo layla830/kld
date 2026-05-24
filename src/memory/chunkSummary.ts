@@ -108,6 +108,12 @@ function parseNotes(text: string): string[] {
     .slice(0, 4);
 }
 
+function notesFallbackSummary(notes: string[], fallback: ChunkSummary): ChunkSummary | null {
+  const summary = notes.join(" ").replace(/\s+/g, " ").trim().slice(0, 900);
+  if (summary.length < 120) return null;
+  return { summary, keywords: fallback.keywords, emotion: fallback.emotion };
+}
+
 function isTooShortForLongWindow(summary: ChunkSummary, messageCount: number): boolean {
   return messageCount >= 80 && summary.summary.length < 350;
 }
@@ -186,7 +192,7 @@ async function summarizeLongChunk(env: Env, model: string, messages: MessageReco
   if (notes.length === 0) return null;
   const final = parseSummary(await runSummaryModel(env, model, buildFinalPromptFromNotes(notes, periodLabel)), fallback);
   if (final && !isTooShortForLongWindow(final, messages.length)) return final;
-  return null;
+  return notesFallbackSummary(notes, fallback);
 }
 
 export async function summarizeChunk(env: Env, messages: MessageRecord[], periodLabel: string): Promise<ChunkSummary | null> {
