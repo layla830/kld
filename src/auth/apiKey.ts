@@ -1,6 +1,11 @@
 import { KEY_PROFILES } from "../config/keyProfiles";
 import type { AuthResult, Env } from "../types";
 
+function allowsUrlToken(request: Request): boolean {
+  const pathname = new URL(request.url).pathname;
+  return pathname === "/mcp" || pathname === "/memory-mcp";
+}
+
 function getBearerToken(request: Request): string | null {
   const auth = request.headers.get("authorization");
   if (auth?.toLowerCase().startsWith("bearer ")) {
@@ -10,6 +15,7 @@ function getBearerToken(request: Request): string | null {
   const apiKey = request.headers.get("x-api-key");
   if (apiKey) return apiKey;
 
+  if (!allowsUrlToken(request)) return null;
   const token = new URL(request.url).searchParams.get("token");
   return token?.trim() || null;
 }
