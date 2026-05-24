@@ -1,6 +1,11 @@
 import { buildStableMemoryPack } from "../memory/stablePack";
 import type { AssembledPrompt } from "../assembler/types";
-import { assembledToAnthropicMessages, assembledToAnthropicSystem } from "../assembler/toAnthropic";
+import {
+  assembledToAnthropicMessages,
+  assembledToAnthropicSystem,
+  contentToAnthropicBlocks
+} from "../assembler/toAnthropic";
+import type { AnthropicContentBlock } from "../assembler/toAnthropic";
 import type { Env, MemoryApiRecord, OpenAIChatMessage, OpenAIChatRequest, OpenAIChatResponse, TokenUsage } from "../types";
 import { formatMemoryPatch } from "../memory/inject";
 import { normalizeAiGatewayBaseUrl } from "./openaiAdapter";
@@ -16,7 +21,7 @@ interface AnthropicTextBlock {
 
 interface AnthropicMessage {
   role: "user" | "assistant";
-  content: AnthropicTextBlock[];
+  content: AnthropicContentBlock[];
 }
 
 interface AnthropicRequest {
@@ -222,19 +227,15 @@ function convertMessages(messages: OpenAIChatMessage[]): AnthropicMessage[] {
   for (const message of messages) {
     if (message.role === "system") continue;
     const role = message.role === "assistant" ? "assistant" : "user";
-    const text = contentToText(message.content);
-    if (!text) continue;
+    const content = contentToAnthropicBlocks(message.content);
 
     const previous = result[result.length - 1];
     if (previous?.role === role) {
-      previous.content.push({ type: "text", text });
+      previous.content.push(...content);
       continue;
     }
 
-    result.push({
-      role,
-      content: [{ type: "text", text }]
-    });
+    result.push({ role, content });
   }
 
   if (result.length === 0) {
@@ -320,7 +321,6 @@ export async function buildAnthropicNativeRequest(
  *
  * - System blocks are converted via assembledToAnthropicSystem
  * - Messages via assembledToAnthropicMessages
- *   (structured content like image_url is JSON.stringify'd — temporary fallback)
  * - cache_control is applied only to the client_system anchor block,
  *   respecting ANTHROPIC_CACHE_ENABLED and ANTHROPIC_CACHE_TTL
  */
