@@ -41,6 +41,10 @@ function fallbackSummary(messages: MessageRecord[]): ChunkSummary {
   };
 }
 
+function cleanModelText(text: string): string {
+  return text.replace(/^```(?:json)?\s*/i, "").replace(/```$/i, "").trim();
+}
+
 function readWorkersAiText(result: unknown): string {
   if (!result || typeof result !== "object") return "";
   const data = result as { response?: unknown; result?: unknown };
@@ -96,24 +100,35 @@ async function runSummaryModel(env: Env, model: string, prompt: string): Promise
 
 function parseSummary(text: string, fallback: ChunkSummary): ChunkSummary | null {
   const parsed = extractJsonObject(text);
-  if (!parsed || typeof parsed !== "object") return null;
+  if (parsed && typeof parsed === "object") {
+    const raw = parsed as { summary?: unknown };
+    const summary = typeof raw.summary === "string" && raw.summary.trim() ? raw.summary.trim() : "";
+    if (summary) return { summary, keywords: fallback.keywords, emotion: fallback.emotion };
+  }
 
-  const raw = parsed as { summary?: unknown };
-  const summary = typeof raw.summary === "string" && raw.summary.trim() ? raw.summary.trim() : "";
-  if (!summary) return null;
-
+  const summary = cleanModelText(text);
+  if (summary.length < 80) return null;
   return { summary, keywords: fallback.keywords, emotion: fallback.emotion };
 }
 
 function parseNotes(text: string): string[] {
   const parsed = extractJsonObject(text);
-  if (!parsed || typeof parsed !== "object") return [];
-  const raw = parsed as { notes?: unknown };
-  if (!Array.isArray(raw.notes)) return [];
-  return raw.notes
-    .filter((item): item is string => typeof item === "string")
-    .map((item) => item.trim())
-    .filter(Boolean)
+  if (parsed && typeof parsed === "object") {
+    const raw = parsed as { notes?: unknown };
+    if (Array.isArray(raw.notes)) {
+      const notes = raw.notes
+        .filter((item): item is string => typeof item === "string")
+        .map((item) => item.trim())
+        .filter(Boolean)
+        .slice(0, 4);
+      if (notes.length > 0) return notes;
+    }
+  }
+
+  return cleanModelText(text)
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^\s*(?:[-*]|\d+[.、)]|note\s*\d*[:：])\s*/i, "").trim())
+    .filter((line) => line.length >= 20 && !/^[{\[\]}]+$/.test(line))
     .slice(0, 4);
 }
 
