@@ -21,8 +21,6 @@ const queueName = process.env.CMP_QUEUE_NAME || "companion-memory";
 const visibleVarNames = [
   "UPSTREAM_BASE_URL",
   "AI_GATEWAY_BASE_URL",
-  "CHATBOX_API_KEY",
-  "CF_AIG_TOKEN",
   "CHAT_MODEL",
   "MEMORY_FILTER_PROVIDER",
   "MEMORY_FILTER_MODEL",
