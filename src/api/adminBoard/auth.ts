@@ -8,7 +8,7 @@ export function unauthorized(): Response {
 }
 
 export function adminPassword(env: Env): string | null {
-  return env.ADMIN_PASSWORD || null;
+  return env.ADMIN_PASSWORD || env.MEMORY_MCP_API_KEY || null;
 }
 
 export function isAuthorized(request: Request, env: Env): boolean {
