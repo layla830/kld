@@ -165,25 +165,38 @@ export async function handleGenerateCcConnectDiaryFromMessages(
 
   const periodKey = localPeriodKey(body, messages);
   const periodLabel = localPeriodLabel(body, messages);
-  const summary = await summarizeChunk(env, messages, periodLabel);
-  if (!summary) return openAiError("Failed to generate diary summary", 502);
 
-  const memory = await persistChunkMemory(env, {
-    namespace,
-    source,
-    chunk: { messages, periodKey, periodLabel },
-    summary
-  });
+  try {
+    const summary = await summarizeChunk(env, messages, periodLabel);
+    if (!summary) return openAiError("Failed to generate diary summary", 502);
 
-  return json({
-    data: {
-      created: true,
+    const memory = await persistChunkMemory(env, {
       namespace,
-      conversation_id: conversationId,
-      memory_id: memory.id,
-      message_count: messages.length,
-      period_key: periodKey,
-      period_label: periodLabel
-    }
-  }, { status: 201 });
+      source,
+      chunk: { messages, periodKey, periodLabel },
+      summary
+    });
+
+    return json({
+      data: {
+        created: true,
+        namespace,
+        conversation_id: conversationId,
+        memory_id: memory.id,
+        message_count: messages.length,
+        period_key: periodKey,
+        period_label: periodLabel
+      }
+    }, { status: 201 });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("cc-connect auto diary generation failed", {
+      namespace,
+      conversationId,
+      periodKey,
+      messageCount: messages.length,
+      error
+    });
+    return openAiError(`cc-connect auto diary generation failed: ${message}`, 500);
+  }
 }
