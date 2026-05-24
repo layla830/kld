@@ -7,6 +7,7 @@ import { formatShanghaiDateTime, messageTime } from "./chunkPeriods";
 const DEFAULT_SUMMARY_MODEL = "deepseek/deepseek-v4-pro";
 const FALLBACK_WORKERS_SUMMARY_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
 const SUMMARY_MAX_TOKENS = 1400;
+const TRANSCRIPT_MAX_CHARS = 60000;
 
 function formatTranscript(messages: MessageRecord[]): string {
   return messages.map((message) => {
@@ -91,7 +92,7 @@ function parseSummary(text: string, fallback: ChunkSummary): ChunkSummary | null
 }
 
 function buildSummaryPrompt(messages: MessageRecord[], periodLabel: string): string {
-  const transcript = formatTranscript(messages).slice(0, 12000);
+  const transcript = formatTranscript(messages).slice(0, TRANSCRIPT_MAX_CHARS);
   return `请把下面这一整段聊天写成一篇中文日记。
 时间段：${periodLabel}（东八区）。
 要求：
