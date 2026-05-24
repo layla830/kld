@@ -80,6 +80,11 @@ function normalizeOpenAICompatChatBody(env: Env, body: OpenAIChatRequest, useDir
   };
 }
 
+function normalizeAiGatewayChatBody(body: OpenAIChatRequest): OpenAIChatRequest {
+  if (body.enable_thinking !== undefined) return body;
+  return { ...body, enable_thinking: false };
+}
+
 export function getOpenAICompatUrl(env: Env, model?: string): string {
   if (shouldUseDirectOpenAIUpstream(env, model)) {
     return `${normalizeOpenAICompatBaseUrl(env)}/chat/completions`;
@@ -139,7 +144,7 @@ export async function callOpenAICompat(env: Env, body: OpenAIChatRequest): Promi
   return fetch(getOpenAICompatUrl(env, body.model), {
     method: "POST",
     headers: buildOpenAICompatHeaders(env, useDirect),
-    body: JSON.stringify(normalizeOpenAICompatChatBody(env, body, useDirect))
+    body: JSON.stringify(useDirect ? normalizeOpenAICompatChatBody(env, body, true) : normalizeAiGatewayChatBody(body))
   });
 }
 
@@ -147,7 +152,7 @@ export async function callOpenAICompatViaAiGateway(env: Env, body: OpenAIChatReq
   return fetch(getAiGatewayOpenAICompatUrl(env), {
     method: "POST",
     headers: buildAiGatewayOpenAICompatHeaders(env),
-    body: JSON.stringify(body)
+    body: JSON.stringify(normalizeAiGatewayChatBody(body))
   });
 }
 
