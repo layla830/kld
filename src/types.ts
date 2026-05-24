@@ -7,6 +7,8 @@ export interface Env {
   CHAT_MODEL?: string;
   DEFAULT_UPSTREAM_MODEL?: string;
   ALLOW_MODEL_PASSTHROUGH?: string;
+  UPSTREAM_BASE_URL?: string;
+  UPSTREAM_API_KEY?: string;
   AI_GATEWAY_BASE_URL?: string;
   CHATBOX_API_KEY?: string;
   IM_API_KEY?: string;
