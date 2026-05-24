@@ -8,6 +8,9 @@ const DEFAULT_SUMMARY_MODEL = "deepseek/deepseek-v4-pro";
 const FALLBACK_WORKERS_SUMMARY_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
 const SUMMARY_MAX_TOKENS = 1800;
 const TRANSCRIPT_MAX_CHARS = 60000;
+const LONG_WINDOW_MESSAGE_COUNT = 160;
+const SEGMENT_MESSAGE_LIMIT = 120;
+const SEGMENT_TRANSCRIPT_MAX_CHARS = 14000;
 
 function formatTranscript(messages: MessageRecord[]): string {
   return messages.map((message) => {
@@ -91,8 +94,42 @@ function parseSummary(text: string, fallback: ChunkSummary): ChunkSummary | null
   return { summary, keywords: fallback.keywords, emotion: fallback.emotion };
 }
 
+function parseNotes(text: string): string[] {
+  const parsed = extractJsonObject(text);
+  if (!parsed || typeof parsed !== "object") return [];
+  const raw = parsed as { notes?: unknown };
+  if (!Array.isArray(raw.notes)) return [];
+  return raw.notes
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .slice(0, 4);
+}
+
 function isTooShortForLongWindow(summary: ChunkSummary, messageCount: number): boolean {
   return messageCount >= 80 && summary.summary.length < 350;
+}
+
+function messageChunks(messages: MessageRecord[]): MessageRecord[][] {
+  const chunks: MessageRecord[][] = [];
+  for (let index = 0; index < messages.length; index += SEGMENT_MESSAGE_LIMIT) {
+    chunks.push(messages.slice(index, index + SEGMENT_MESSAGE_LIMIT));
+  }
+  return chunks;
+}
+
+function buildSegmentPrompt(messages: MessageRecord[], periodLabel: string, index: number, total: number): string {
+  const transcript = formatTranscript(messages).slice(0, SEGMENT_TRANSCRIPT_MAX_CHARS);
+  return `这是“${periodLabel}”里的第 ${index + 1}/${total} 段聊天。请只提取这段里值得写进日记的关键片段。
+要求：
+- 输出 1-4 条 notes，每条 40-140 个中文字符。
+- 保留原话、动作、情绪转折和前因后果。
+- 不要总结腔，不要写“讨论了/表达了/关系紧张”。
+- 不要编造，只写这段里明确出现的内容。
+- 输出 JSON，格式：{"notes":["..."]}
+
+聊天片段：
+${transcript}`;
 }
 
 function buildSummaryPrompt(messages: MessageRecord[], periodLabel: string): string {
@@ -115,11 +152,46 @@ function buildSummaryPrompt(messages: MessageRecord[], periodLabel: string): str
 ${transcript}`;
 }
 
+function buildFinalPromptFromNotes(notes: string[], periodLabel: string): string {
+  return `请把下面这些按时间顺序提取出来的关键片段，合成一篇中文日记。
+时间段：${periodLabel}（东八区）。
+要求：
+- 只输出一篇完整日记，不要拆成多条，不要小标题。
+- 写出 2-4 个转折点之间的前因后果，尤其要保留后半段发生的争执、修正、决定。
+- 写画面和原话，不写抽象结论。不要写“讨论了/表达了/关系紧张/互动/沟通”。
+- 第三人称，只用“她”和“他”。
+- 300-900 个中文字符。内容很多不要少于 500。
+- 不要标题、不要关键词、不要情感标签、不要列表。
+- 输出 JSON，格式：{"summary":"..."}
+
+关键片段：
+${notes.map((note, index) => `${index + 1}. ${note}`).join("\n")}`;
+}
+
+async function summarizeLongChunk(env: Env, model: string, messages: MessageRecord[], periodLabel: string, fallback: ChunkSummary): Promise<ChunkSummary | null> {
+  const chunks = messageChunks(messages);
+  const notes: string[] = [];
+  for (let index = 0; index < chunks.length; index += 1) {
+    const prompt = buildSegmentPrompt(chunks[index], periodLabel, index, chunks.length);
+    notes.push(...parseNotes(await runSummaryModel(env, model, prompt)));
+  }
+
+  if (notes.length === 0) return null;
+  const final = parseSummary(await runSummaryModel(env, model, buildFinalPromptFromNotes(notes, periodLabel)), fallback);
+  if (final && !isTooShortForLongWindow(final, messages.length)) return final;
+  return final;
+}
+
 export async function summarizeChunk(env: Env, messages: MessageRecord[], periodLabel: string): Promise<ChunkSummary | null> {
   const fallback = fallbackSummary(messages);
   const model = env.AUTO_CHUNK_SUMMARY_MODEL || env.CHAT_MODEL || env.MEMORY_MODEL || DEFAULT_SUMMARY_MODEL;
-  const prompt = buildSummaryPrompt(messages, periodLabel);
 
+  if (messages.length >= LONG_WINDOW_MESSAGE_COUNT) {
+    const longSummary = await summarizeLongChunk(env, model, messages, periodLabel, fallback);
+    if (longSummary) return longSummary;
+  }
+
+  const prompt = buildSummaryPrompt(messages, periodLabel);
   const primary = parseSummary(await runSummaryModel(env, model, prompt), fallback);
   if (primary && !isTooShortForLongWindow(primary, messages.length)) return primary;
 
