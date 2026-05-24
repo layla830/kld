@@ -35,6 +35,16 @@ function hasDirectOpenAIUpstream(env: Env): boolean {
   return Boolean(env.UPSTREAM_BASE_URL && env.UPSTREAM_API_KEY);
 }
 
+function isProviderPrefixedModel(model: string): boolean {
+  return /^[a-z0-9_.-]+\//i.test(model.trim());
+}
+
+function shouldUseDirectOpenAIUpstream(env: Env, model?: string): boolean {
+  if (!hasDirectOpenAIUpstream(env)) return false;
+  if (!model) return true;
+  return !isProviderPrefixedModel(model);
+}
+
 function normalizeOpenAICompatBaseUrl(env: Env): string {
   const base = env.UPSTREAM_BASE_URL;
   if (!base) {
@@ -63,15 +73,15 @@ export function normalizeOpenAICompatModel(env: Env, model: string): string {
   return model;
 }
 
-function normalizeOpenAICompatChatBody(env: Env, body: OpenAIChatRequest): OpenAIChatRequest {
+function normalizeOpenAICompatChatBody(env: Env, body: OpenAIChatRequest, useDirect: boolean): OpenAIChatRequest {
   return {
     ...body,
-    model: normalizeOpenAICompatModel(env, body.model)
+    model: useDirect ? normalizeOpenAICompatModel(env, body.model) : body.model
   };
 }
 
-export function getOpenAICompatUrl(env: Env): string {
-  if (hasDirectOpenAIUpstream(env)) {
+export function getOpenAICompatUrl(env: Env, model?: string): string {
+  if (shouldUseDirectOpenAIUpstream(env, model)) {
     return `${normalizeOpenAICompatBaseUrl(env)}/chat/completions`;
   }
   return getAiGatewayOpenAICompatUrl(env);
@@ -107,12 +117,12 @@ export function buildAiGatewayOpenAICompatHeaders(env: Env): Headers {
   return headers;
 }
 
-export function buildOpenAICompatHeaders(env: Env): Headers {
+export function buildOpenAICompatHeaders(env: Env, useDirect = hasDirectOpenAIUpstream(env)): Headers {
   const headers = new Headers({
     "content-type": "application/json"
   });
 
-  if (hasDirectOpenAIUpstream(env)) {
+  if (useDirect) {
     headers.set("authorization", `Bearer ${env.UPSTREAM_API_KEY}`);
     return headers;
   }
@@ -125,10 +135,11 @@ export function buildOpenAICompatHeaders(env: Env): Headers {
 }
 
 export async function callOpenAICompat(env: Env, body: OpenAIChatRequest): Promise<Response> {
-  return fetch(getOpenAICompatUrl(env), {
+  const useDirect = shouldUseDirectOpenAIUpstream(env, body.model);
+  return fetch(getOpenAICompatUrl(env, body.model), {
     method: "POST",
-    headers: buildOpenAICompatHeaders(env),
-    body: JSON.stringify(normalizeOpenAICompatChatBody(env, body))
+    headers: buildOpenAICompatHeaders(env, useDirect),
+    body: JSON.stringify(normalizeOpenAICompatChatBody(env, body, useDirect))
   });
 }
 
@@ -144,13 +155,14 @@ export async function callOpenAICompatEmbeddings(
   env: Env,
   body: { model: string; input: string | string[] }
 ): Promise<Response> {
-  const url = hasDirectOpenAIUpstream(env)
+  const useDirect = shouldUseDirectOpenAIUpstream(env, body.model);
+  const url = useDirect
     ? `${normalizeOpenAICompatBaseUrl(env)}/embeddings`
     : `${normalizeAiGatewayBaseUrl(env)}/compat/embeddings`;
 
   return fetch(url, {
     method: "POST",
-    headers: buildOpenAICompatHeaders(env),
-    body: JSON.stringify({ ...body, model: normalizeOpenAICompatModel(env, body.model) })
+    headers: buildOpenAICompatHeaders(env, useDirect),
+    body: JSON.stringify({ ...body, model: useDirect ? normalizeOpenAICompatModel(env, body.model) : body.model })
   });
 }
