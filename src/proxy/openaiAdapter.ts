@@ -74,7 +74,7 @@ export function getOpenAICompatUrl(env: Env): string {
   if (hasDirectOpenAIUpstream(env)) {
     return `${normalizeOpenAICompatBaseUrl(env)}/chat/completions`;
   }
-  return `${normalizeAiGatewayBaseUrl(env)}/compat/chat/completions`;
+  return getAiGatewayOpenAICompatUrl(env);
 }
 
 export function normalizeAiGatewayBaseUrl(env: Env): string {
@@ -89,6 +89,22 @@ export function normalizeAiGatewayBaseUrl(env: Env): string {
     .replace(/\/compat\/chat\/completions$/i, "")
     .replace(/\/compat\/embeddings$/i, "")
     .replace(/\/anthropic\/v1\/messages$/i, "");
+}
+
+export function getAiGatewayOpenAICompatUrl(env: Env): string {
+  return `${normalizeAiGatewayBaseUrl(env)}/compat/chat/completions`;
+}
+
+export function buildAiGatewayOpenAICompatHeaders(env: Env): Headers {
+  const headers = new Headers({
+    "content-type": "application/json"
+  });
+
+  if (env.CF_AIG_TOKEN) {
+    headers.set("cf-aig-authorization", `Bearer ${env.CF_AIG_TOKEN}`);
+  }
+
+  return headers;
 }
 
 export function buildOpenAICompatHeaders(env: Env): Headers {
@@ -113,6 +129,14 @@ export async function callOpenAICompat(env: Env, body: OpenAIChatRequest): Promi
     method: "POST",
     headers: buildOpenAICompatHeaders(env),
     body: JSON.stringify(normalizeOpenAICompatChatBody(env, body))
+  });
+}
+
+export async function callOpenAICompatViaAiGateway(env: Env, body: OpenAIChatRequest): Promise<Response> {
+  return fetch(getAiGatewayOpenAICompatUrl(env), {
+    method: "POST",
+    headers: buildAiGatewayOpenAICompatHeaders(env),
+    body: JSON.stringify(body)
   });
 }
 
