@@ -1,9 +1,8 @@
 /**
- * assemble — main entry point for the v4 Prompt Assembler.
+ * assemble - main entry point for the v4 Prompt Assembler.
  *
- * Converts an OpenAIChatRequest into an AssembledPrompt.
- * Adapters (anthropic/openai) will consume the output in P1.3.
- * This module is NOT wired into the adapters yet.
+ * Converts an OpenAIChatRequest plus pre-fetched context into an
+ * AssembledPrompt consumed by the OpenAI-compatible and Anthropic adapters.
  *
  * Determinism: given the same request + pre-fetched data, the output is
  * bit-for-bit identical across calls. No timestamps, no request ids.
@@ -18,7 +17,7 @@ import type { AssembledPrompt, AssemblerContext, SummaryEntry } from "./types";
 import { assemble as assembleBlocks } from "./blocks";
 
 // ---------------------------------------------------------------------------
-// Input for assemble — pre-fetched data, no DB calls here
+// Input for assemble - pre-fetched data, no DB calls here
 // ---------------------------------------------------------------------------
 
 export interface AssembleInput {
@@ -43,13 +42,13 @@ export interface AssembleInput {
 }
 
 // ---------------------------------------------------------------------------
-// assemble() — main entry
+// assemble() - main entry
 // ---------------------------------------------------------------------------
 
 /**
  * Build an AssembledPrompt from an OpenAI request + pre-fetched context data.
  *
- * The caller (adapter) is responsible for:
+ * The caller is responsible for:
  * - Fetching pinnedPersonaMemories from D1
  * - Fetching summaryEntry from summaries table
  * - Running RAG search for ragMemories
