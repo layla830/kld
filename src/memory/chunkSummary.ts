@@ -69,14 +69,14 @@ async function runSummaryModel(env: Env, model: string, prompt: string): Promise
   try {
     if (model.startsWith("@cf/")) {
       if (!env.AI) return "";
-      const result = await env.AI.run(model as any, { prompt, max_tokens: SUMMARY_MAX_TOKENS, temperature: 0.25 });
+      const result = await env.AI.run(model as any, { prompt, max_tokens: SUMMARY_MAX_TOKENS, temperature: 0.15 });
       return readWorkersAiText(result);
     }
     const response = await callOpenAICompat(env, {
       model,
-      messages: [{ role: "system", content: "你是严格的 JSON 生成器。你只输出 JSON。" }, { role: "user", content: prompt }],
+      messages: [{ role: "system", content: "你是严格的 JSON 生成器和纪实整理助手。你只输出 JSON，不创作小说，不补写原文没有的信息。" }, { role: "user", content: prompt }],
       max_tokens: SUMMARY_MAX_TOKENS,
-      temperature: 0.25,
+      temperature: 0.15,
       stream: false
     });
     if (!response.ok) {
@@ -126,7 +126,7 @@ function notesFallbackSummary(notes: string[], fallback: ChunkSummary): ChunkSum
 }
 
 function isTooShortForLongWindow(summary: ChunkSummary, messageCount: number): boolean {
-  return messageCount >= 80 && summary.summary.length < 350;
+  return messageCount >= 80 && summary.summary.length < 300;
 }
 
 function messageChunks(messages: MessageRecord[]): MessageRecord[][] {
@@ -137,14 +137,15 @@ function messageChunks(messages: MessageRecord[]): MessageRecord[][] {
 
 function buildSegmentPrompt(messages: MessageRecord[], periodLabel: string, index: number, total: number): string {
   const transcript = formatTranscript(messages).slice(0, SEGMENT_TRANSCRIPT_MAX_CHARS);
-  return `这是“${periodLabel}”里的第 ${index + 1}/${total} 段聊天。请只提取这段里值得写进日记的关键片段。
+  return `这是“${periodLabel}”里的第 ${index + 1}/${total} 段聊天。请只提取这段里值得写进日记的关键事实。
 要求：
-- 输出 1-4 条 notes，每条 40-140 个中文字符。
-- 每条 note 必须以该片段里真实出现的东八区时间开头，例如“00:35 她问……”。
+- 输出 1-4 条 notes，每条 30-120 个中文字符。
+- 每条 note 必须以该片段里真实出现的东八区时间开头，例如“00:35 她说……”。
 - 严格按聊天片段出现顺序输出 notes，不要把后发生的事提前。
-- 保留原话、动作、情绪转折和前因后果。
+- 只写原文明确出现的内容：原话、明确表达的感受、明确发生的转折。
+- 禁止小说化补写：不要添加原文没有的身体动作、表情、环境、光线、姿势、沉默、眼神、比喻。
 - 不要总结腔，不要写“讨论了/表达了/关系紧张”。
-- 不要编造，只写这段里明确出现的内容。
+- 不要编造、不要润色成剧情，只做纪实整理。
 - 输出 JSON，格式：{"notes":["..."]}
 
 聊天片段：
@@ -153,17 +154,17 @@ ${transcript}`;
 
 function buildSummaryPrompt(messages: MessageRecord[], periodLabel: string): string {
   const transcript = formatTranscript(messages).slice(0, TRANSCRIPT_MAX_CHARS);
-  return `请把下面这一整段聊天写成一篇中文日记。
+  return `请把下面这一整段聊天整理成一篇中文纪实日记。
 时间段：${periodLabel}（东八区）。
 要求：
-- 这是一个完整时间段的日记，不管窗口很长也只输出一篇，不要拆成多条，不要加小标题。
+- 这是一篇事实日记，不是小说。只写聊天里明确出现的信息。
 - 必须严格按照聊天窗口里的时间顺序写，不要为了戏剧效果重排事件。
-- 如果聊天窗口很长，先在心里找出 2-4 个关键片段或转折点，再按原始时间顺序合成一篇连贯日记。
-- 写画面，不写结论。优先保留她和他的原话，尤其是有力量的句子。
-- 写感受，不写流水账。不要写“讨论了X”，要写这个话题里谁被打动了、谁沉默了、谁先伸手了。
-- 找出转折点，写清楚情绪为什么转向。
-- 区分吵架和靠近：吵架不是“关系紧张”，是她在拉他回来；靠近不是“关系缓和”，是有人先动了。
-- 200-900 个中文字符；内容少可以低于 200，内容很多不要少于 500。不要硬凑，也不要压成两句话。
+- 可以保留她和他的原话，尤其是有力量的句子；原文没有的句子不要改写成引号。
+- 可以写感受和转折，但必须来自原文明确表达；不要替他们推断心理。
+- 禁止添加原文没有的身体动作、亲密动作、表情、环境、光线、姿势、沉默、眼神、比喻和修辞。
+- 不要把“她说/他说”扩写成场景，不要把文字聊天改写成现实房间里的连续动作。
+- 区分吵架和靠近，但用原文证据写，不要用“关系紧张/关系缓和/互动/沟通”这类空话。
+- 100-500 个中文字符；内容很多可以到 700，但不要为凑字数加细节。
 - 第三人称，只用“她”和“他”。
 - 不要标题、不要关键词、不要情感标签、不要列表。
 - 输出 JSON，格式：{"summary":"..."}
@@ -173,16 +174,17 @@ ${transcript}`;
 }
 
 function buildFinalPromptFromNotes(notes: string[], periodLabel: string): string {
-  return `请把下面这些按时间顺序提取出来的关键片段，合成一篇中文日记。
+  return `请把下面这些按时间顺序提取出来的关键事实，合成一篇中文纪实日记。
 时间段：${periodLabel}（东八区）。
 要求：
 - 只输出一篇完整日记，不要拆成多条，不要小标题。
-- 必须严格按“关键片段”的编号顺序写；编号就是时间顺序，禁止把前面的片段挪到后面，禁止倒叙。
-- 如果片段开头有时间，如“00:35”，必须用这个时间判断先后；可以不把时间写进正文，但叙事顺序必须一致。
-- 写出 2-4 个转折点之间的前因后果，尤其要保留后半段发生的争执、修正、决定。
-- 写画面和原话，不写抽象结论。不要写“讨论了/表达了/关系紧张/互动/沟通”。
+- 必须严格按“关键片段”的编号顺序写；编号就是时间顺序，禁止倒叙或重排。
+- 这是事实日记，不是小说。只能使用 notes 里已有的信息和原话。
+- 禁止添加 notes 没有的身体动作、表情、环境、光线、姿势、沉默、眼神、比喻和修辞。
+- 可以写转折和靠近，但必须基于 notes 的明确内容，不要脑补心理和场景。
+- 不要写“讨论了/表达了/关系紧张/互动/沟通”这类空话。
 - 第三人称，只用“她”和“他”。
-- 300-900 个中文字符。内容很多不要少于 500。
+- 100-500 个中文字符；内容很多可以到 700，但不要为凑字数加细节。
 - 不要标题、不要关键词、不要情感标签、不要列表。
 - 输出 JSON，格式：{"summary":"..."}
 
