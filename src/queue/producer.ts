@@ -5,16 +5,29 @@ import { handleQueueMessage } from "./consumer";
 
 const DEFAULT_CHUNK_THRESHOLD = 10;
 
+function allowQueueFallback(env: Env): boolean {
+  return env.ALLOW_QUEUE_FALLBACK === "true";
+}
+
 /**
  * Send a queue message. Uses real Cloudflare Queue when MEMORY_QUEUE binding
- * is available; falls back to direct handleQueueMessage for local dev / no-queue.
+ * is available. Direct handling is only allowed by explicit local/dev opt-in.
  */
 async function sendQueueMessage(env: Env, message: QueueMessage): Promise<void> {
   if (env.MEMORY_QUEUE) {
     await env.MEMORY_QUEUE.send(message);
-  } else {
-    await handleQueueMessage(message, env);
+    return;
   }
+
+  if (allowQueueFallback(env)) {
+    await handleQueueMessage(message, env);
+    return;
+  }
+
+  console.warn("MEMORY_QUEUE binding missing; skipped background queue message", {
+    type: message.type,
+    namespace: message.namespace
+  });
 }
 
 function chunkThreshold(env: Env): number {
