@@ -2,6 +2,7 @@ export interface Env {
   DB: D1Database;
   AI?: Ai;
   MEMORY_QUEUE?: Queue<QueueMessage>;
+  ALLOW_QUEUE_FALLBACK?: string;
   VECTORIZE?: Vectorize | VectorizeIndex;
   PUBLIC_MODEL_NAME?: string;
   CHAT_MODEL?: string;
