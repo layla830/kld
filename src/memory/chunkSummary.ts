@@ -22,6 +22,15 @@ function formatTranscript(messages: MessageRecord[]): string {
   }).join("\n");
 }
 
+function sortMessagesChronologically(messages: MessageRecord[]): MessageRecord[] {
+  return [...messages].sort((left, right) => {
+    const leftTime = messageTime(left).getTime();
+    const rightTime = messageTime(right).getTime();
+    if (leftTime !== rightTime) return leftTime - rightTime;
+    return left.id.localeCompare(right.id);
+  });
+}
+
 function fallbackSummary(messages: MessageRecord[]): ChunkSummary {
   const text = messages.map((message) => message.content).join("\n").replace(/\s+/g, " ").trim();
   const summary = text.slice(0, 900) || "这段时间的对话没有足够内容可写成日记。";
@@ -131,6 +140,8 @@ function buildSegmentPrompt(messages: MessageRecord[], periodLabel: string, inde
   return `这是“${periodLabel}”里的第 ${index + 1}/${total} 段聊天。请只提取这段里值得写进日记的关键片段。
 要求：
 - 输出 1-4 条 notes，每条 40-140 个中文字符。
+- 每条 note 必须以该片段里真实出现的东八区时间开头，例如“00:35 她问……”。
+- 严格按聊天片段出现顺序输出 notes，不要把后发生的事提前。
 - 保留原话、动作、情绪转折和前因后果。
 - 不要总结腔，不要写“讨论了/表达了/关系紧张”。
 - 不要编造，只写这段里明确出现的内容。
@@ -146,7 +157,8 @@ function buildSummaryPrompt(messages: MessageRecord[], periodLabel: string): str
 时间段：${periodLabel}（东八区）。
 要求：
 - 这是一个完整时间段的日记，不管窗口很长也只输出一篇，不要拆成多条，不要加小标题。
-- 如果聊天窗口很长，先在心里找出 2-4 个关键片段或转折点，再合成一篇连贯日记。
+- 必须严格按照聊天窗口里的时间顺序写，不要为了戏剧效果重排事件。
+- 如果聊天窗口很长，先在心里找出 2-4 个关键片段或转折点，再按原始时间顺序合成一篇连贯日记。
 - 写画面，不写结论。优先保留她和他的原话，尤其是有力量的句子。
 - 写感受，不写流水账。不要写“讨论了X”，要写这个话题里谁被打动了、谁沉默了、谁先伸手了。
 - 找出转折点，写清楚情绪为什么转向。
@@ -165,6 +177,8 @@ function buildFinalPromptFromNotes(notes: string[], periodLabel: string): string
 时间段：${periodLabel}（东八区）。
 要求：
 - 只输出一篇完整日记，不要拆成多条，不要小标题。
+- 必须严格按“关键片段”的编号顺序写；编号就是时间顺序，禁止把前面的片段挪到后面，禁止倒叙。
+- 如果片段开头有时间，如“00:35”，必须用这个时间判断先后；可以不把时间写进正文，但叙事顺序必须一致。
 - 写出 2-4 个转折点之间的前因后果，尤其要保留后半段发生的争执、修正、决定。
 - 写画面和原话，不写抽象结论。不要写“讨论了/表达了/关系紧张/互动/沟通”。
 - 第三人称，只用“她”和“他”。
@@ -196,29 +210,30 @@ async function summarizeLongChunk(env: Env, model: string, messages: MessageReco
 }
 
 export async function summarizeChunk(env: Env, messages: MessageRecord[], periodLabel: string): Promise<ChunkSummary | null> {
-  const fallback = fallbackSummary(messages);
+  const orderedMessages = sortMessagesChronologically(messages);
+  const fallback = fallbackSummary(orderedMessages);
   const model = env.AUTO_CHUNK_SUMMARY_MODEL || env.CHAT_MODEL || env.MEMORY_MODEL || DEFAULT_SUMMARY_MODEL;
-  const isLongWindow = messages.length >= LONG_WINDOW_MESSAGE_COUNT;
+  const isLongWindow = orderedMessages.length >= LONG_WINDOW_MESSAGE_COUNT;
 
   if (isLongWindow) {
-    const longSummary = await summarizeLongChunk(env, model, messages, periodLabel, fallback);
+    const longSummary = await summarizeLongChunk(env, model, orderedMessages, periodLabel, fallback);
     if (longSummary) return longSummary;
     console.error("auto diary long-window summary unavailable; leaving messages unprocessed", {
-      conversationId: messages[0]?.conversation_id,
-      fromMessageId: messages[0]?.id,
-      toMessageId: messages[messages.length - 1]?.id,
-      messageCount: messages.length
+      conversationId: orderedMessages[0]?.conversation_id,
+      fromMessageId: orderedMessages[0]?.id,
+      toMessageId: orderedMessages[orderedMessages.length - 1]?.id,
+      messageCount: orderedMessages.length
     });
     return null;
   }
 
-  const prompt = buildSummaryPrompt(messages, periodLabel);
+  const prompt = buildSummaryPrompt(orderedMessages, periodLabel);
   const primary = parseSummary(await runSummaryModel(env, model, prompt), fallback);
-  if (primary && !isTooShortForLongWindow(primary, messages.length)) return primary;
+  if (primary && !isTooShortForLongWindow(primary, orderedMessages.length)) return primary;
 
   if (!model.startsWith("@cf/")) {
     const backup = parseSummary(await runSummaryModel(env, FALLBACK_WORKERS_SUMMARY_MODEL, prompt), fallback);
-    if (backup && !isTooShortForLongWindow(backup, messages.length)) return backup;
+    if (backup && !isTooShortForLongWindow(backup, orderedMessages.length)) return backup;
   }
 
   if (primary) return primary;
