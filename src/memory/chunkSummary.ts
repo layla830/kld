@@ -24,8 +24,8 @@ function formatTranscript(messages: MessageRecord[]): string {
 
 function sortMessagesChronologically(messages: MessageRecord[]): MessageRecord[] {
   return [...messages].sort((left, right) => {
-    const leftTime = messageTime(left).getTime();
-    const rightTime = messageTime(right).getTime();
+    const leftTime = new Date(messageTime(left)).getTime();
+    const rightTime = new Date(messageTime(right)).getTime();
     if (leftTime !== rightTime) return leftTime - rightTime;
     return String(left.id || "").localeCompare(String(right.id || ""));
   });
