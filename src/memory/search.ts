@@ -1,5 +1,6 @@
 import { markMemoriesRecalled, searchMemoriesByText } from "../db/memories";
-import type { Env, MemoryApiRecord, MemoryRecord } from "../types";
+import { searchMessagesForRecall } from "../db/messages";
+import type { Env, MemoryApiRecord, MemoryRecord, MessageRecord } from "../types";
 import { postProcessMemorySearchResults } from "./postProcess";
 import { searchVectorMemories, type ScoredMemoryRecord } from "./vectorStore";
 
@@ -33,7 +34,13 @@ const QUERY_NOISE_PATTERNS = [
   /以前/g,
   /过去/g,
   /刚才/g,
+  /刚刚/g,
   /昨天/g,
+  /昨晚/g,
+  /前天/g,
+  /今天/g,
+  /今晚/g,
+  /那次/g,
   /那天/g,
   /当时/g,
   /说过/g,
@@ -85,6 +92,32 @@ export function toMemoryApiRecord(record: MemoryRecord, score?: number): MemoryA
     updated_at: record.updated_at,
     expires_at: record.expires_at,
     ...(score === undefined ? {} : { score })
+  };
+}
+
+function messageToMemoryRecord(message: MessageRecord & { score: number }): ScoredMemoryRecord {
+  const role = message.role === "user" ? "她" : "他";
+  return {
+    id: `msg_${message.id}`,
+    namespace: message.namespace,
+    type: "conversation_message",
+    content: `${role}：${message.content}`,
+    summary: null,
+    importance: message.role === "user" ? 0.42 : 0.34,
+    confidence: 0.75,
+    status: "active",
+    pinned: 0,
+    tags: JSON.stringify(["raw_message", message.source || "chat"]),
+    source: message.source || "messages",
+    source_message_ids: JSON.stringify([message.id]),
+    vector_id: null,
+    last_recalled_at: null,
+    recall_count: 0,
+    created_at: message.created_at,
+    updated_at: message.created_at,
+    expires_at: null,
+    score: message.score,
+    keywordScore: message.score
   };
 }
 
@@ -436,7 +469,7 @@ function mergeSearchResults(
 
 export async function searchMemories(
   env: Env,
-  input: { namespace: string; query: string; rawQuery?: string; types?: string[]; topK?: number }
+  input: { namespace: string; query: string; rawQuery?: string; types?: string[]; topK?: number; includeMessages?: boolean }
 ): Promise<MemoryApiRecord[]> {
   const topK = getTopK(env, input.topK);
   const candidateLimit = getCandidateLimit(topK);
@@ -444,14 +477,23 @@ export async function searchMemories(
   const searchQuery = normalizeQueryForSearch(input.query);
   const timeIntent = parseTimeIntent(rawQuery);
   const expandedQuery = expandQuery([searchQuery, ...timeIntent.terms].filter(Boolean).join(" "));
-  const [vectorRecords, keywordRecords] = await Promise.all([
+  const [vectorRecords, keywordRecords, messageRecords] = await Promise.all([
     searchVectorMemories(env, { namespace: input.namespace, query: expandedQuery, types: input.types, topK: candidateLimit }),
-    searchMemoriesByText(env.DB, { namespace: input.namespace, query: expandedQuery, types: input.types, limit: candidateLimit })
+    searchMemoriesByText(env.DB, { namespace: input.namespace, query: expandedQuery, types: input.types, limit: candidateLimit }),
+    input.includeMessages
+      ? searchMessagesForRecall(env.DB, {
+          namespace: input.namespace,
+          query: searchQuery,
+          after: timeIntent.mode === "hard_range" ? timeIntent.after : undefined,
+          before: timeIntent.mode === "hard_range" ? timeIntent.before : undefined,
+          limit: Math.min(candidateLimit, 24)
+        })
+      : Promise.resolve([])
   ]);
 
   const records = mergeSearchResults(
     vectorRecords,
-    keywordRecords.map((record) => ({ ...record, keywordScore: record.score })),
+    [...keywordRecords.map((record) => ({ ...record, keywordScore: record.score })), ...messageRecords.map(messageToMemoryRecord)],
     { query: searchQuery, expandedQuery, topK: candidateLimit, timeIntent }
   );
   const apiRecords = records.map((record) => toMemoryApiRecord(record, record.score));
