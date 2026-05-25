@@ -108,7 +108,22 @@ function recencyBoost(record: MemoryRecord): number {
   return 0;
 }
 
-type HybridScoredMemoryRecord = ScoredMemoryRecord & { lexicalScore?: number; rankScore?: number };
+type TimeIntentMode = "none" | "hard_range" | "soft_recent" | "past_reference";
+
+interface TimeIntent {
+  mode: TimeIntentMode;
+  terms: string[];
+  after?: string;
+  before?: string;
+}
+
+const EMPTY_TIME_INTENT: TimeIntent = { mode: "none", terms: [] };
+const SHANGHAI_OFFSET_MS = 8 * 60 * 60 * 1000;
+
+type DateParts = { year: number; month: number; day: number };
+type DayPart = "morning" | "afternoon" | "evening";
+
+type HybridScoredMemoryRecord = ScoredMemoryRecord & { lexicalScore?: number; rankScore?: number; timeScore?: number };
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
@@ -119,11 +134,13 @@ function rankHybridRecord(record: HybridScoredMemoryRecord): number {
   const keywordScore = record.keywordScore ?? 0;
   const lexicalScore = record.lexicalScore ?? 0;
   const rankScore = record.rankScore ?? 0;
+  const timeScore = record.timeScore ?? 0;
   const pinnedBoost = record.pinned ? 0.08 : 0;
   return (
     vectorScore * 0.42 +
     keywordScore * 0.7 +
     lexicalScore * 0.45 +
+    timeScore * 0.8 +
     rankScore * 8 +
     record.importance * 0.08 +
     pinnedBoost +
@@ -176,6 +193,111 @@ function expandQuery(query: string): string {
     for (const alias of group) terms.add(alias);
   }
   return [...terms].filter(Boolean).join(" ");
+}
+
+function pad2(value: number): string {
+  return String(value).padStart(2, "0");
+}
+
+function shanghaiDateParts(now = new Date()): DateParts {
+  const shifted = new Date(now.getTime() + SHANGHAI_OFFSET_MS);
+  return { year: shifted.getUTCFullYear(), month: shifted.getUTCMonth() + 1, day: shifted.getUTCDate() };
+}
+
+function addShanghaiDays(parts: DateParts, offset: number): DateParts {
+  const date = new Date(Date.UTC(parts.year, parts.month - 1, parts.day + offset));
+  return { year: date.getUTCFullYear(), month: date.getUTCMonth() + 1, day: date.getUTCDate() };
+}
+
+function utcIsoForShanghai(parts: DateParts, hour: number): string {
+  return new Date(Date.UTC(parts.year, parts.month - 1, parts.day, hour - 8, 0, 0)).toISOString();
+}
+
+function dateTerms(parts: DateParts, dayParts: DayPart[] = []): string[] {
+  const iso = `${parts.year}-${pad2(parts.month)}-${pad2(parts.day)}`;
+  const loose = `${parts.year}.${parts.month}.${parts.day}`;
+  const zh = `${parts.month}月${parts.day}日`;
+  return [iso, loose, zh, ...dayParts.map((part) => `${iso}:${part}`)];
+}
+
+function dayPartRange(dayPart?: DayPart): { startHour: number; endHour: number; parts: DayPart[] } {
+  if (dayPart === "morning") return { startHour: 0, endHour: 12, parts: ["morning"] };
+  if (dayPart === "afternoon") return { startHour: 12, endHour: 18, parts: ["afternoon"] };
+  if (dayPart === "evening") return { startHour: 18, endHour: 24, parts: ["evening"] };
+  return { startHour: 0, endHour: 24, parts: ["morning", "afternoon", "evening"] };
+}
+
+function dayIntent(parts: DateParts, dayPart?: DayPart): TimeIntent {
+  const range = dayPartRange(dayPart);
+  return {
+    mode: "hard_range",
+    terms: dateTerms(parts, range.parts),
+    after: utcIsoForShanghai(parts, range.startHour),
+    before: utcIsoForShanghai(parts, range.endHour)
+  };
+}
+
+function queryDayPart(query: string): DayPart | undefined {
+  if (/上午|早上|清晨|凌晨/.test(query)) return "morning";
+  if (/下午|中午/.test(query)) return "afternoon";
+  if (/晚上|今晚|昨晚|夜里|夜晚|半夜/.test(query)) return "evening";
+  return undefined;
+}
+
+function parseExplicitDate(query: string): DateParts | null {
+  const current = shanghaiDateParts();
+  const isoMatch = query.match(/\b(20\d{2})[.\-/年](\d{1,2})[.\-/月](\d{1,2})日?\b/);
+  if (isoMatch) {
+    const [, year, month, day] = isoMatch;
+    return { year: Number(year), month: Number(month), day: Number(day) };
+  }
+
+  const zhMatch = query.match(/(?:^|[^\d])(\d{1,2})月(\d{1,2})日/);
+  if (zhMatch) {
+    const [, month, day] = zhMatch;
+    return { year: current.year, month: Number(month), day: Number(day) };
+  }
+
+  return null;
+}
+
+function parseTimeIntent(rawQuery: string): TimeIntent {
+  const query = normalizeText(rawQuery);
+  const explicitDate = parseExplicitDate(query);
+  if (explicitDate) return dayIntent(explicitDate, queryDayPart(query));
+
+  const current = shanghaiDateParts();
+  if (/前天/.test(query)) return dayIntent(addShanghaiDays(current, -2), queryDayPart(query));
+  if (/昨天|昨晚/.test(query)) return dayIntent(addShanghaiDays(current, -1), queryDayPart(query));
+  if (/今天|今晚|上午|下午|早上|中午|晚上/.test(query)) return dayIntent(current, queryDayPart(query));
+  if (/刚刚|刚才|方才|刚聊|刚说/.test(query)) return { mode: "soft_recent", terms: [] };
+  if (/上次|之前|以前|过去|那次|那天|当时/.test(query)) return { mode: "past_reference", terms: [] };
+  return EMPTY_TIME_INTENT;
+}
+
+function recordTimestamp(record: MemoryRecord): number {
+  const timestamp = Date.parse(record.updated_at || record.created_at || "");
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function inTimeRange(timestamp: number, after?: string, before?: string): boolean {
+  if (!timestamp) return false;
+  const afterTime = after ? Date.parse(after) : Number.NEGATIVE_INFINITY;
+  const beforeTime = before ? Date.parse(before) : Number.POSITIVE_INFINITY;
+  return timestamp >= afterTime && timestamp < beforeTime;
+}
+
+function timeIntentScore(record: MemoryRecord, intent: TimeIntent): number {
+  if (intent.mode === "none") return 0;
+
+  if (intent.mode === "soft_recent") return recencyBoost(record) * 0.75;
+  if (intent.mode === "past_reference") return recencyBoost(record) * 0.25;
+
+  const haystack = recordHaystack(record);
+  let score = 0;
+  if (intent.terms.some((term) => haystack.includes(normalizeText(term)))) score += 1;
+  if (inTimeRange(recordTimestamp(record), intent.after, intent.before)) score += 0.65;
+  return clamp(score, 0, 1.4);
 }
 
 function dateNeedles(value: string): string[] {
@@ -269,7 +391,7 @@ function isSupportedBySearchMode(record: HybridScoredMemoryRecord, input: { hasS
 function mergeSearchResults(
   vectorRecords: ScoredMemoryRecord[] | null,
   keywordRecords: ScoredMemoryRecord[],
-  input: { query: string; expandedQuery: string; topK: number }
+  input: { query: string; expandedQuery: string; topK: number; timeIntent: TimeIntent }
 ): ScoredMemoryRecord[] {
   const merged = new Map<string, HybridScoredMemoryRecord>();
 
@@ -278,9 +400,10 @@ function mergeSearchResults(
     const rankWeight = source === "keyword" ? 1.25 : 1;
     const rankScore = rankWeight / (RRF_K + rank);
     const lexicalScore = lexicalScoreRecord(record, input);
+    const timeScore = timeIntentScore(record, input.timeIntent);
 
     if (!existing) {
-      const next: HybridScoredMemoryRecord = { ...record, lexicalScore, rankScore };
+      const next: HybridScoredMemoryRecord = { ...record, lexicalScore, rankScore, timeScore };
       next.score = rankHybridRecord(next);
       merged.set(record.id, next);
       return;
@@ -294,6 +417,7 @@ function mergeSearchResults(
       vectorScore: vectorScore || undefined,
       keywordScore: keywordScore || undefined,
       lexicalScore: Math.max(existing.lexicalScore ?? 0, lexicalScore),
+      timeScore: Math.max(existing.timeScore ?? 0, timeScore),
       rankScore: (existing.rankScore ?? 0) + rankScore
     };
     next.score = rankHybridRecord(next);
@@ -316,8 +440,10 @@ export async function searchMemories(
 ): Promise<MemoryApiRecord[]> {
   const topK = getTopK(env, input.topK);
   const candidateLimit = getCandidateLimit(topK);
+  const rawQuery = input.rawQuery || input.query;
   const searchQuery = normalizeQueryForSearch(input.query);
-  const expandedQuery = expandQuery(searchQuery);
+  const timeIntent = parseTimeIntent(rawQuery);
+  const expandedQuery = expandQuery([searchQuery, ...timeIntent.terms].filter(Boolean).join(" "));
   const [vectorRecords, keywordRecords] = await Promise.all([
     searchVectorMemories(env, { namespace: input.namespace, query: expandedQuery, types: input.types, topK: candidateLimit }),
     searchMemoriesByText(env.DB, { namespace: input.namespace, query: expandedQuery, types: input.types, limit: candidateLimit })
@@ -326,10 +452,10 @@ export async function searchMemories(
   const records = mergeSearchResults(
     vectorRecords,
     keywordRecords.map((record) => ({ ...record, keywordScore: record.score })),
-    { query: searchQuery, expandedQuery, topK: candidateLimit }
+    { query: searchQuery, expandedQuery, topK: candidateLimit, timeIntent }
   );
   const apiRecords = records.map((record) => toMemoryApiRecord(record, record.score));
-  const processedRecords = await postProcessMemorySearchResults(env, { query: searchQuery, rawQuery: input.rawQuery || input.query, memories: apiRecords, topK });
+  const processedRecords = await postProcessMemorySearchResults(env, { query: searchQuery, rawQuery, memories: apiRecords, topK });
 
   await markMemoriesRecalled(env.DB, { namespace: input.namespace, ids: processedRecords.map((record) => record.id) });
   return processedRecords;
