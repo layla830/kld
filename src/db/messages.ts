@@ -287,3 +287,71 @@ export async function deleteProcessedSourceMessagesBefore(
 
   return result.meta.changes ?? 0;
 }
+
+function escapeLike(value: string): string {
+  return value.replace(/[\%_]/g, "\\$&");
+}
+
+function messageTokens(query: string): string[] {
+  const normalized = query.trim().toLowerCase().replace(/\s+/g, " ").slice(0, 300);
+  return [...new Set(normalized.match(/[a-z0-9_+-]{2,}|[\u4e00-\u9fff]{2,}/gi) ?? [])].slice(0, 12);
+}
+
+function scoreMessage(record: MessageRecord, query: string, tokens: string[]): number {
+  const content = record.content.toLowerCase();
+  const exact = query && content.includes(query.toLowerCase()) ? 0.45 : 0;
+  const hits = tokens.filter((token) => content.includes(token)).length;
+  const roleBoost = record.role === "user" ? 0.08 : 0;
+  const hitScore = tokens.length ? Math.min(1, hits / Math.min(tokens.length, 3)) * 0.5 : 0.12;
+  return 0.35 + exact + hitScore + roleBoost;
+}
+
+export async function searchMessagesForRecall(
+  db: D1Database,
+  input: { namespace: string; query: string; after?: string; before?: string; limit: number }
+): Promise<Array<MessageRecord & { score: number }>> {
+  const query = input.query.trim().replace(/\s+/g, " ").slice(0, 300);
+  const tokens = messageTokens(query);
+  let sql = `SELECT id, conversation_id, namespace, role, content, source, created_at
+             FROM messages
+             WHERE namespace = ?
+               AND role IN ('user', 'assistant')
+               AND content != ''`;
+  const binds: unknown[] = [input.namespace];
+
+  if (input.after) {
+    sql += " AND created_at >= ?";
+    binds.push(input.after);
+  }
+  if (input.before) {
+    sql += " AND created_at < ?";
+    binds.push(input.before);
+  }
+
+  if (tokens.length > 0) {
+    const tokenBudget = Math.max(0, Math.min(tokens.length, D1_BIND_LIMIT - binds.length - 1));
+    const clauses: string[] = [];
+    for (const token of tokens.slice(0, tokenBudget)) {
+      clauses.push("content LIKE ? ESCAPE '\\'");
+      binds.push(`%${escapeLike(token)}%`);
+    }
+    if (clauses.length > 0) sql += ` AND (${clauses.join(" OR ")})`;
+  }
+
+  sql += " ORDER BY created_at DESC LIMIT ?";
+  binds.push(Math.max(input.limit * 3, input.limit));
+
+  let result: D1Result<MessageRecord>;
+  try {
+    result = await db.prepare(sql).bind(...binds).all<MessageRecord>();
+  } catch (error) {
+    console.error("message recall search failed", error);
+    return [];
+  }
+
+  const records = result.results ?? [];
+  return records
+    .map((record) => ({ ...record, score: scoreMessage(record, query, tokens) }))
+    .sort((a, b) => b.score - a.score || b.created_at.localeCompare(a.created_at))
+    .slice(0, input.limit);
+}
