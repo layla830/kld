@@ -173,7 +173,7 @@ function rankHybridRecord(record: HybridScoredMemoryRecord): number {
     vectorScore * 0.42 +
     keywordScore * 0.7 +
     lexicalScore * 0.45 +
-    timeScore * 0.8 +
+    timeScore * 1.2 +
     rankScore * 8 +
     record.importance * 0.08 +
     pinnedBoost +
@@ -417,6 +417,7 @@ function isSupportedBySearchMode(record: HybridScoredMemoryRecord, input: { hasS
   if (!input.hasStrongKeyword) return true;
   if ((record.lexicalScore ?? 0) >= 0.55) return true;
   if ((record.keywordScore ?? 0) >= WEAK_KEYWORD_SCORE) return true;
+  if ((record.timeScore ?? 0) >= 0.55) return true;
   if (input.strongNeedles.length > 0 && containsStrongNeedle(record, input.strongNeedles)) return true;
   return (record.vectorScore ?? 0) >= VECTOR_ONLY_SCORE_WITH_STRONG_KEYWORDS;
 }
