@@ -168,7 +168,8 @@ export async function buildRecallContext(
     namespace: input.namespace,
     query: searchQuery,
     rawQuery: analysis.query,
-    topK: getRecallTopK(env, input.topK)
+    topK: getRecallTopK(env, input.topK),
+    includeMessages: true
   });
 
   return {
