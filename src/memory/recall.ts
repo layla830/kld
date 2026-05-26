@@ -7,14 +7,18 @@ const MAX_MEMORY_CHARS = 120;
 const EXCERPT_RADIUS = 48;
 const DEFAULT_RECALL_TOP_K = 3;
 
+const TIME_RANGE_RECALL_PATTERN = /上上周|上周|上个星期|上星期|上礼拜|上个礼拜|这周|本周|这个星期|这星期|这个礼拜|上个月|上月|这个月|本月/;
+const BROAD_TIME_RECALL_PATTERN = /(昨天|前天|今天|今晚|昨晚|上上周|上周|上个星期|上星期|上礼拜|上个礼拜|这周|本周|这个星期|这星期|这个礼拜|上个月|上月|这个月|本月).*(说了什么|聊了什么|在聊什么|弄什么|做什么|干什么|怎么样)/;
+
 const EXPLICIT_RECALL_PATTERNS = [
   /之前|上次|以前|过去|刚才|昨天|前天|那天|当时|后来|曾经/,
+  TIME_RANGE_RECALL_PATTERN,
   /记得|记住|忘了|想起来|回忆|印象|提过|说过|聊过|写过|存过/,
   /之前.*(喜欢|讨厌|偏好|习惯|设定|雷点|底线|关系|称呼|名字|生日|纪念日)/,
   /(喜欢|讨厌|偏好|习惯|设定|雷点|底线|关系|称呼|名字|生日|纪念日).*之前/,
-  /(上次|之前|刚才|昨天|那天|当时).*(进度|状态|安排|计划|部署|服务器|记忆库|heartbeat|forge|codex|claude|cc)/,
-  /(进度|状态|安排|计划|部署|服务器|记忆库|heartbeat|forge|codex|claude|cc).*(上次|之前|刚才|昨天|那天|当时)/,
-  /remember|recall|forgot|previous|before|last time|as we discussed|mentioned before/i,
+  /(上次|之前|刚才|昨天|前天|上周|本周|上个月|本月|那天|当时).*(进度|状态|安排|计划|部署|服务器|记忆库|heartbeat|forge|codex|claude|cc)/,
+  /(进度|状态|安排|计划|部署|服务器|记忆库|heartbeat|forge|codex|claude|cc).*(上次|之前|刚才|昨天|前天|上周|本周|上个月|本月|那天|当时)/,
+  /remember|recall|forgot|previous|before|last time|last week|last month|as we discussed|mentioned before/i,
   /\b\d{4}[.\-/年]\d{1,2}([.\-/月]\d{1,2})?/,
   /\b\d{1,2}月\d{1,2}日/
 ];
@@ -35,12 +39,13 @@ const NO_RECALL_PATTERNS = [
 const RECALL_SUPPORT_STOPWORDS = new Set([
   "你", "我", "她", "他", "我们", "你们", "他们", "她们", "这个", "那个", "什么", "哪个", "哪里", "怎么", "为啥",
   "是不是", "还有", "一下", "记得", "还记得", "之前", "上次", "以前", "过去", "刚才", "刚刚", "昨天", "前天",
-  "今天", "今晚", "昨晚", "那天", "当时", "后来", "曾经", "说过", "聊过", "提过", "问题", "事情", "东西",
+  "今天", "今晚", "昨晚", "那天", "当时", "后来", "曾经", "上上周", "上周", "上个星期", "上星期", "上礼拜", "上个礼拜",
+  "这周", "本周", "这个星期", "这星期", "这个礼拜", "上个月", "上月", "这个月", "本月", "说过", "聊过", "提过",
+  "说了", "聊了", "在聊", "说了什么", "聊了什么", "在聊什么", "弄什么", "做什么", "干什么", "怎么样", "问题", "事情", "东西",
   "正常", "聊天", "召回", "记忆", "回忆", "印象", "忘了", "想起来", "the", "and", "that", "what", "when", "where",
-  "how", "before", "previous", "remember", "recall", "forgot", "last", "time"
+  "how", "before", "previous", "remember", "recall", "forgot", "last", "time", "week", "month"
 ]);
 
-const BROAD_TIME_RECALL_PATTERN = /(昨天|前天|今天|今晚|昨晚|上周|本周|上个月|本月).*(说了什么|聊了什么|弄什么|做什么|干什么|怎么样)/;
 const SENTENCE_BOUNDARIES = new Set(["。", "！", "？", "!", "?", "；", ";"]);
 
 function clamp(value: number, min: number, max: number): number {
@@ -143,13 +148,14 @@ function isTimeSummaryCandidate(memory: MemoryApiRecord): boolean {
 }
 
 function filterUnsupportedRecallMemories(memories: MemoryApiRecord[], query: string, rawQuery: string): MemoryApiRecord[] {
+  if (BROAD_TIME_RECALL_PATTERN.test(rawQuery)) return memories.filter(isTimeSummaryCandidate);
+
   const needles = queryNeedles(`${rawQuery} ${query}`);
-  if (needles.length === 0) return BROAD_TIME_RECALL_PATTERN.test(rawQuery) ? memories.filter(isTimeSummaryCandidate) : memories;
+  if (needles.length === 0) return memories;
 
   const supported = memories.filter((memory) => hasSupportNeedle(memory, needles));
   if (supported.length > 0) return supported;
 
-  if (BROAD_TIME_RECALL_PATTERN.test(rawQuery)) return memories.filter(isTimeSummaryCandidate);
   return [];
 }
 
