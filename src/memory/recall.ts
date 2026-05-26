@@ -32,6 +32,15 @@ const NO_RECALL_PATTERNS = [
   /^(ping|test|测试)$/i
 ];
 
+const RECALL_SUPPORT_STOPWORDS = new Set([
+  "你", "我", "她", "他", "我们", "你们", "他们", "她们", "这个", "那个", "什么", "哪个", "哪里", "怎么", "为啥",
+  "是不是", "还有", "一下", "记得", "还记得", "之前", "上次", "以前", "过去", "刚才", "刚刚", "昨天", "前天",
+  "今天", "今晚", "昨晚", "那天", "当时", "后来", "曾经", "说过", "聊过", "提过", "问题", "事情", "东西",
+  "正常", "聊天", "召回", "记忆", "回忆", "印象", "忘了", "想起来", "the", "and", "that", "what", "when", "where",
+  "how", "before", "previous", "remember", "recall", "forgot", "last", "time"
+]);
+
+const BROAD_TIME_RECALL_PATTERN = /(昨天|前天|今天|今晚|昨晚|上周|本周|上个月|本月).*(说了什么|聊了什么|弄什么|做什么|干什么|怎么样)/;
 const SENTENCE_BOUNDARIES = new Set(["。", "！", "？", "!", "?", "；", ";"]);
 
 function clamp(value: number, min: number, max: number): number {
@@ -58,16 +67,30 @@ function getRecallTopK(env: Env, requested?: number): number {
   return Number.isFinite(value) ? clamp(Math.floor(value), 1, 3) : DEFAULT_RECALL_TOP_K;
 }
 
-function excerptNeedles(query: string): string[] {
+function queryNeedles(query: string): string[] {
   const needles = new Set<string>();
   for (const match of normalizeQueryForMemorySearch(query).match(/[a-z][a-z0-9_+-]{2,}|[\u4e00-\u9fff]{2,}/gi) ?? []) {
     const term = match.toLowerCase();
+    if (RECALL_SUPPORT_STOPWORDS.has(term)) continue;
     needles.add(term);
     if (/^[\u4e00-\u9fff]+$/.test(term) && term.length > 2) {
-      for (const gram of chineseNgrams(term)) needles.add(gram);
+      for (const gram of chineseNgrams(term)) {
+        if (!RECALL_SUPPORT_STOPWORDS.has(gram)) needles.add(gram);
+      }
     }
   }
   return [...needles].sort((a, b) => b.length - a.length).slice(0, 16);
+}
+
+function excerptNeedles(query: string): string[] {
+  const needles = queryNeedles(query);
+  if (needles.length > 0) return needles;
+
+  const fallback = new Set<string>();
+  for (const match of normalizeQueryForMemorySearch(query).match(/[a-z][a-z0-9_+-]{2,}|[\u4e00-\u9fff]{2,}/gi) ?? []) {
+    fallback.add(match.toLowerCase());
+  }
+  return [...fallback].sort((a, b) => b.length - a.length).slice(0, 16);
 }
 
 function findExcerptStart(content: string, index: number): number {
@@ -103,6 +126,31 @@ function relevantExcerpt(memory: MemoryApiRecord, query: string): string {
   }
 
   return clip(content);
+}
+
+function supportHaystack(memory: MemoryApiRecord): string {
+  return `${memory.content} ${memory.summary || ""} ${memory.tags.join(" ")} ${memory.type}`.toLowerCase();
+}
+
+function hasSupportNeedle(memory: MemoryApiRecord, needles: string[]): boolean {
+  const haystack = supportHaystack(memory);
+  return needles.some((needle) => haystack.includes(needle));
+}
+
+function isTimeSummaryCandidate(memory: MemoryApiRecord): boolean {
+  const meta = `${memory.type} ${memory.tags.join(" ")} ${memory.source || ""}`;
+  return /auto_diary|diary|summary|交接|日记|总结|conversation_message/i.test(meta);
+}
+
+function filterUnsupportedRecallMemories(memories: MemoryApiRecord[], query: string, rawQuery: string): MemoryApiRecord[] {
+  const needles = queryNeedles(`${rawQuery} ${query}`);
+  if (needles.length === 0) return BROAD_TIME_RECALL_PATTERN.test(rawQuery) ? memories.filter(isTimeSummaryCandidate) : memories;
+
+  const supported = memories.filter((memory) => hasSupportNeedle(memory, needles));
+  if (supported.length > 0) return supported;
+
+  if (BROAD_TIME_RECALL_PATTERN.test(rawQuery)) return memories.filter(isTimeSummaryCandidate);
+  return [];
 }
 
 export function analyzeRecallNeed(prompt: string): { shouldRecall: boolean; score: number; reasons: string[]; query: string } {
@@ -171,13 +219,15 @@ export async function buildRecallContext(
     topK: getRecallTopK(env, input.topK),
     includeMessages: true
   });
+  const supportedMemories = filterUnsupportedRecallMemories(memories, searchQuery, analysis.query);
+  const recall = formatRecallBlock(supportedMemories, searchQuery);
 
   return {
-    should_recall: memories.length > 0,
+    should_recall: supportedMemories.length > 0 && Boolean(recall),
     score: analysis.score,
     reasons: analysis.reasons,
     query: searchQuery,
-    memories,
-    recall: formatRecallBlock(memories, searchQuery)
+    memories: supportedMemories,
+    recall
   };
 }
