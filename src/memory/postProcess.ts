@@ -185,9 +185,9 @@ function rerankByQuestionIntent(query: string, rawQuery: string, memories: Memor
   });
 }
 
-function preferredLead(kind: string, query: string, memories: MemoryApiRecord[]): MemoryApiRecord | undefined {
+function preferredLead(kind: string, memories: MemoryApiRecord[]): MemoryApiRecord | undefined {
   if (kind === "time") return memories.find(isTimelineDay);
-  if (kind === "fact") return memories.find((memory) => isMilestone(memory) && directHit(memory, query));
+  if (kind === "fact") return memories.find(isMilestone);
   return undefined;
 }
 
@@ -207,7 +207,7 @@ function keepPreferredLead(input: {
   filtered: MemoryApiRecord[];
   maxOutput: number;
 }): MemoryApiRecord[] {
-  const lead = preferredLead(input.kind, input.query, input.candidates);
+  const lead = preferredLead(input.kind, input.candidates);
   if (!lead) return input.filtered.slice(0, input.maxOutput);
   if (input.kind === "fact") return focusedFactResult(lead, input.query, input.filtered, input.maxOutput);
   if (input.filtered.some((memory) => memory.id === lead.id)) return input.filtered.slice(0, input.maxOutput);
