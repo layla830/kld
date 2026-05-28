@@ -3,6 +3,7 @@ import { requireScope } from "../auth/scopes";
 import { getOrCreateConversation } from "../db/conversations";
 import {
   createMemory,
+  ensureMemoryVectorId,
   getMemoryById,
   listMemories,
   softDeleteMemory,
@@ -267,13 +268,16 @@ async function handlePatchMemory(
 
   if (!updated) return openAiError("Memory not found", 404);
 
+  const embeddable = updated.status === "active" ? await ensureMemoryVectorId(env.DB, { namespace, id }) : updated;
+  if (!embeddable) return openAiError("Memory not found", 404);
+
   ctx.waitUntil(
-    (updated.status === "active" ? upsertMemoryEmbedding(env, updated) : deleteMemoryEmbedding(env, updated)).catch((error) => {
+    (embeddable.status === "active" ? upsertMemoryEmbedding(env, embeddable) : deleteMemoryEmbedding(env, embeddable)).catch((error) => {
       console.error("failed to sync memory embedding", error);
     })
   );
 
-  return json({ data: cleanMemoryForResponse(toMemoryApiRecord(updated)) });
+  return json({ data: cleanMemoryForResponse(toMemoryApiRecord(embeddable)) });
 }
 
 async function handleDeleteMemory(
