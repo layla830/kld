@@ -190,6 +190,15 @@ function preferredLead(kind: string, query: string, memories: MemoryApiRecord[])
   return undefined;
 }
 
+function focusedFactResult(lead: MemoryApiRecord, query: string, filtered: MemoryApiRecord[], maxOutput: number): MemoryApiRecord[] {
+  const rest = filtered.filter((memory) => {
+    if (memory.id === lead.id) return false;
+    if (isMilestone(memory) && directHit(memory, query)) return true;
+    return isQuote(memory) && directHit(memory, query);
+  });
+  return [lead, ...rest].slice(0, maxOutput);
+}
+
 function keepPreferredLead(input: {
   kind: string;
   query: string;
@@ -198,7 +207,9 @@ function keepPreferredLead(input: {
   maxOutput: number;
 }): MemoryApiRecord[] {
   const lead = preferredLead(input.kind, input.query, input.candidates);
-  if (!lead || input.filtered.some((memory) => memory.id === lead.id)) return input.filtered.slice(0, input.maxOutput);
+  if (!lead) return input.filtered.slice(0, input.maxOutput);
+  if (input.kind === "fact") return focusedFactResult(lead, input.query, input.filtered, input.maxOutput);
+  if (input.filtered.some((memory) => memory.id === lead.id)) return input.filtered.slice(0, input.maxOutput);
   return [lead, ...input.filtered.filter((memory) => memory.id !== lead.id)].slice(0, input.maxOutput);
 }
 
