@@ -11,8 +11,8 @@ const ANCHORED_QUERY_GROUPS = [
 ];
 
 const UTTERANCE_QUERY_PATTERNS = [/原话|怎么说|说什么|会说|说过什么|表达|口头禅|称呼|叫/];
-const FACT_QUERY_PATTERNS = [/是什么|哪个|哪种|喜欢什么|讨厌什么|设定|偏好|雷点|底线/];
-const TIME_QUERY_PATTERNS = [/什么时候|哪天|多久|第几次|上次|昨天|前天|那天|当时|日期|时间/];
+const FACT_QUERY_PATTERNS = [/是什么|哪个|哪种|喜欢什么|讨厌什么|设定|偏好|雷点|底线|怎么来的|由来/];
+const TIME_QUERY_PATTERNS = [/什么时候|哪天|多久|第几次|上次|昨天|前天|那天|那次|当时|日期|时间|发生了什么|发生什么|怎么聊的|怎么聊|聊了什么/];
 const SITUATIONAL_UTTERANCE_PATTERNS = [/待会|现在|公司|回消息|自己玩|洗澡|回来|找你|睡觉|睡前|醒的时候|摸鱼/];
 const STYLIZED_UTTERANCE_PATTERN = /[……~～^_^]|[，,][^。！？!?]{0,10}(想你|喜欢|爱你)|(想你|喜欢|爱你)[^。！？!?]{0,10}[，,]/;
 
@@ -87,6 +87,22 @@ function isShortMemory(memory: MemoryApiRecord): boolean {
   return stripQueryNoise(memory.content).length <= 80;
 }
 
+function typeTags(memory: MemoryApiRecord): string {
+  return `${memory.type} ${memory.tags.join(" ")}`;
+}
+
+function isHandoffMemory(memory: MemoryApiRecord): boolean {
+  return /handoff|交接/i.test(typeTags(memory));
+}
+
+function asksForHandoff(query: string): boolean {
+  return /handoff|交接/i.test(query);
+}
+
+function isTimelineMemory(memory: MemoryApiRecord): boolean {
+  return /timeline|timeline_day|quote|date:\d{4}-\d{2}-\d{2}/i.test(typeTags(memory));
+}
+
 function isLongNarrative(memory: MemoryApiRecord): boolean {
   const tags = memory.tags.join(" ");
   return memory.content.length > 180 || /diary|summary|交接|日记|总结|legacy:vps/i.test(`${memory.type} ${tags}`);
@@ -98,10 +114,6 @@ function intentKind(rawQuery: string, query: string): "utterance" | "fact" | "ti
   if (TIME_QUERY_PATTERNS.some((pattern) => pattern.test(combined))) return "time";
   if (FACT_QUERY_PATTERNS.some((pattern) => pattern.test(combined))) return "fact";
   return "general";
-}
-
-function typeTags(memory: MemoryApiRecord): string {
-  return `${memory.type} ${memory.tags.join(" ")}`;
 }
 
 function directHit(memory: MemoryApiRecord, query: string): boolean {
@@ -130,7 +142,11 @@ function questionIntentScore(memory: MemoryApiRecord, input: { query: string; ra
 
   const meta = typeTags(memory);
   const contentLength = stripQueryNoise(memory.content).length;
+  const combinedQuery = `${input.rawQuery} ${input.query}`;
   let score = directHit(memory, input.query) ? 0.8 : -0.8;
+
+  if (isTimelineMemory(memory)) score += 0.35;
+  if (isHandoffMemory(memory) && !asksForHandoff(combinedQuery)) score -= 1.4;
 
   if (kind === "utterance") {
     if (/quote|message|留言|语录|read/i.test(meta)) score += 0.55;
@@ -142,14 +158,16 @@ function questionIntentScore(memory: MemoryApiRecord, input: { query: string; ra
   }
 
   if (kind === "fact") {
-    if (/note|fact|profile|preference|设定|偏好/i.test(meta)) score += 0.6;
+    if (/milestone|note|fact|profile|preference|设定|偏好|timeline/i.test(meta)) score += 0.6;
+    if (/quote/i.test(meta)) score += 0.25;
     if (isShortMemory(memory)) score += 0.35;
     if (isLongNarrative(memory)) score -= 0.35;
   }
 
   if (kind === "time") {
-    if (/diary|timeline|日记|交接/i.test(meta)) score += 0.45;
-    if (/\d{4}|\d{1,2}月\d{1,2}日|昨天|前天|那天|当时/.test(memory.content)) score += 0.45;
+    if (/timeline_day|timeline|quote|diary|日记/i.test(meta)) score += 0.85;
+    if (/交接|handoff/i.test(meta) && !asksForHandoff(combinedQuery)) score -= 1.2;
+    if (/\d{4}|\d{1,2}月\d{1,2}日|昨天|前天|那天|那次|当时/.test(memory.content) || /date:\d{4}-\d{2}-\d{2}/.test(meta)) score += 0.55;
   }
 
   return score - input.index * 0.001;
