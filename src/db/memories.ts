@@ -136,6 +136,21 @@ export async function getMemoryById(
   return record ?? null;
 }
 
+export async function ensureMemoryVectorId(
+  db: D1Database,
+  input: { namespace: string; id: string }
+): Promise<MemoryRecord | null> {
+  const existing = await getMemoryById(db, input);
+  if (!existing || existing.vector_id) return existing;
+
+  await db
+    .prepare("UPDATE memories SET vector_id = ?, updated_at = ? WHERE namespace = ? AND id = ? AND (vector_id IS NULL OR vector_id = '')")
+    .bind(buildVectorId(existing.id), nowIso(), input.namespace, input.id)
+    .run();
+
+  return getMemoryById(db, input);
+}
+
 export async function fetchMemoriesByIds(
   db: D1Database,
   input: { namespace: string; ids: string[] }
