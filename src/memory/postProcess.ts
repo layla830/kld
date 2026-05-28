@@ -92,11 +92,17 @@ function typeTags(memory: MemoryApiRecord): string {
 }
 
 function isHandoffMemory(memory: MemoryApiRecord): boolean {
-  return /handoff|交接/i.test(typeTags(memory));
+  return /handoff|交接/i.test(`${typeTags(memory)} ${memory.content.slice(0, 80)}`);
 }
 
 function asksForHandoff(query: string): boolean {
   return /handoff|交接/i.test(query);
+}
+
+function removeIncidentalHandoff(query: string, memories: MemoryApiRecord[]): MemoryApiRecord[] {
+  if (asksForHandoff(query)) return memories;
+  const nonHandoff = memories.filter((memory) => !isHandoffMemory(memory));
+  return nonHandoff.length > 0 ? nonHandoff : memories;
 }
 
 function isTimelineMemory(memory: MemoryApiRecord): boolean {
@@ -196,6 +202,7 @@ export async function postProcessMemorySearchResults(
   const rawQuery = input.rawQuery || query;
   const supportedMatches = preferSupportedMatches(query, input.memories);
   const rerankedMatches = rerankByQuestionIntent(query, rawQuery, supportedMatches);
-  const modelFilteredMatches = await filterAndCompressMemories(env, { query: rawQuery, memories: rerankedMatches });
+  const recallCandidates = removeIncidentalHandoff(rawQuery, rerankedMatches);
+  const modelFilteredMatches = await filterAndCompressMemories(env, { query: rawQuery, memories: recallCandidates });
   return modelFilteredMatches.slice(0, maxOutput);
 }
