@@ -112,6 +112,18 @@ function isTimeline(memory: MemoryApiRecord): boolean {
   return /timeline|timeline_day|quote|date:\d{4}-\d{2}-\d{2}/i.test(meta(memory));
 }
 
+function isTimelineDay(memory: MemoryApiRecord): boolean {
+  return /timeline_day|day_summary/i.test(meta(memory));
+}
+
+function isQuote(memory: MemoryApiRecord): boolean {
+  return /quote/i.test(meta(memory));
+}
+
+function isMilestone(memory: MemoryApiRecord): boolean {
+  return /milestone/i.test(meta(memory));
+}
+
 function isLongNarrative(memory: MemoryApiRecord): boolean {
   return memory.content.length > 180 || /diary|summary|交接|日记|总结|legacy:vps/i.test(meta(memory));
 }
@@ -138,18 +150,23 @@ function scoreMemory(memory: MemoryApiRecord, input: { query: string; rawQuery: 
   if (isHandoff(memory) && !asksForHandoff(combinedQuery)) score -= 2.5;
 
   if (input.kind === "utterance") {
-    if (/quote|message|留言|语录/i.test(info)) score += 0.8;
+    if (isQuote(memory) || /message|留言|语录/i.test(info)) score += 0.8;
     score += utteranceShapeScore(memory);
     if (isLongNarrative(memory)) score -= 0.8;
   }
 
   if (input.kind === "fact") {
-    if (/milestone|fact|profile|preference|设定|偏好|timeline|quote/i.test(info)) score += 0.7;
-    if (isLongNarrative(memory)) score -= 0.4;
+    if (isMilestone(memory)) score += 1.1;
+    if (isQuote(memory) && directHit(memory, input.query)) score += 0.8;
+    if (/fact|profile|preference|设定|偏好/i.test(info)) score += 0.6;
+    if (isTimelineDay(memory)) score += 0.25;
+    if (isLongNarrative(memory)) score -= 0.75;
   }
 
   if (input.kind === "time") {
-    if (/timeline_day|timeline|quote|diary|日记/i.test(info)) score += 0.9;
+    if (isTimelineDay(memory)) score += 1.5;
+    else if (isTimeline(memory)) score += 0.8;
+    if (/diary|日记/i.test(info)) score -= 0.35;
     if (/date:\d{4}-\d{2}-\d{2}|\d{1,2}月\d{1,2}日|那天|那次|当时/.test(`${info} ${memory.content}`)) score += 0.5;
   }
 
