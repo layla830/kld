@@ -74,8 +74,29 @@ function getRecallTopK(env: Env, requested?: number): number {
   return Number.isFinite(value) ? clamp(Math.floor(value), 1, MAX_RECALL_TOP_K) : DEFAULT_RECALL_TOP_K;
 }
 
+function dateNeedles(query: string): string[] {
+  const needles = new Set<string>();
+  const year = new Date(Date.now() + 8 * 60 * 60 * 1000).getUTCFullYear();
+  for (const match of query.matchAll(/\b(20\d{2})[.\-/年](\d{1,2})[.\-/月](\d{1,2})日?/g)) {
+    const [, y, m, d] = match;
+    const iso = `${y}-${m.padStart(2, "0")}-${d.padStart(2, "0")}`;
+    needles.add(`${Number(m)}月${Number(d)}日`);
+    needles.add(iso);
+    needles.add(`date:${iso}`);
+  }
+  for (const match of query.matchAll(/(?:^|[^\d])(\d{1,2})月(\d{1,2})日/g)) {
+    const [, m, d] = match;
+    const iso = `${year}-${m.padStart(2, "0")}-${d.padStart(2, "0")}`;
+    needles.add(`${Number(m)}月${Number(d)}日`);
+    needles.add(iso);
+    needles.add(`date:${iso}`);
+  }
+  return [...needles];
+}
+
 function queryNeedles(query: string): string[] {
   const needles = new Set<string>();
+  for (const needle of dateNeedles(query)) needles.add(needle.toLowerCase());
   for (const match of normalizeQueryForMemorySearch(query).match(/[a-z][a-z0-9_+-]{2,}|[\u4e00-\u9fff]{2,}/gi) ?? []) {
     const term = match.toLowerCase();
     if (RECALL_SUPPORT_STOPWORDS.has(term)) continue;
