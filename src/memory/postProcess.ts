@@ -124,7 +124,7 @@ async function filterWithTimeout(env: Env, query: string, memories: MemoryApiRec
 }
 
 function leadFor(kind: IntentKind, memories: MemoryApiRecord[]): MemoryApiRecord | undefined {
-  if (kind === "time") return memories.find(isTimelineDay);
+  if (kind === "time") return memories.find(isTimelineDay) || memories.find(isQuote);
   if (kind === "fact") return memories.find(isMilestone);
   if (kind === "utterance") return memories.find(isQuote);
   return undefined;
@@ -134,7 +134,7 @@ function keepLead(kind: IntentKind, query: string, candidates: MemoryApiRecord[]
   const lead = leadFor(kind, candidates);
   if (!lead) return filtered.slice(0, maxOutput);
 
-  if (kind === "fact" || kind === "utterance") {
+  if (kind === "fact" || kind === "utterance" || isQuote(lead)) {
     const focused = filtered.filter((memory) => memory.id !== lead.id && ((isMilestone(memory) || isQuote(memory)) && directHit(memory, query)));
     return [lead, ...focused].slice(0, maxOutput);
   }
