@@ -1,6 +1,7 @@
+import { searchMemoriesByText } from "../db/memories";
 import type { Env, MemoryApiRecord } from "../types";
 import { chineseNgrams, normalizeQueryForMemorySearch } from "./query";
-import { searchMemories } from "./search";
+import { searchMemories, toMemoryApiRecord } from "./search";
 
 const MAX_PROMPT_CHARS = 1_200;
 const MAX_MEMORY_CHARS = 120;
@@ -140,6 +141,37 @@ function isTimeSummaryCandidate(memory: MemoryApiRecord): boolean {
   return /auto_diary|timeline|quote|diary|summary|日记|总结|conversation_message|date:\d{4}-\d{2}-\d{2}/i.test(meta);
 }
 
+function isTimelineDay(memory: MemoryApiRecord): boolean {
+  return /timeline_day|day_summary/i.test(`${memory.type} ${memory.tags.join(" ")}`);
+}
+
+function mergeUniqueMemories(primary: MemoryApiRecord[], secondary: MemoryApiRecord[]): MemoryApiRecord[] {
+  const seen = new Set<string>();
+  const merged: MemoryApiRecord[] = [];
+  for (const memory of [...primary, ...secondary]) {
+    if (seen.has(memory.id)) continue;
+    seen.add(memory.id);
+    merged.push(memory);
+  }
+  return merged;
+}
+
+async function addDatedTimelineCandidates(
+  env: Env,
+  input: { namespace: string; rawQuery: string; memories: MemoryApiRecord[]; topK: number }
+): Promise<MemoryApiRecord[]> {
+  const needles = dateNeedles(input.rawQuery);
+  if (needles.length === 0 || input.memories.some(isTimelineDay)) return input.memories;
+
+  const rows = await searchMemoriesByText(env.DB, {
+    namespace: input.namespace,
+    query: needles.join(" "),
+    limit: Math.max(input.topK * 4, 12)
+  });
+  const dated = rows.map((record) => toMemoryApiRecord(record, record.score)).filter(isTimelineDay);
+  return dated.length > 0 ? mergeUniqueMemories(dated, input.memories) : input.memories;
+}
+
 function filterUnsupportedRecallMemories(memories: MemoryApiRecord[], searchQuery: string, rawQuery: string): MemoryApiRecord[] {
   if (BROAD_TIME_QUERY_RE.test(rawQuery)) return memories.filter(isTimeSummaryCandidate);
 
@@ -188,15 +220,22 @@ export async function buildRecallContext(
     return { should_recall: false, score: analysis.score, reasons: analysis.reasons, query: analysis.query, memories: [], recall: "" };
   }
 
+  const topK = getRecallTopK(env, input.topK);
   const searchQuery = normalizeQueryForMemorySearch(analysis.query);
   const memories = await searchMemories(env, {
     namespace: input.namespace,
     query: searchQuery,
     rawQuery: analysis.query,
-    topK: getRecallTopK(env, input.topK),
+    topK,
     includeMessages: true
   });
-  const supportedMemories = filterUnsupportedRecallMemories(memories, searchQuery, analysis.query);
+  const withDatedCandidates = await addDatedTimelineCandidates(env, {
+    namespace: input.namespace,
+    rawQuery: analysis.query,
+    memories,
+    topK
+  });
+  const supportedMemories = filterUnsupportedRecallMemories(withDatedCandidates, searchQuery, analysis.query);
   const recall = formatRecallBlock(supportedMemories, searchQuery);
 
   return {
