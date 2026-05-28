@@ -10,11 +10,10 @@ const ANCHORED_QUERY_GROUPS = [
   }
 ];
 
-const UTTERANCE_QUERY_PATTERNS = [/原话|怎么说|说什么|会说|说过什么|表达|口头禅|称呼|叫/];
-const FACT_QUERY_PATTERNS = [/是什么|哪个|哪种|喜欢什么|讨厌什么|设定|偏好|雷点|底线|怎么来的|由来/];
-const TIME_QUERY_PATTERNS = [/什么时候|哪天|多久|第几次|上次|昨天|前天|那天|那次|当时|日期|时间|发生了什么|发生什么|怎么聊的|怎么聊|聊了什么/];
-const SITUATIONAL_UTTERANCE_PATTERNS = [/待会|现在|公司|回消息|自己玩|洗澡|回来|找你|睡觉|睡前|醒的时候|摸鱼/];
-const STYLIZED_UTTERANCE_PATTERN = /[……~～^_^]|[，,][^。！？!?]{0,10}(想你|喜欢|爱你)|(想你|喜欢|爱你)[^。！？!?]{0,10}[，,]/;
+const UTTERANCE_RE = /原话|怎么说|说什么|说过什么|表达|口头禅|称呼|叫/;
+const FACT_RE = /是什么|哪个|哪种|喜欢什么|讨厌什么|设定|偏好|雷点|底线|怎么来的|由来/;
+const TIME_RE = /什么时候|哪天|多久|第几次|上次|昨天|前天|那天|那次|当时|日期|时间|发生了什么|发生什么|怎么聊|聊了什么/;
+const SHORT_UTTERANCE_NOISE_RE = /待会|现在|公司|回消息|自己玩|洗澡|回来|找你|睡觉|睡前|醒的时候|摸鱼/;
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
@@ -83,43 +82,38 @@ function preferSupportedMatches(query: string, memories: MemoryApiRecord[]): Mem
   return anchoredQueryMatches(query, memories) || exactQueryMatches(query, memories) || memories;
 }
 
-function isShortMemory(memory: MemoryApiRecord): boolean {
-  return stripQueryNoise(memory.content).length <= 80;
-}
-
-function typeTags(memory: MemoryApiRecord): string {
-  return `${memory.type} ${memory.tags.join(" ")}`;
-}
-
-function isHandoffMemory(memory: MemoryApiRecord): boolean {
-  return /handoff|交接/i.test(`${typeTags(memory)} ${memory.content.slice(0, 80)}`);
+function meta(memory: MemoryApiRecord): string {
+  return `${memory.type} ${memory.tags.join(" ")} ${memory.source || ""}`;
 }
 
 function asksForHandoff(query: string): boolean {
   return /handoff|交接/i.test(query);
 }
 
+function isHandoff(memory: MemoryApiRecord): boolean {
+  return /handoff|交接/i.test(`${meta(memory)} ${memory.content.slice(0, 80)}`);
+}
+
 function removeIncidentalHandoff(query: string, memories: MemoryApiRecord[]): MemoryApiRecord[] {
   if (asksForHandoff(query)) return memories;
-  const nonHandoff = memories.filter((memory) => !isHandoffMemory(memory));
-  return nonHandoff.length > 0 ? nonHandoff : memories;
-}
-
-function isTimelineMemory(memory: MemoryApiRecord): boolean {
-  return /timeline|timeline_day|quote|date:\d{4}-\d{2}-\d{2}/i.test(typeTags(memory));
-}
-
-function isLongNarrative(memory: MemoryApiRecord): boolean {
-  const tags = memory.tags.join(" ");
-  return memory.content.length > 180 || /diary|summary|交接|日记|总结|legacy:vps/i.test(`${memory.type} ${tags}`);
+  const kept = memories.filter((memory) => !isHandoff(memory));
+  return kept.length > 0 ? kept : memories;
 }
 
 function intentKind(rawQuery: string, query: string): "utterance" | "fact" | "time" | "general" {
   const combined = `${rawQuery} ${query}`;
-  if (UTTERANCE_QUERY_PATTERNS.some((pattern) => pattern.test(combined))) return "utterance";
-  if (TIME_QUERY_PATTERNS.some((pattern) => pattern.test(combined))) return "time";
-  if (FACT_QUERY_PATTERNS.some((pattern) => pattern.test(combined))) return "fact";
+  if (UTTERANCE_RE.test(combined)) return "utterance";
+  if (TIME_RE.test(combined)) return "time";
+  if (FACT_RE.test(combined)) return "fact";
   return "general";
+}
+
+function isTimeline(memory: MemoryApiRecord): boolean {
+  return /timeline|timeline_day|quote|date:\d{4}-\d{2}-\d{2}/i.test(meta(memory));
+}
+
+function isLongNarrative(memory: MemoryApiRecord): boolean {
+  return memory.content.length > 180 || /diary|summary|交接|日记|总结|legacy:vps/i.test(meta(memory));
 }
 
 function directHit(memory: MemoryApiRecord, query: string): boolean {
@@ -128,52 +122,35 @@ function directHit(memory: MemoryApiRecord, query: string): boolean {
 }
 
 function utteranceShapeScore(memory: MemoryApiRecord): number {
-  const content = memory.content.trim();
-  const compactLength = stripQueryNoise(content).length;
-  let score = 0;
-
-  if (compactLength <= 20) score += 1.7;
-  else if (compactLength <= 36) score += 1.2;
-  else if (compactLength <= 60) score += 0.45;
-  else score -= 0.5;
-
-  if (STYLIZED_UTTERANCE_PATTERN.test(content)) score += 0.7;
-  if (SITUATIONAL_UTTERANCE_PATTERNS.some((pattern) => pattern.test(content))) score -= 0.9;
-  return score;
+  const length = stripQueryNoise(memory.content).length;
+  if (SHORT_UTTERANCE_NOISE_RE.test(memory.content)) return -0.7;
+  if (length <= 20) return 1.2;
+  if (length <= 60) return 0.4;
+  return -0.4;
 }
 
-function questionIntentScore(memory: MemoryApiRecord, input: { query: string; rawQuery: string; index: number }): number {
-  const kind = intentKind(input.rawQuery, input.query);
-  if (kind === "general") return 0;
-
-  const meta = typeTags(memory);
-  const contentLength = stripQueryNoise(memory.content).length;
+function scoreMemory(memory: MemoryApiRecord, input: { query: string; rawQuery: string; kind: string; index: number }): number {
+  const info = meta(memory);
   const combinedQuery = `${input.rawQuery} ${input.query}`;
-  let score = directHit(memory, input.query) ? 0.8 : -0.8;
+  let score = directHit(memory, input.query) ? 0.8 : -0.4;
 
-  if (isTimelineMemory(memory)) score += 0.35;
-  if (isHandoffMemory(memory) && !asksForHandoff(combinedQuery)) score -= 1.4;
+  if (isTimeline(memory)) score += 0.6;
+  if (isHandoff(memory) && !asksForHandoff(combinedQuery)) score -= 2.5;
 
-  if (kind === "utterance") {
-    if (/quote|message|留言|语录|read/i.test(meta)) score += 0.55;
-    if (isShortMemory(memory)) score += 0.35;
+  if (input.kind === "utterance") {
+    if (/quote|message|留言|语录/i.test(info)) score += 0.8;
     score += utteranceShapeScore(memory);
-    score += clamp((80 - contentLength) / 80, 0, 1) * 0.25;
-    if (/diary|日记|summary|总结|交接/i.test(meta)) score -= 0.8;
-    if (isLongNarrative(memory)) score -= 0.7;
+    if (isLongNarrative(memory)) score -= 0.8;
   }
 
-  if (kind === "fact") {
-    if (/milestone|note|fact|profile|preference|设定|偏好|timeline/i.test(meta)) score += 0.6;
-    if (/quote/i.test(meta)) score += 0.25;
-    if (isShortMemory(memory)) score += 0.35;
-    if (isLongNarrative(memory)) score -= 0.35;
+  if (input.kind === "fact") {
+    if (/milestone|fact|profile|preference|设定|偏好|timeline|quote/i.test(info)) score += 0.7;
+    if (isLongNarrative(memory)) score -= 0.4;
   }
 
-  if (kind === "time") {
-    if (/timeline_day|timeline|quote|diary|日记/i.test(meta)) score += 0.85;
-    if (/交接|handoff/i.test(meta) && !asksForHandoff(combinedQuery)) score -= 1.2;
-    if (/\d{4}|\d{1,2}月\d{1,2}日|昨天|前天|那天|那次|当时/.test(memory.content) || /date:\d{4}-\d{2}-\d{2}/.test(meta)) score += 0.55;
+  if (input.kind === "time") {
+    if (/timeline_day|timeline|quote|diary|日记/i.test(info)) score += 0.9;
+    if (/date:\d{4}-\d{2}-\d{2}|\d{1,2}月\d{1,2}日|那天|那次|当时/.test(`${info} ${memory.content}`)) score += 0.5;
   }
 
   return score - input.index * 0.001;
@@ -186,8 +163,7 @@ function rerankByQuestionIntent(query: string, rawQuery: string, memories: Memor
   return [...memories].sort((a, b) => {
     const aIndex = memories.indexOf(a);
     const bIndex = memories.indexOf(b);
-    const delta = questionIntentScore(b, { query, rawQuery, index: bIndex }) - questionIntentScore(a, { query, rawQuery, index: aIndex });
-    return delta || aIndex - bIndex;
+    return scoreMemory(b, { query, rawQuery, kind, index: bIndex }) - scoreMemory(a, { query, rawQuery, kind, index: aIndex }) || aIndex - bIndex;
   });
 }
 
