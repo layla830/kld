@@ -184,6 +184,24 @@ function rerankByQuestionIntent(query: string, rawQuery: string, memories: Memor
   });
 }
 
+function preferredLead(kind: string, query: string, memories: MemoryApiRecord[]): MemoryApiRecord | undefined {
+  if (kind === "time") return memories.find(isTimelineDay);
+  if (kind === "fact") return memories.find((memory) => isMilestone(memory) && directHit(memory, query));
+  return undefined;
+}
+
+function keepPreferredLead(input: {
+  kind: string;
+  query: string;
+  candidates: MemoryApiRecord[];
+  filtered: MemoryApiRecord[];
+  maxOutput: number;
+}): MemoryApiRecord[] {
+  const lead = preferredLead(input.kind, input.query, input.candidates);
+  if (!lead || input.filtered.some((memory) => memory.id === lead.id)) return input.filtered.slice(0, input.maxOutput);
+  return [lead, ...input.filtered.filter((memory) => memory.id !== lead.id)].slice(0, input.maxOutput);
+}
+
 export async function postProcessMemorySearchResults(
   env: Env,
   input: { query: string; rawQuery?: string; memories: MemoryApiRecord[]; topK: number }
@@ -193,9 +211,10 @@ export async function postProcessMemorySearchResults(
   if (!query || input.memories.length === 0) return input.memories.slice(0, maxOutput);
 
   const rawQuery = input.rawQuery || query;
+  const kind = intentKind(rawQuery, query);
   const supportedMatches = preferSupportedMatches(query, input.memories);
   const rerankedMatches = rerankByQuestionIntent(query, rawQuery, supportedMatches);
   const recallCandidates = removeIncidentalHandoff(rawQuery, rerankedMatches);
   const modelFilteredMatches = await filterAndCompressMemories(env, { query: rawQuery, memories: recallCandidates });
-  return modelFilteredMatches.slice(0, maxOutput);
+  return keepPreferredLead({ kind, query, candidates: recallCandidates, filtered: modelFilteredMatches, maxOutput });
 }
