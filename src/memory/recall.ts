@@ -7,45 +7,22 @@ const MAX_MEMORY_CHARS = 120;
 const EXCERPT_RADIUS = 48;
 const DEFAULT_RECALL_TOP_K = 3;
 const MAX_RECALL_TOP_K = 5;
+const SHANGHAI_OFFSET_MS = 8 * 60 * 60 * 1000;
 
-const TIME_RANGE_RECALL_PATTERN = /上上周|上周|上个星期|上星期|上礼拜|上个礼拜|这周|本周|这个星期|这星期|这个礼拜|上个月|上月|这个月|本月/;
-const BROAD_TIME_RECALL_PATTERN = /(昨天|前天|今天|今晚|昨晚|上上周|上周|上个星期|上星期|上礼拜|上个礼拜|这周|本周|这个星期|这星期|这个礼拜|上个月|上月|这个月|本月).*(说了什么|聊了什么|在聊什么|弄什么|做什么|干什么|怎么样|发生了什么|发生什么|怎么聊)/;
+const TIME_WORD_RE = /昨天|前天|今天|今晚|昨晚|那天|那次|当时|上周|本周|这个月|本月|上个月|上月/;
+const DATE_RE = /\b(?:20\d{2}[.\-/年])?\d{1,2}[.\-/月]\d{1,2}日?/;
+const MEMORY_VERB_RE = /记得|忘了|想起来|回忆|印象|提过|说过|聊过|写过|存过|之前|上次|以前|过去|曾经/;
+const NATURAL_RECALL_RE = /怎么来的|由来|发生了什么|发生什么|怎么聊的|怎么聊|聊了什么/;
+const CONTEXT_HINT_RE = /她|他|我们|小柯|柯|绿卡|第四种|换窗|关系|称呼|名字|生日|纪念日|4\.5|4\.6|4\.7|4o|forge|codex|claude|cc|记忆库/i;
+const BROAD_TIME_QUERY_RE = new RegExp(`${TIME_WORD_RE.source}.*(说了什么|聊了什么|在聊什么|弄什么|做什么|干什么|怎么样|发生了什么|发生什么|怎么聊)`);
+const TRIVIAL_RE = /^\s*(hi|hello|hey|你好|嗨|在吗|嗯|哦|好|好的|行|可以|继续|谢谢|辛苦|yes|no|ok|okay|thanks|test|测试)\s*[。.!！?？]*\s*$/i;
 
-const EXPLICIT_RECALL_PATTERNS = [
-  /之前|上次|以前|过去|刚才|昨天|前天|那次|那天|当时|后来|曾经/,
-  TIME_RANGE_RECALL_PATTERN,
-  /记得|记住|忘了|想起来|回忆|印象|提过|说过|聊过|写过|存过/,
-  /怎么来的|由来|发生了什么|发生什么|怎么聊的|怎么聊|聊了什么/,
-  /之前.*(喜欢|讨厌|偏好|习惯|设定|雷点|底线|关系|称呼|名字|生日|纪念日)/,
-  /(喜欢|讨厌|偏好|习惯|设定|雷点|底线|关系|称呼|名字|生日|纪念日).*之前/,
-  /(上次|之前|刚才|昨天|前天|上周|本周|上个月|本月|那次|那天|当时).*(进度|状态|安排|计划|部署|服务器|记忆库|heartbeat|forge|codex|claude|cc)/,
-  /(进度|状态|安排|计划|部署|服务器|记忆库|heartbeat|forge|codex|claude|cc).*(上次|之前|刚才|昨天|前天|上周|本周|上个月|本月|那次|那天|当时)/,
-  /remember|recall|forgot|previous|before|last time|last week|last month|as we discussed|mentioned before/i,
-  /\b\d{4}[.\-/年]\d{1,2}([.\-/月]\d{1,2})?/,
-  /\b\d{1,2}月\d{1,2}日/
-];
-
-const CONTEXT_HINT_PATTERNS = [
-  /喜欢|讨厌|偏好|习惯|设定|雷点|底线|关系|称呼|名字|生日|纪念日/,
-  /进度|状态|安排|计划|部署|服务器|记忆库|heartbeat|forge|codex|claude|cc/,
-  /她|他|我们|小柯|柯|绿卡|第四种|换窗|4\.5|4\.6|4\.7|4o/,
-  /什么|哪|多久|第几次|怎么来|发生|怎么聊|where|when|what|how/i
-];
-
-const NO_RECALL_PATTERNS = [
-  /^\s*(hi|hello|hey|你好|嗨|在吗|嗯|哦|好|好的|行|可以|继续|谢谢|辛苦)\s*[。.!！?？]*\s*$/i,
-  /^\s*(yes|no|ok|okay|thanks|thank you)\s*[。.!！?？]*\s*$/i,
-  /^(ping|test|测试)$/i
-];
-
-const RECALL_SUPPORT_STOPWORDS = new Set([
-  "你", "我", "她", "他", "我们", "你们", "他们", "她们", "这个", "那个", "什么", "哪个", "哪里", "怎么", "为啥",
-  "是不是", "还有", "一下", "记得", "还记得", "之前", "上次", "以前", "过去", "刚才", "刚刚", "昨天", "前天",
-  "今天", "今晚", "昨晚", "那次", "那天", "当时", "后来", "曾经", "上上周", "上周", "上个星期", "上星期", "上礼拜", "上个礼拜",
-  "这周", "本周", "这个星期", "这星期", "这个礼拜", "上个月", "上月", "这个月", "本月", "说过", "聊过", "提过",
-  "说了", "聊了", "在聊", "说了什么", "聊了什么", "在聊什么", "弄什么", "做什么", "干什么", "怎么样", "怎么来的", "由来", "发生了什么", "发生什么", "怎么聊的", "怎么聊", "问题", "事情", "东西",
-  "正常", "聊天", "召回", "记忆", "回忆", "印象", "忘了", "想起来", "the", "and", "that", "what", "when", "where",
-  "how", "before", "previous", "remember", "recall", "forgot", "last", "time", "week", "month"
+const STOP_TERMS = new Set([
+  "你", "我", "她", "他", "我们", "你们", "他们", "这个", "那个", "什么", "哪个", "哪里", "怎么", "为啥",
+  "之前", "上次", "以前", "过去", "刚才", "昨天", "前天", "今天", "今晚", "昨晚", "那次", "那天", "当时",
+  "记得", "忘了", "想起来", "回忆", "印象", "说过", "聊过", "提过", "说了", "聊了", "发生", "发生了",
+  "怎么来的", "由来", "怎么聊", "怎么聊的", "问题", "事情", "东西", "正常", "聊天", "召回", "记忆",
+  "the", "and", "that", "what", "when", "where", "how", "before", "previous", "remember", "recall", "forgot", "last", "time"
 ]);
 
 const SENTENCE_BOUNDARIES = new Set(["。", "！", "？", "!", "?", "；", ";"]);
@@ -58,67 +35,67 @@ function normalizePrompt(prompt: string): string {
   return prompt.replace(/\s+/g, " ").trim().slice(0, MAX_PROMPT_CHARS);
 }
 
-function normalizeMemoryContent(memory: MemoryApiRecord): string {
-  return memory.content.replace(/\s+/g, " ").replace(/<\/?memories>/gi, "").trim();
-}
-
-function clip(value: string, limit = MAX_MEMORY_CHARS): string {
-  const text = value.replace(/\s+/g, " ").trim();
-  if (text.length <= limit) return text;
-  return `${text.slice(0, limit).trim()}...`;
-}
-
 function getRecallTopK(env: Env, requested?: number): number {
   const fallback = Number(env.MEMORY_RECALL_TOP_K || DEFAULT_RECALL_TOP_K);
   const value = requested || fallback;
   return Number.isFinite(value) ? clamp(Math.floor(value), 1, MAX_RECALL_TOP_K) : DEFAULT_RECALL_TOP_K;
 }
 
+function shanghaiYear(): number {
+  return new Date(Date.now() + SHANGHAI_OFFSET_MS).getUTCFullYear();
+}
+
 function dateNeedles(query: string): string[] {
   const needles = new Set<string>();
-  const year = new Date(Date.now() + 8 * 60 * 60 * 1000).getUTCFullYear();
+
   for (const match of query.matchAll(/\b(20\d{2})[.\-/年](\d{1,2})[.\-/月](\d{1,2})日?/g)) {
-    const [, y, m, d] = match;
-    const iso = `${y}-${m.padStart(2, "0")}-${d.padStart(2, "0")}`;
-    needles.add(`${Number(m)}月${Number(d)}日`);
+    const [, year, month, day] = match;
+    const iso = `${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`;
+    needles.add(`${Number(month)}月${Number(day)}日`);
     needles.add(iso);
     needles.add(`date:${iso}`);
   }
+
   for (const match of query.matchAll(/(?:^|[^\d])(\d{1,2})月(\d{1,2})日/g)) {
-    const [, m, d] = match;
-    const iso = `${year}-${m.padStart(2, "0")}-${d.padStart(2, "0")}`;
-    needles.add(`${Number(m)}月${Number(d)}日`);
+    const [, month, day] = match;
+    const iso = `${shanghaiYear()}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`;
+    needles.add(`${Number(month)}月${Number(day)}日`);
     needles.add(iso);
     needles.add(`date:${iso}`);
+  }
+
+  return [...needles];
+}
+
+function topicNeedles(query: string): string[] {
+  const needles = new Set<string>();
+  const normalized = normalizeQueryForMemorySearch(query);
+  for (const match of normalized.match(/[a-z][a-z0-9_+-]{2,}|[\u4e00-\u9fff]{2,}/gi) ?? []) {
+    const term = match.toLowerCase();
+    if (STOP_TERMS.has(term)) continue;
+    needles.add(term);
+    if (/^[\u4e00-\u9fff]+$/.test(term) && term.length > 2) {
+      for (const gram of chineseNgrams(term)) {
+        if (!STOP_TERMS.has(gram)) needles.add(gram);
+      }
+    }
   }
   return [...needles];
 }
 
-function queryNeedles(query: string): string[] {
-  const needles = new Set<string>();
-  for (const needle of dateNeedles(query)) needles.add(needle.toLowerCase());
-  for (const match of normalizeQueryForMemorySearch(query).match(/[a-z][a-z0-9_+-]{2,}|[\u4e00-\u9fff]{2,}/gi) ?? []) {
-    const term = match.toLowerCase();
-    if (RECALL_SUPPORT_STOPWORDS.has(term)) continue;
-    needles.add(term);
-    if (/^[\u4e00-\u9fff]+$/.test(term) && term.length > 2) {
-      for (const gram of chineseNgrams(term)) {
-        if (!RECALL_SUPPORT_STOPWORDS.has(gram)) needles.add(gram);
-      }
-    }
-  }
-  return [...needles].sort((a, b) => b.length - a.length).slice(0, 16);
+function supportNeedles(rawQuery: string, searchQuery: string): string[] {
+  return [...new Set([...dateNeedles(rawQuery), ...topicNeedles(`${rawQuery} ${searchQuery}`)])]
+    .sort((a, b) => b.length - a.length)
+    .slice(0, 16);
 }
 
-function excerptNeedles(query: string): string[] {
-  const needles = queryNeedles(query);
-  if (needles.length > 0) return needles;
+function normalizeMemoryContent(memory: MemoryApiRecord): string {
+  return memory.content.replace(/\s+/g, " ").replace(/<\/?memories>/gi, "").trim();
+}
 
-  const fallback = new Set<string>();
-  for (const match of normalizeQueryForMemorySearch(query).match(/[a-z][a-z0-9_+-]{2,}|[\u4e00-\u9fff]{2,}/gi) ?? []) {
-    fallback.add(match.toLowerCase());
-  }
-  return [...fallback].sort((a, b) => b.length - a.length).slice(0, 16);
+function clip(value: string, limit = MAX_MEMORY_CHARS): string {
+  const text = value.replace(/\s+/g, " ").trim();
+  return text.length <= limit ? text : `${text.slice(0, limit).trim()}...`;
 }
 
 function findExcerptStart(content: string, index: number): number {
@@ -142,15 +119,13 @@ function relevantExcerpt(memory: MemoryApiRecord, query: string): string {
   if (!content) return "";
 
   const lowerContent = content.toLowerCase();
-  for (const needle of excerptNeedles(query)) {
+  for (const needle of supportNeedles(query, query)) {
     const index = lowerContent.indexOf(needle.toLowerCase());
     if (index < 0) continue;
     const start = findExcerptStart(content, index);
     const end = findExcerptEnd(content, index, needle.length);
     const excerpt = content.slice(start, end).replace(/^\s*(?:\d+\.|[一二三四五六七八九十]+、)\s*/, "").trim();
-    const prefix = start > 0 ? "..." : "";
-    const suffix = end < content.length ? "..." : "";
-    return clip(prefix + excerpt + suffix);
+    return clip(`${start > 0 ? "..." : ""}${excerpt}${end < content.length ? "..." : ""}`);
   }
 
   return clip(content);
@@ -160,57 +135,35 @@ function supportHaystack(memory: MemoryApiRecord): string {
   return `${memory.content} ${memory.summary || ""} ${memory.tags.join(" ")} ${memory.type}`.toLowerCase();
 }
 
-function hasSupportNeedle(memory: MemoryApiRecord, needles: string[]): boolean {
-  const haystack = supportHaystack(memory);
-  return needles.some((needle) => haystack.includes(needle));
-}
-
 function isTimeSummaryCandidate(memory: MemoryApiRecord): boolean {
   const meta = `${memory.type} ${memory.tags.join(" ")} ${memory.source || ""}`;
   return /auto_diary|timeline|quote|diary|summary|日记|总结|conversation_message|date:\d{4}-\d{2}-\d{2}/i.test(meta);
 }
 
-function filterUnsupportedRecallMemories(memories: MemoryApiRecord[], query: string, rawQuery: string): MemoryApiRecord[] {
-  if (BROAD_TIME_RECALL_PATTERN.test(rawQuery)) return memories.filter(isTimeSummaryCandidate);
+function filterUnsupportedRecallMemories(memories: MemoryApiRecord[], searchQuery: string, rawQuery: string): MemoryApiRecord[] {
+  if (BROAD_TIME_QUERY_RE.test(rawQuery)) return memories.filter(isTimeSummaryCandidate);
 
-  const needles = queryNeedles(`${rawQuery} ${query}`);
+  const needles = supportNeedles(rawQuery, searchQuery);
   if (needles.length === 0) return memories;
 
-  const supported = memories.filter((memory) => hasSupportNeedle(memory, needles));
-  if (supported.length > 0) return supported;
-
-  return [];
+  const supported = memories.filter((memory) => {
+    const haystack = supportHaystack(memory);
+    return needles.some((needle) => haystack.includes(needle.toLowerCase()));
+  });
+  return supported.length > 0 ? supported : [];
 }
 
 export function analyzeRecallNeed(prompt: string): { shouldRecall: boolean; score: number; reasons: string[]; query: string } {
   const query = normalizePrompt(prompt);
   if (!query || query.length < 2) return { shouldRecall: false, score: 0, reasons: [], query };
-  if (NO_RECALL_PATTERNS.some((pattern) => pattern.test(query))) return { shouldRecall: false, score: 0, reasons: ["trivial"], query };
+  if (TRIVIAL_RE.test(query)) return { shouldRecall: false, score: 0, reasons: ["trivial"], query };
 
-  const reasons: string[] = [];
-  let score = 0;
+  const recallSignal = MEMORY_VERB_RE.test(query) || TIME_WORD_RE.test(query) || DATE_RE.test(query) || NATURAL_RECALL_RE.test(query);
+  const contextHint = CONTEXT_HINT_RE.test(query) || /什么|哪|多久|第几次|发生|怎么聊|where|when|what|how/i.test(query);
+  const score = (recallSignal ? 2 : 0) + (recallSignal && contextHint ? 1 : 0);
+  const reasons = [recallSignal ? "explicit_recall_signal" : "", recallSignal && contextHint ? "context_hint" : ""].filter(Boolean);
 
-  for (const pattern of EXPLICIT_RECALL_PATTERNS) {
-    if (!pattern.test(query)) continue;
-    score += 2;
-    reasons.push("explicit_recall_signal");
-  }
-
-  if (score > 0) {
-    for (const pattern of CONTEXT_HINT_PATTERNS) {
-      if (!pattern.test(query)) continue;
-      score += 1;
-      reasons.push("context_hint");
-      break;
-    }
-  }
-
-  return {
-    shouldRecall: score >= 2,
-    score,
-    reasons: [...new Set(reasons)],
-    query
-  };
+  return { shouldRecall: score >= 2, score, reasons: [...new Set(reasons)], query };
 }
 
 export function formatRecallBlock(memories: MemoryApiRecord[], query: string): string {
@@ -223,12 +176,7 @@ export function formatRecallBlock(memories: MemoryApiRecord[], query: string): s
   });
 
   if (lines.length === 0) return "";
-  return [
-    "<recall>",
-    "Relevant long-term memories. Use only if helpful; do not mention the memory system.",
-    ...lines,
-    "</recall>"
-  ].join("\n");
+  return ["<recall>", "Relevant long-term memories. Use only if helpful; do not mention the memory system.", ...lines, "</recall>"].join("\n");
 }
 
 export async function buildRecallContext(
