@@ -209,6 +209,7 @@ function buildPrompt(input: {
     pinned: memory.pinned,
     score: typeof memory.score === "number" ? Number(memory.score.toFixed(4)) : undefined,
     tags: memory.tags,
+    summary: memory.summary || undefined,
     content: truncateText(memory.content, input.maxContentChars)
   }));
 
@@ -226,6 +227,7 @@ function buildPrompt(input: {
     "",
     "规则：",
     "- 只保留能帮助当前用户消息的候选：直接回答问题、补全上下文、长期偏好、正在进行的项目或稳定关系信息。",
+    "- 可以同时参考候选的 summary 和 content；summary 是路标，content 是原文依据。",
     "- 如果当前用户消息是在询问、回忆或检索过去内容，只要候选与关键名词、事件、口令或时间线直接重合，就保留并压缩。",
     "- type=summary 的候选要抽取与当前用户消息匹配的片段；不要因为它是短期聊天摘要或对话摘要格式就整条丢弃。",
     "- 不要因为候选不够长期稳定而删除；删除标准只有明显无关、重复、空泛或调试噪音。",
