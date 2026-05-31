@@ -2,7 +2,10 @@ import { markMemoriesRecalled, searchMemoriesByText } from "../db/memories";
 import { searchMessagesForRecall } from "../db/messages";
 import type { Env, MemoryApiRecord, MemoryRecord, MessageRecord } from "../types";
 import { postProcessMemorySearchResults } from "./postProcess";
+import { toMemoryApiRecord } from "./mapper";
 import { searchVectorMemories, type ScoredMemoryRecord } from "./vectorStore";
+
+export { toMemoryApiRecord } from "./mapper";
 
 const STRONG_KEYWORD_SCORE = 0.54;
 const WEAK_KEYWORD_SCORE = 0.48;
@@ -60,88 +63,12 @@ const QUERY_NOISE_PATTERNS = [
 ];
 
 const LEADING_PRONOUN_PATTERN = /^(你们|我们|他们|她们|它们|你|我|她|他|它)+/;
-
-function parseJsonArray(value: string | null): string[] {
-  if (!value) return [];
-  try {
-    const parsed = JSON.parse(value) as unknown;
-    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === "string") : [];
-  } catch {
-    return [];
-  }
-}
-
-export function toMemoryApiRecord(record: MemoryRecord, score?: number): MemoryApiRecord {
-  return {
-    id: record.id,
-    namespace: record.namespace,
-    type: record.type,
-    content: record.content,
-    summary: record.summary,
-    importance: record.importance,
-    confidence: record.confidence,
-    status: record.status,
-    pinned: Boolean(record.pinned),
-    tags: parseJsonArray(record.tags),
-    source: record.source,
-    source_message_ids: parseJsonArray(record.source_message_ids),
-    vector_id: record.vector_id,
-    last_recalled_at: record.last_recalled_at,
-    recall_count: record.recall_count,
-    created_at: record.created_at,
-    updated_at: record.updated_at,
-    expires_at: record.expires_at,
-    ...(score === undefined ? {} : { score })
-  };
-}
-
-function messageToMemoryRecord(message: MessageRecord & { score: number }): ScoredMemoryRecord {
-  const role = message.role === "user" ? "她" : "他";
-  return {
-    id: `msg_${message.id}`,
-    namespace: message.namespace,
-    type: "conversation_message",
-    content: `${role}：${message.content}`,
-    summary: null,
-    importance: message.role === "user" ? 0.42 : 0.34,
-    confidence: 0.75,
-    status: "active",
-    pinned: 0,
-    tags: JSON.stringify(["raw_message", message.source || "chat"]),
-    source: message.source || "messages",
-    source_message_ids: JSON.stringify([message.id]),
-    vector_id: null,
-    last_recalled_at: null,
-    recall_count: 0,
-    created_at: message.created_at,
-    updated_at: message.created_at,
-    expires_at: null,
-    score: message.score,
-    keywordScore: message.score
-  };
-}
-
-function getTopK(env: Env, requested?: number): number {
-  const fallback = Number(env.MEMORY_TOP_K || 8);
-  const value = requested || fallback;
-  return Math.min(Math.max(value, 1), 50);
-}
-
-function getCandidateLimit(topK: number): number {
-  return Math.min(Math.max(topK * 5, topK), 80);
-}
-
-function recencyBoost(record: MemoryRecord): number {
-  const timestamp = Date.parse(record.updated_at || record.created_at || "");
-  if (!Number.isFinite(timestamp)) return 0;
-  const daysOld = Math.max(0, (Date.now() - timestamp) / 86_400_000);
-  if (daysOld <= 7) return 1;
-  if (daysOld <= 30) return 0.7;
-  if (daysOld <= 90) return 0.4;
-  return 0;
-}
+const SHANGHAI_OFFSET_MS = 8 * 60 * 60 * 1000;
 
 type TimeIntentMode = "none" | "hard_range" | "soft_recent" | "past_reference";
+type DateParts = { year: number; month: number; day: number };
+type DayPart = "morning" | "afternoon" | "evening";
+type HybridScoredMemoryRecord = ScoredMemoryRecord & { lexicalScore?: number; rankScore?: number; timeScore?: number };
 
 interface TimeIntent {
   mode: TimeIntentMode;
@@ -150,39 +77,20 @@ interface TimeIntent {
   before?: string;
 }
 
+interface SearchMemoriesInput {
+  namespace: string;
+  query: string;
+  rawQuery?: string;
+  types?: string[];
+  topK?: number;
+  includeMessages?: boolean;
+  recordRecall?: boolean;
+}
+
 const EMPTY_TIME_INTENT: TimeIntent = { mode: "none", terms: [] };
-const SHANGHAI_OFFSET_MS = 8 * 60 * 60 * 1000;
-
-type DateParts = { year: number; month: number; day: number };
-type DayPart = "morning" | "afternoon" | "evening";
-
-type HybridScoredMemoryRecord = ScoredMemoryRecord & { lexicalScore?: number; rankScore?: number; timeScore?: number };
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
-}
-
-function rankHybridRecord(record: HybridScoredMemoryRecord): number {
-  const vectorScore = record.vectorScore ?? 0;
-  const keywordScore = record.keywordScore ?? 0;
-  const lexicalScore = record.lexicalScore ?? 0;
-  const rankScore = record.rankScore ?? 0;
-  const timeScore = record.timeScore ?? 0;
-  const pinnedBoost = record.pinned ? 0.08 : 0;
-  return (
-    vectorScore * 0.42 +
-    keywordScore * 0.7 +
-    lexicalScore * 0.45 +
-    timeScore * 1.2 +
-    rankScore * 8 +
-    record.importance * 0.08 +
-    pinnedBoost +
-    recencyBoost(record) * 0.04
-  );
-}
-
-function hasStrongKeywordMatch(records: ScoredMemoryRecord[]): boolean {
-  return records.some((record) => (record.keywordScore ?? 0) >= STRONG_KEYWORD_SCORE);
 }
 
 function normalizeText(value: string): string {
@@ -320,9 +228,22 @@ function inTimeRange(timestamp: number, after?: string, before?: string): boolea
   return timestamp >= afterTime && timestamp < beforeTime;
 }
 
+function recencyBoost(record: MemoryRecord): number {
+  const timestamp = recordTimestamp(record);
+  if (!timestamp) return 0;
+  const daysOld = Math.max(0, (Date.now() - timestamp) / 86_400_000);
+  if (daysOld <= 7) return 1;
+  if (daysOld <= 30) return 0.7;
+  if (daysOld <= 90) return 0.4;
+  return 0;
+}
+
+function recordHaystack(record: MemoryRecord): string {
+  return normalizeText(`${record.content} ${record.summary || ""} ${record.tags || ""} ${record.type}`);
+}
+
 function timeIntentScore(record: MemoryRecord, intent: TimeIntent): number {
   if (intent.mode === "none") return 0;
-
   if (intent.mode === "soft_recent") return recencyBoost(record) * 0.75;
   if (intent.mode === "past_reference") return recencyBoost(record) * 0.25;
 
@@ -361,10 +282,6 @@ function extractStrongNeedles(query: string): string[] {
     }
   }
   return [...needles].filter((needle) => needle.length >= 2).slice(0, 24);
-}
-
-function recordHaystack(record: MemoryRecord): string {
-  return normalizeText(`${record.content} ${record.summary || ""} ${record.tags || ""} ${record.type}`);
 }
 
 function containsStrongNeedle(record: MemoryRecord, needles: string[]): boolean {
@@ -413,6 +330,29 @@ function lexicalScoreRecord(record: MemoryRecord, input: { query: string; expand
   return clamp(best + coverage * 0.22, 0, 1.1);
 }
 
+function rankHybridRecord(record: HybridScoredMemoryRecord): number {
+  const vectorScore = record.vectorScore ?? 0;
+  const keywordScore = record.keywordScore ?? 0;
+  const lexicalScore = record.lexicalScore ?? 0;
+  const rankScore = record.rankScore ?? 0;
+  const timeScore = record.timeScore ?? 0;
+  const pinnedBoost = record.pinned ? 0.08 : 0;
+  return (
+    vectorScore * 0.42 +
+    keywordScore * 0.7 +
+    lexicalScore * 0.45 +
+    timeScore * 1.2 +
+    rankScore * 8 +
+    record.importance * 0.08 +
+    pinnedBoost +
+    recencyBoost(record) * 0.04
+  );
+}
+
+function hasStrongKeywordMatch(records: ScoredMemoryRecord[]): boolean {
+  return records.some((record) => (record.keywordScore ?? 0) >= STRONG_KEYWORD_SCORE);
+}
+
 function isSupportedBySearchMode(record: HybridScoredMemoryRecord, input: { hasStrongKeyword: boolean; strongNeedles: string[] }): boolean {
   if (!input.hasStrongKeyword) return true;
   if ((record.lexicalScore ?? 0) >= 0.55) return true;
@@ -420,6 +360,46 @@ function isSupportedBySearchMode(record: HybridScoredMemoryRecord, input: { hasS
   if ((record.timeScore ?? 0) >= 0.55) return true;
   if (input.strongNeedles.length > 0 && containsStrongNeedle(record, input.strongNeedles)) return true;
   return (record.vectorScore ?? 0) >= VECTOR_ONLY_SCORE_WITH_STRONG_KEYWORDS;
+}
+
+function messageToMemoryRecord(message: MessageRecord & { score: number }): ScoredMemoryRecord {
+  const role = message.role === "user" ? "她" : "他";
+  return {
+    id: `msg_${message.id}`,
+    namespace: message.namespace,
+    type: "conversation_message",
+    content: `${role}：${message.content}`,
+    summary: null,
+    importance: message.role === "user" ? 0.42 : 0.34,
+    confidence: 0.75,
+    status: "active",
+    pinned: 0,
+    tags: JSON.stringify(["raw_message", message.source || "chat"]),
+    source: message.source || "messages",
+    source_message_ids: JSON.stringify([message.id]),
+    vector_id: null,
+    last_recalled_at: null,
+    recall_count: 0,
+    created_at: message.created_at,
+    updated_at: message.created_at,
+    expires_at: null,
+    score: message.score,
+    keywordScore: message.score
+  };
+}
+
+function getTopK(env: Env, requested?: number): number {
+  const fallback = Number(env.MEMORY_TOP_K || 8);
+  const value = requested || fallback;
+  return Math.min(Math.max(value, 1), 50);
+}
+
+function getCandidateLimit(topK: number): number {
+  return Math.min(Math.max(topK * 5, topK), 80);
+}
+
+function shouldRecordRecall(input: SearchMemoriesInput): boolean {
+  return input.recordRecall === true || (input.includeMessages === true && input.rawQuery !== undefined);
 }
 
 function mergeSearchResults(
@@ -468,10 +448,7 @@ function mergeSearchResults(
   return (filteredRecords.length > 0 ? filteredRecords : rankedRecords).slice(0, input.topK);
 }
 
-export async function searchMemories(
-  env: Env,
-  input: { namespace: string; query: string; rawQuery?: string; types?: string[]; topK?: number; includeMessages?: boolean }
-): Promise<MemoryApiRecord[]> {
+export async function searchMemories(env: Env, input: SearchMemoriesInput): Promise<MemoryApiRecord[]> {
   const topK = getTopK(env, input.topK);
   const candidateLimit = getCandidateLimit(topK);
   const rawQuery = input.rawQuery || input.query;
@@ -500,6 +477,10 @@ export async function searchMemories(
   const apiRecords = records.map((record) => toMemoryApiRecord(record, record.score));
   const processedRecords = await postProcessMemorySearchResults(env, { query: searchQuery, rawQuery, memories: apiRecords, topK });
 
-  await markMemoriesRecalled(env.DB, { namespace: input.namespace, ids: processedRecords.map((record) => record.id) });
+  if (shouldRecordRecall(input)) {
+    const memoryIds = processedRecords.map((record) => record.id).filter((id) => !id.startsWith("msg_"));
+    await markMemoriesRecalled(env.DB, { namespace: input.namespace, ids: memoryIds });
+  }
+
   return processedRecords;
 }
