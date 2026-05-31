@@ -82,6 +82,10 @@ function localDiaryMaxMessages(env: Env, value: unknown): number {
   return positiveInteger(value, fallback);
 }
 
+function autoDiaryEnabled(env: Env): boolean {
+  return env.AUTO_DIARY_ENABLED === "true";
+}
+
 export async function handleResetCcConnect(
   env: Env,
   profile: KeyProfile,
@@ -143,6 +147,19 @@ export async function handleGenerateCcConnectDiaryFromMessages(
   const conversationId = readString(body.conversation_id) || "cc-connect:local";
   const source = readString(body.source) || "cc-connect-vps";
   const messages = readLocalDiaryMessages(body.messages, { namespace, conversationId, source });
+
+  if (!autoDiaryEnabled(env)) {
+    return json({
+      data: {
+        skipped: true,
+        reason: "auto_diary_disabled",
+        namespace,
+        conversation_id: conversationId,
+        message_count: messages.length
+      }
+    });
+  }
+
   const minMessages = localDiaryMinMessages(env, body.min_messages);
   const maxMessages = localDiaryMaxMessages(env, body.max_messages);
 
