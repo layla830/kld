@@ -59,6 +59,10 @@ export default {
     }
 
     if (request.method === "POST" && url.pathname === "/v1/chat/completions") {
+      if (env.ENABLE_CHAT_GATEWAY !== "true") {
+        return openAiError("Chat gateway is disabled", 404);
+      }
+
       return handleChatCompletions(request, env, ctx);
     }
 

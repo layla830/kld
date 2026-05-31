@@ -10,6 +10,7 @@ binding = "AI"
 # Visible model knobs. These are intentionally in wrangler.toml so they show
 # up in Cloudflare Variables and can be changed without touching code.
 PUBLIC_MODEL_NAME = "companion"
+ENABLE_CHAT_GATEWAY = "false"
 CHAT_MODEL = "deepseek/deepseek-v4-pro"
 MEMORY_FILTER_PROVIDER = "openai-compatible"
 MEMORY_FILTER_MODEL = "deepseek/deepseek-v4-flash"
