@@ -156,12 +156,20 @@ function mergeUniqueMemories(primary: MemoryApiRecord[], secondary: MemoryApiRec
   return merged;
 }
 
+function hasMatchingTimelineDay(memories: MemoryApiRecord[], needles: string[]): boolean {
+  return memories.some((memory) => {
+    if (!isTimelineDay(memory)) return false;
+    const haystack = supportHaystack(memory);
+    return needles.some((needle) => haystack.includes(needle.toLowerCase()));
+  });
+}
+
 async function addDatedTimelineCandidates(
   env: Env,
   input: { namespace: string; rawQuery: string; memories: MemoryApiRecord[]; topK: number }
 ): Promise<MemoryApiRecord[]> {
   const needles = dateNeedles(input.rawQuery);
-  if (needles.length === 0 || input.memories.some(isTimelineDay)) return input.memories;
+  if (needles.length === 0 || hasMatchingTimelineDay(input.memories, needles)) return input.memories;
 
   const rows = await searchMemoriesByText(env.DB, {
     namespace: input.namespace,
