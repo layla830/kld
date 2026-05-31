@@ -30,7 +30,7 @@ export default {
       return handleAdminBoard(request, env, ctx);
     }
 
-    if (url.pathname === "/admin/maintenance") {
+    if (url.pathname === "/admin/maintenance" || url.pathname === "/admin/maintenance/purge-auto-diary") {
       return handleAdminMaintenance(request, env);
     }
 
