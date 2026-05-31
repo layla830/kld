@@ -36,6 +36,7 @@ export interface Env {
   MEMORY_FILTER_MIN_SCORE?: string;
   MEMORY_EXTRACT_EVERY_N_MESSAGES?: string;
   MEMORY_MIN_IMPORTANCE?: string;
+  AUTO_DIARY_ENABLED?: string;
   AUTO_CHUNK_MIN_MESSAGES?: string;
   AUTO_CHUNK_MAX_MESSAGES?: string;
   AUTO_CHUNK_SUMMARY_MODEL?: string;
