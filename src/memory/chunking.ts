@@ -9,6 +9,10 @@ function maxMessages(env: Env, message: ConversationChunkQueueMessage): number {
   return Math.max(Number(message.maxMessages || env.AUTO_CHUNK_MAX_MESSAGES || DEFAULT_MAX_MESSAGES), MIN_CHUNK_MESSAGES);
 }
 
+function autoDiaryEnabled(env: Env): boolean {
+  return env.AUTO_DIARY_ENABLED === "true";
+}
+
 export async function runConversationChunking(
   env: Env,
   message: ConversationChunkQueueMessage
@@ -18,6 +22,14 @@ export async function runConversationChunking(
     conversationId: message.conversationId,
     limit: maxMessages(env, message)
   });
+
+  if (!autoDiaryEnabled(env)) {
+    await markMessagesChunkProcessed(env.DB, {
+      namespace: message.namespace,
+      ids: candidates.map((item) => item.id)
+    });
+    return { conversations: 0, chunks: 0, messages: candidates.length };
+  }
 
   if (candidates.length < MIN_CHUNK_MESSAGES) {
     return { conversations: 0, chunks: 0, messages: 0 };
