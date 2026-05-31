@@ -398,6 +398,10 @@ function getCandidateLimit(topK: number): number {
   return Math.min(Math.max(topK * 5, topK), 80);
 }
 
+function shouldRecordRecall(input: SearchMemoriesInput): boolean {
+  return input.recordRecall === true || (input.includeMessages === true && input.rawQuery !== undefined);
+}
+
 function mergeSearchResults(
   vectorRecords: ScoredMemoryRecord[] | null,
   keywordRecords: ScoredMemoryRecord[],
@@ -473,7 +477,7 @@ export async function searchMemories(env: Env, input: SearchMemoriesInput): Prom
   const apiRecords = records.map((record) => toMemoryApiRecord(record, record.score));
   const processedRecords = await postProcessMemorySearchResults(env, { query: searchQuery, rawQuery, memories: apiRecords, topK });
 
-  if (input.recordRecall === true) {
+  if (shouldRecordRecall(input)) {
     const memoryIds = processedRecords.map((record) => record.id).filter((id) => !id.startsWith("msg_"));
     await markMemoriesRecalled(env.DB, { namespace: input.namespace, ids: memoryIds });
   }
