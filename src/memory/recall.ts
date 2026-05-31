@@ -1,5 +1,4 @@
-import { searchMemoriesByText } from "../db/memories";
-import type { Env, MemoryApiRecord } from "../types";
+import type { Env, MemoryApiRecord, MemoryRecord } from "../types";
 import { chineseNgrams, normalizeQueryForMemorySearch } from "./query";
 import { searchMemories, toMemoryApiRecord } from "./search";
 
@@ -175,6 +174,41 @@ function hasMatchingTimelineDay(memories: MemoryApiRecord[], needles: string[]):
   return memories.some((memory) => isTimelineDay(memory) && matchesAnyNeedle(memory, needles));
 }
 
+function likeNeedle(needle: string): string {
+  return `%${needle.replace(/([%_\\])/g, "\\$1")}%`;
+}
+
+async function fetchDatedTimelineCandidates(
+  env: Env,
+  input: { namespace: string; needles: string[]; limit: number }
+): Promise<MemoryApiRecord[]> {
+  const needles = input.needles.slice(0, 8);
+  if (needles.length === 0) return [];
+
+  const clauses: string[] = [];
+  const binds: unknown[] = [input.namespace];
+  for (const needle of needles) {
+    clauses.push("content LIKE ? ESCAPE '\\'", "summary LIKE ? ESCAPE '\\'", "tags LIKE ? ESCAPE '\\'", "created_at LIKE ? ESCAPE '\\'", "updated_at LIKE ? ESCAPE '\\'");
+    const like = likeNeedle(needle);
+    binds.push(like, like, like, like, like);
+  }
+  binds.push(input.limit);
+
+  const result = await env.DB.prepare(
+    `SELECT * FROM memories
+     WHERE namespace = ?
+       AND status = 'active'
+       AND (type = 'timeline_day' OR tags LIKE '%day_summary%' OR tags LIKE '%timeline%')
+       AND (${clauses.join(" OR ")})
+     ORDER BY importance DESC, updated_at DESC
+     LIMIT ?`
+  ).bind(...binds).all<MemoryRecord>();
+
+  return (result.results ?? [])
+    .map((record) => toMemoryApiRecord(record, 1))
+    .filter((memory) => isTimelineDay(memory) && matchesAnyNeedle(memory, needles));
+}
+
 async function addDatedTimelineCandidates(
   env: Env,
   input: { namespace: string; rawQuery: string; memories: MemoryApiRecord[]; topK: number }
@@ -182,13 +216,10 @@ async function addDatedTimelineCandidates(
   const needles = dateNeedles(input.rawQuery);
   if (needles.length === 0 || hasMatchingTimelineDay(input.memories, needles)) return input.memories;
 
-  const rows = await searchMemoriesByText(env.DB, {
+  const dated = await fetchDatedTimelineCandidates(env, {
     namespace: input.namespace,
-    query: needles.join(" "),
+    needles,
     limit: Math.max(input.topK * 4, 12)
-  });
-  const dated = rows.map((record) => toMemoryApiRecord(record, record.score)).filter((memory) => {
-    return isTimelineDay(memory) && matchesAnyNeedle(memory, needles);
   });
   return dated.length > 0 ? mergeUniqueMemories(dated, input.memories) : input.memories;
 }
