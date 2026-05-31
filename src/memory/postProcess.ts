@@ -33,7 +33,7 @@ function haystack(memory: MemoryApiRecord): string {
 }
 
 function compact(text: string): string {
-  return text.toLowerCase().replace(/\s+/g, "").replace(/[?？!！。.,，、:：;；"“”'‘’]/g, "");
+  return text.toLowerCase().replace(/\s+/g, "").replace(/[?？！。.,，、:：;；"“”'‘’]/g, "");
 }
 
 function asksForHandoff(query: string): boolean {
@@ -69,12 +69,16 @@ function directHit(memory: MemoryApiRecord, query: string): boolean {
   return needle.length >= 2 && compact(haystack(memory)).includes(needle);
 }
 
+function directHitAny(memory: MemoryApiRecord, queries: string[]): boolean {
+  return queries.some((query) => directHit(memory, query));
+}
+
 function scoreMemory(memory: MemoryApiRecord, input: { kind: IntentKind; query: string; rawQuery: string; index: number }): number {
   let score = typeof memory.score === "number" ? memory.score : 0;
   const query = `${input.rawQuery} ${input.query}`;
 
   if (isHandoff(memory) && !asksForHandoff(query)) score -= 3;
-  if (directHit(memory, input.query)) score += 0.6;
+  if (directHitAny(memory, [input.query, input.rawQuery])) score += 0.6;
 
   if (input.kind === "time") {
     if (isTimelineDay(memory)) score += 2;
@@ -83,6 +87,7 @@ function scoreMemory(memory: MemoryApiRecord, input: { kind: IntentKind; query: 
   }
 
   if (input.kind === "fact") {
+    if (isQuote(memory) && directHitAny(memory, [input.query, input.rawQuery])) score += 1.8;
     if (isMilestone(memory)) score += 1.5;
     if (isLongNarrative(memory)) score -= 0.8;
   }
@@ -123,19 +128,19 @@ async function filterWithTimeout(env: Env, query: string, memories: MemoryApiRec
   ]);
 }
 
-function leadFor(kind: IntentKind, memories: MemoryApiRecord[]): MemoryApiRecord | undefined {
+function leadFor(kind: IntentKind, query: string, rawQuery: string, memories: MemoryApiRecord[]): MemoryApiRecord | undefined {
   if (kind === "time") return memories.find(isTimelineDay) || memories.find(isQuote);
-  if (kind === "fact") return memories.find(isMilestone);
+  if (kind === "fact") return memories.find((memory) => isQuote(memory) && directHitAny(memory, [query, rawQuery])) || memories.find(isMilestone);
   if (kind === "utterance") return memories.find(isQuote);
   return undefined;
 }
 
-function keepLead(kind: IntentKind, query: string, candidates: MemoryApiRecord[], filtered: MemoryApiRecord[], maxOutput: number): MemoryApiRecord[] {
-  const lead = leadFor(kind, candidates);
+function keepLead(kind: IntentKind, query: string, rawQuery: string, candidates: MemoryApiRecord[], filtered: MemoryApiRecord[], maxOutput: number): MemoryApiRecord[] {
+  const lead = leadFor(kind, query, rawQuery, candidates);
   if (!lead) return filtered.slice(0, maxOutput);
 
   if (kind === "fact" || kind === "utterance" || isQuote(lead)) {
-    const focused = filtered.filter((memory) => memory.id !== lead.id && ((isMilestone(memory) || isQuote(memory)) && directHit(memory, query)));
+    const focused = filtered.filter((memory) => memory.id !== lead.id && ((isMilestone(memory) || isQuote(memory)) && directHitAny(memory, [query, rawQuery])));
     return [lead, ...focused].slice(0, maxOutput);
   }
 
@@ -154,5 +159,5 @@ export async function postProcessMemorySearchResults(
   const { kind, memories } = rerank(query, rawQuery, input.memories);
   const candidates = withoutIncidentalHandoff(rawQuery, memories);
   const filtered = await filterWithTimeout(env, rawQuery, candidates);
-  return keepLead(kind, query, candidates, filtered, maxOutput);
+  return keepLead(kind, query, rawQuery, candidates, filtered, maxOutput);
 }
