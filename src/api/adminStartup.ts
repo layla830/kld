@@ -19,7 +19,7 @@ function unauthorized(): Response {
 }
 
 function adminPassword(env: Env): string | null {
-  return env.ADMIN_PASSWORD || env.MEMORY_MCP_API_KEY || null;
+  return env.ADMIN_PASSWORD || null;
 }
 
 function isAuthorized(request: Request, env: Env): boolean {
