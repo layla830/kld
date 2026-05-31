@@ -51,7 +51,8 @@ async function searchMemoriesForInjection(
       namespace: input.namespace,
       query: input.query,
       topK: input.topK,
-      includeMessages: true
+      includeMessages: true,
+      recordRecall: true
     });
     return excludeAutoDiary(memories);
   } catch (error) {

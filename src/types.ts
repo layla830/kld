@@ -5,6 +5,7 @@ export interface Env {
   ALLOW_QUEUE_FALLBACK?: string;
   VECTORIZE?: Vectorize | VectorizeIndex;
   PUBLIC_MODEL_NAME?: string;
+  ENABLE_CHAT_GATEWAY?: string;
   CHAT_MODEL?: string;
   DEFAULT_UPSTREAM_MODEL?: string;
   ALLOW_MODEL_PASSTHROUGH?: string;
