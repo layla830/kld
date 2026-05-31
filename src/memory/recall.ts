@@ -182,7 +182,7 @@ function filterUnsupportedRecallMemories(memories: MemoryApiRecord[], searchQuer
     const haystack = supportHaystack(memory);
     return needles.some((needle) => haystack.includes(needle.toLowerCase()));
   });
-  return supported.length > 0 ? supported : [];
+  return supported.length > 0 ? supported : memories;
 }
 
 export function analyzeRecallNeed(prompt: string): { shouldRecall: boolean; score: number; reasons: string[]; query: string } {
