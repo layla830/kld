@@ -46,23 +46,32 @@ function shanghaiYear(): number {
   return new Date(Date.now() + SHANGHAI_OFFSET_MS).getUTCFullYear();
 }
 
+function addDateNeedleSet(needles: Set<string>, year: string | number, month: string | number, day: string | number): void {
+  const yyyy = String(year);
+  const mm = String(month).padStart(2, "0");
+  const dd = String(day).padStart(2, "0");
+  const iso = `${yyyy}-${mm}-${dd}`;
+  needles.add(`${Number(month)}月${Number(day)}日`);
+  needles.add(iso);
+  needles.add(`date:${iso}`);
+}
+
 function dateNeedles(query: string): string[] {
   const needles = new Set<string>();
 
   for (const match of query.matchAll(/\b(20\d{2})[.\-/年](\d{1,2})[.\-/月](\d{1,2})日?/g)) {
     const [, year, month, day] = match;
-    const iso = `${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`;
-    needles.add(`${Number(month)}月${Number(day)}日`);
-    needles.add(iso);
-    needles.add(`date:${iso}`);
+    addDateNeedleSet(needles, year, month, day);
   }
 
   for (const match of query.matchAll(/(?:^|[^\d])(\d{1,2})月(\d{1,2})日/g)) {
     const [, month, day] = match;
-    const iso = `${shanghaiYear()}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`;
-    needles.add(`${Number(month)}月${Number(day)}日`);
-    needles.add(iso);
-    needles.add(`date:${iso}`);
+    addDateNeedleSet(needles, shanghaiYear(), month, day);
+  }
+
+  for (const match of query.matchAll(/(?:^|[^\d])(\d{1,2})[.\-/](\d{1,2})(?:$|[^\d])/g)) {
+    const [, month, day] = match;
+    addDateNeedleSet(needles, shanghaiYear(), month, day);
   }
 
   return [...needles];
@@ -133,7 +142,7 @@ function relevantExcerpt(memory: MemoryApiRecord, query: string): string {
 }
 
 function supportHaystack(memory: MemoryApiRecord): string {
-  return `${memory.content} ${memory.summary || ""} ${memory.tags.join(" ")} ${memory.type}`.toLowerCase();
+  return `${memory.content} ${memory.summary || ""} ${memory.tags.join(" ")} ${memory.type} ${memory.source || ""} ${memory.created_at} ${memory.updated_at}`.toLowerCase();
 }
 
 function isTimeSummaryCandidate(memory: MemoryApiRecord): boolean {
@@ -156,12 +165,14 @@ function mergeUniqueMemories(primary: MemoryApiRecord[], secondary: MemoryApiRec
   return merged;
 }
 
+function matchesAnyNeedle(memory: MemoryApiRecord, needles: string[]): boolean {
+  if (needles.length === 0) return true;
+  const haystack = supportHaystack(memory);
+  return needles.some((needle) => haystack.includes(needle.toLowerCase()));
+}
+
 function hasMatchingTimelineDay(memories: MemoryApiRecord[], needles: string[]): boolean {
-  return memories.some((memory) => {
-    if (!isTimelineDay(memory)) return false;
-    const haystack = supportHaystack(memory);
-    return needles.some((needle) => haystack.includes(needle.toLowerCase()));
-  });
+  return memories.some((memory) => isTimelineDay(memory) && matchesAnyNeedle(memory, needles));
 }
 
 async function addDatedTimelineCandidates(
@@ -176,20 +187,29 @@ async function addDatedTimelineCandidates(
     query: needles.join(" "),
     limit: Math.max(input.topK * 4, 12)
   });
-  const dated = rows.map((record) => toMemoryApiRecord(record, record.score)).filter(isTimelineDay);
+  const dated = rows.map((record) => toMemoryApiRecord(record, record.score)).filter((memory) => {
+    return isTimelineDay(memory) && matchesAnyNeedle(memory, needles);
+  });
   return dated.length > 0 ? mergeUniqueMemories(dated, input.memories) : input.memories;
 }
 
 function filterUnsupportedRecallMemories(memories: MemoryApiRecord[], searchQuery: string, rawQuery: string): MemoryApiRecord[] {
+  const dateTerms = dateNeedles(rawQuery);
+  if (dateTerms.length > 0) {
+    const dated = memories.filter((memory) => matchesAnyNeedle(memory, dateTerms));
+    if (dated.length === 0) return [];
+
+    const topicTerms = topicNeedles(`${rawQuery} ${searchQuery}`);
+    const datedWithTopic = dated.filter((memory) => matchesAnyNeedle(memory, topicTerms));
+    return datedWithTopic.length > 0 ? datedWithTopic : dated;
+  }
+
   if (BROAD_TIME_QUERY_RE.test(rawQuery)) return memories.filter(isTimeSummaryCandidate);
 
   const needles = supportNeedles(rawQuery, searchQuery);
   if (needles.length === 0) return memories;
 
-  const supported = memories.filter((memory) => {
-    const haystack = supportHaystack(memory);
-    return needles.some((needle) => haystack.includes(needle.toLowerCase()));
-  });
+  const supported = memories.filter((memory) => matchesAnyNeedle(memory, needles));
   return supported.length > 0 ? supported : memories;
 }
 
