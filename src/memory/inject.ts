@@ -50,7 +50,8 @@ async function searchMemoriesForInjection(
     const memories = await searchMemories(env, {
       namespace: input.namespace,
       query: input.query,
-      topK: input.topK
+      topK: input.topK,
+      includeMessages: true
     });
     return excludeAutoDiary(memories);
   } catch (error) {
