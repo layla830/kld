@@ -13,6 +13,7 @@ import {
 } from "./utils";
 
 const AUTO_DIARY_TYPE = "auto_diary";
+const TIMELINE_SPLIT_SOURCE = "timeline_split";
 
 export interface HeatDay {
   day: string;
@@ -97,14 +98,12 @@ function applyTabWhere(input: PageInput, binds: unknown[]): string {
     }
     return clause;
   }
-  binds.push(AUTO_DIARY_TYPE);
-  return " AND type != ?";
+  binds.push(AUTO_DIARY_TYPE, TIMELINE_SPLIT_SOURCE);
+  return " AND type != ? AND (source IS NULL OR source != ?)";
 }
 
-function orderByForTab(tab: string): string {
-  return tab === "message" || tab === "diary" || tab === "auto_diary" || tab === "quote"
-    ? "ORDER BY created_at DESC, updated_at DESC"
-    : "ORDER BY pinned DESC, updated_at DESC, created_at DESC";
+function orderByForTab(_tab: string): string {
+  return "ORDER BY created_at DESC, updated_at DESC";
 }
 
 function apiRecordToMemoryRecord(record: MemoryApiRecord): MemoryRecord {
@@ -132,6 +131,7 @@ function apiRecordToMemoryRecord(record: MemoryApiRecord): MemoryRecord {
 
 function matchesBrowseFilters(record: MemoryRecord, input: PageInput): boolean {
   if (record.type === AUTO_DIARY_TYPE) return false;
+  if (record.source === TIMELINE_SPLIT_SOURCE) return false;
   if (input.status !== "all" && record.status !== input.status) return false;
   if (input.type && record.type !== input.type) return false;
 
