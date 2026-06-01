@@ -3,6 +3,7 @@ import type { Env, QueueMessage } from "../types";
 import { handleQueueMessage } from "./consumer";
 
 const DEFAULT_CHUNK_THRESHOLD = 10;
+const DEFAULT_CHUNK_MAX_MESSAGES = 80;
 
 function allowQueueFallback(env: Env): boolean {
   return env.ALLOW_QUEUE_FALLBACK === "true";
@@ -29,9 +30,17 @@ async function sendQueueMessage(env: Env, message: QueueMessage): Promise<void> 
   });
 }
 
+function readPositiveInteger(value: string | undefined, fallback: number): number {
+  const parsed = Number(value || fallback);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+}
+
 function chunkThreshold(env: Env): number {
-  const value = Number(env.AUTO_CHUNK_MIN_MESSAGES || DEFAULT_CHUNK_THRESHOLD);
-  return Number.isFinite(value) && value > 0 ? Math.floor(value) : DEFAULT_CHUNK_THRESHOLD;
+  return readPositiveInteger(env.AUTO_CHUNK_MIN_MESSAGES, DEFAULT_CHUNK_THRESHOLD);
+}
+
+function chunkWindowLimit(env: Env, threshold: number): number {
+  return Math.max(threshold, readPositiveInteger(env.AUTO_CHUNK_MAX_MESSAGES, DEFAULT_CHUNK_MAX_MESSAGES));
 }
 
 function keyPart(value: string | number | undefined): string {
@@ -125,7 +134,7 @@ export async function enqueueConversationChunkingIfNeeded(
   const candidates = await listUnprocessedChunkMessages(env.DB, {
     namespace: input.namespace,
     conversationId: input.conversationId,
-    limit: Math.max(threshold, Number(env.AUTO_CHUNK_MAX_MESSAGES || threshold))
+    limit: chunkWindowLimit(env, threshold)
   });
   const unprocessedCount = candidates.length;
   if (unprocessedCount < threshold && !input.force) return;
