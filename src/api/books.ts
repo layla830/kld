@@ -1,3 +1,4 @@
+import { ensureBooksSchema } from "../db/booksSchema";
 import { isAuthorized, unauthorized } from "./adminBoard/auth";
 import { ensureReadingSchema, handleReadingTool } from "./readingMcp";
 import type { Env } from "../types";
@@ -13,6 +14,7 @@ interface BookRow {
 }
 
 interface ProgressRow {
+  book_id: string;
   reader: string;
   page: number;
 }
@@ -54,71 +56,44 @@ function newId(prefix: string): string {
   return `${prefix}_${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
 }
 
-async function ensureBooksSchema(db: D1Database): Promise<void> {
-  await db.batch([
-    db.prepare(
-      `CREATE TABLE IF NOT EXISTS books (
-        id TEXT PRIMARY KEY,
-        title TEXT NOT NULL,
-        author TEXT,
-        total_pages INTEGER NOT NULL DEFAULT 0,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-      )`
-    ),
-    db.prepare(
-      `CREATE TABLE IF NOT EXISTS book_pages (
-        book_id TEXT NOT NULL,
-        page INTEGER NOT NULL,
-        content TEXT NOT NULL,
-        PRIMARY KEY (book_id, page)
-      )`
-    ),
-    db.prepare(
-      `CREATE TABLE IF NOT EXISTS book_progress (
-        book_id TEXT NOT NULL,
-        reader TEXT NOT NULL,
-        page INTEGER NOT NULL,
-        updated_at TEXT NOT NULL,
-        PRIMARY KEY (book_id, reader)
-      )`
-    ),
-    db.prepare(
-      `CREATE TABLE IF NOT EXISTS book_comments (
-        id TEXT PRIMARY KEY,
-        book_id TEXT NOT NULL,
-        page INTEGER NOT NULL,
-        author TEXT NOT NULL,
-        content TEXT NOT NULL,
-        created_at TEXT NOT NULL
-      )`
-    ),
-    db.prepare("CREATE INDEX IF NOT EXISTS idx_book_comments_page ON book_comments(book_id, page, created_at)")
-  ]);
+function defaultProgress(): Record<string, number> {
+  return { layla: 1, kld: 1 };
 }
 
 async function readProgress(db: D1Database, bookId: string): Promise<Record<string, number>> {
-  const rows = await db.prepare("SELECT reader, page FROM book_progress WHERE book_id = ?").bind(bookId).all<ProgressRow>();
-  const progress: Record<string, number> = { layla: 1, kld: 1 };
+  const rows = await db.prepare("SELECT book_id, reader, page FROM book_progress WHERE book_id = ?").bind(bookId).all<ProgressRow>();
+  const progress = defaultProgress();
   for (const row of rows.results ?? []) progress[row.reader] = row.page;
   return progress;
+}
+
+async function readProgressForBooks(db: D1Database, bookIds: string[]): Promise<Record<string, Record<string, number>>> {
+  const progressByBook = Object.fromEntries(bookIds.map((id) => [id, defaultProgress()])) as Record<string, Record<string, number>>;
+  if (bookIds.length === 0) return progressByBook;
+
+  const placeholders = bookIds.map(() => "?").join(", ");
+  const rows = await db.prepare(`SELECT book_id, reader, page FROM book_progress WHERE book_id IN (${placeholders})`).bind(...bookIds).all<ProgressRow>();
+  for (const row of rows.results ?? []) {
+    progressByBook[row.book_id] ||= defaultProgress();
+    progressByBook[row.book_id][row.reader] = row.page;
+  }
+  return progressByBook;
 }
 
 async function listBooks(env: Env): Promise<Response> {
   await ensureBooksSchema(env.DB);
   const rows = await env.DB.prepare("SELECT * FROM books ORDER BY updated_at DESC, created_at DESC").all<BookRow>();
-  const books = [];
-  for (const book of rows.results ?? []) {
-    books.push({
-      id: book.id,
-      title: book.title,
-      author: book.author || "",
-      total_pages: book.total_pages,
-      progress: await readProgress(env.DB, book.id),
-      created_at: book.created_at,
-      updated_at: book.updated_at
-    });
-  }
+  const bookRows = rows.results ?? [];
+  const progressByBook = await readProgressForBooks(env.DB, bookRows.map((book) => book.id));
+  const books = bookRows.map((book) => ({
+    id: book.id,
+    title: book.title,
+    author: book.author || "",
+    total_pages: book.total_pages,
+    progress: progressByBook[book.id] || defaultProgress(),
+    created_at: book.created_at,
+    updated_at: book.updated_at
+  }));
   return json({ books });
 }
 
