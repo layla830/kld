@@ -1,5 +1,6 @@
 import { buildStartupContext } from "../memory/startupContext";
 import type { Env, MemoryRecord } from "../types";
+import { isAuthorized, unauthorized } from "./adminBoard/auth";
 
 interface StartupMemory {
   id: string;
@@ -9,31 +10,6 @@ interface StartupMemory {
   pinned: boolean;
   tags: string[];
   created_at: string;
-}
-
-function unauthorized(): Response {
-  return new Response("Authentication required", {
-    status: 401,
-    headers: { "www-authenticate": 'Basic realm="Aelios memories"' }
-  });
-}
-
-function adminPassword(env: Env): string | null {
-  return env.ADMIN_PASSWORD || null;
-}
-
-function isAuthorized(request: Request, env: Env): boolean {
-  const expected = adminPassword(env);
-  if (!expected) return false;
-  const header = request.headers.get("authorization") || "";
-  if (!header.toLowerCase().startsWith("basic ")) return false;
-  try {
-    const decoded = atob(header.slice(6));
-    const password = decoded.includes(":") ? decoded.slice(decoded.indexOf(":") + 1) : decoded;
-    return password === expected;
-  } catch {
-    return false;
-  }
 }
 
 function parseJsonArray(value: string | null): string[] {
