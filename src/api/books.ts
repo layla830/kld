@@ -5,6 +5,7 @@ import type { Env } from "../types";
 import { json } from "../utils/json";
 
 const D1_BATCH_LIMIT = 50;
+const D1_BIND_LIMIT = 90;
 
 interface BookRow {
   id: string;
@@ -42,6 +43,12 @@ interface ImportBook {
 
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+function safeIsoDate(value: unknown, fallback: string): string {
+  if (!value) return fallback;
+  const parsed = new Date(String(value));
+  return Number.isNaN(parsed.getTime()) ? fallback : parsed.toISOString();
 }
 
 function clampPage(value: unknown, fallback = 1): number {
@@ -83,11 +90,13 @@ async function readProgressForBooks(db: D1Database, bookIds: string[]): Promise<
   const progressByBook = Object.fromEntries(bookIds.map((id) => [id, defaultProgress()])) as Record<string, Record<string, number>>;
   if (bookIds.length === 0) return progressByBook;
 
-  const placeholders = bookIds.map(() => "?").join(", ");
-  const rows = await db.prepare(`SELECT book_id, reader, page FROM book_progress WHERE book_id IN (${placeholders})`).bind(...bookIds).all<ProgressRow>();
-  for (const row of rows.results ?? []) {
-    progressByBook[row.book_id] ||= defaultProgress();
-    progressByBook[row.book_id][row.reader] = row.page;
+  for (const ids of chunk(bookIds, D1_BIND_LIMIT)) {
+    const placeholders = ids.map(() => "?").join(", ");
+    const rows = await db.prepare(`SELECT book_id, reader, page FROM book_progress WHERE book_id IN (${placeholders})`).bind(...ids).all<ProgressRow>();
+    for (const row of rows.results ?? []) {
+      progressByBook[row.book_id] ||= defaultProgress();
+      progressByBook[row.book_id][row.reader] = row.page;
+    }
   }
   return progressByBook;
 }
@@ -212,7 +221,7 @@ function buildImportStatements(db: D1Database, raw: ImportBook, now: string): { 
   const title = String(raw.title || id).trim();
   const pages = Array.isArray(raw.pages) ? raw.pages.map((item) => String(item ?? "")) : [];
   const totalPages = Math.max(1, Math.floor(raw.total_pages || pages.length || 1));
-  const createdAt = raw.created_at ? new Date(raw.created_at).toISOString() : now;
+  const createdAt = safeIsoDate(raw.created_at, now);
   const statements: D1PreparedStatement[] = [
     db.prepare(
       `INSERT INTO books (id, title, author, total_pages, created_at, updated_at)
@@ -245,7 +254,7 @@ function buildImportStatements(db: D1Database, raw: ImportBook, now: string): { 
     for (const item of items || []) {
       const content = String(item.content || "").trim();
       if (!content) continue;
-      const createdAtComment = item.time ? new Date(item.time).toISOString() : now;
+      const createdAtComment = safeIsoDate(item.time, now);
       statements.push(
         db.prepare("INSERT INTO book_comments (id, book_id, page, author, content, created_at) VALUES (?, ?, ?, ?, ?, ?)")
           .bind(newId("comment"), id, page, cleanReader(item.author), content, createdAtComment)
