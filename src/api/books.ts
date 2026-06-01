@@ -4,6 +4,8 @@ import { ensureReadingSchema, handleReadingTool } from "./readingMcp";
 import type { Env } from "../types";
 import { json } from "../utils/json";
 
+const D1_BATCH_LIMIT = 50;
+
 interface BookRow {
   id: string;
   title: string;
@@ -58,6 +60,16 @@ function newId(prefix: string): string {
 
 function defaultProgress(): Record<string, number> {
   return { layla: 1, kld: 1 };
+}
+
+function chunk<T>(items: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let index = 0; index < items.length; index += size) chunks.push(items.slice(index, index + size));
+  return chunks;
+}
+
+async function runBatched(db: D1Database, statements: D1PreparedStatement[]): Promise<void> {
+  for (const batch of chunk(statements, D1_BATCH_LIMIT)) await db.batch(batch);
 }
 
 async function readProgress(db: D1Database, bookId: string): Promise<Record<string, number>> {
@@ -195,6 +207,56 @@ async function deleteBook(env: Env, request: Request): Promise<Response> {
   return json({ success: true, deleted_book_id: bookId });
 }
 
+function buildImportStatements(db: D1Database, raw: ImportBook, now: string): { statements: D1PreparedStatement[]; pageCount: number; commentCount: number } {
+  const id = String(raw.id || newId("book")).trim();
+  const title = String(raw.title || id).trim();
+  const pages = Array.isArray(raw.pages) ? raw.pages.map((item) => String(item ?? "")) : [];
+  const totalPages = Math.max(1, Math.floor(raw.total_pages || pages.length || 1));
+  const createdAt = raw.created_at ? new Date(raw.created_at).toISOString() : now;
+  const statements: D1PreparedStatement[] = [
+    db.prepare(
+      `INSERT INTO books (id, title, author, total_pages, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET title = excluded.title, author = excluded.author, total_pages = excluded.total_pages, updated_at = excluded.updated_at`
+    ).bind(id, title, raw.author || "", totalPages, createdAt, now),
+    db.prepare("DELETE FROM book_pages WHERE book_id = ?").bind(id)
+  ];
+
+  for (let i = 0; i < pages.length; i += 1) {
+    statements.push(db.prepare("INSERT INTO book_pages (book_id, page, content) VALUES (?, ?, ?)").bind(id, i + 1, pages[i]));
+  }
+
+  for (const reader of ["layla", "kld"] as const) {
+    const page = Math.min(clampPage(raw.progress?.[reader]), totalPages);
+    statements.push(
+      db.prepare(
+        `INSERT INTO book_progress (book_id, reader, page, updated_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(book_id, reader) DO UPDATE SET page = excluded.page, updated_at = excluded.updated_at`
+      ).bind(id, reader, page, now)
+    );
+  }
+
+  statements.push(db.prepare("DELETE FROM book_comments WHERE book_id = ?").bind(id));
+  let commentCount = 0;
+  const comments = raw.comments || {};
+  for (const [pageText, items] of Object.entries(comments)) {
+    const page = Math.min(clampPage(pageText), totalPages);
+    for (const item of items || []) {
+      const content = String(item.content || "").trim();
+      if (!content) continue;
+      const createdAtComment = item.time ? new Date(item.time).toISOString() : now;
+      statements.push(
+        db.prepare("INSERT INTO book_comments (id, book_id, page, author, content, created_at) VALUES (?, ?, ?, ?, ?, ?)")
+          .bind(newId("comment"), id, page, cleanReader(item.author), content, createdAtComment)
+      );
+      commentCount += 1;
+    }
+  }
+
+  return { statements, pageCount: pages.length, commentCount };
+}
+
 async function importBooks(env: Env, request: Request): Promise<Response> {
   await ensureBooksSchema(env.DB);
   const body = await request.json().catch(() => null) as { books?: ImportBook[] } | null;
@@ -206,49 +268,11 @@ async function importBooks(env: Env, request: Request): Promise<Response> {
   const now = nowIso();
 
   for (const raw of body.books) {
-    const id = String(raw.id || newId("book")).trim();
-    const title = String(raw.title || id).trim();
-    const pages = Array.isArray(raw.pages) ? raw.pages.map((item) => String(item ?? "")) : [];
-    const totalPages = Math.max(1, Math.floor(raw.total_pages || pages.length || 1));
-    const createdAt = raw.created_at ? new Date(raw.created_at).toISOString() : now;
-
-    await env.DB.prepare(
-      `INSERT INTO books (id, title, author, total_pages, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?)
-       ON CONFLICT(id) DO UPDATE SET title = excluded.title, author = excluded.author, total_pages = excluded.total_pages, updated_at = excluded.updated_at`
-    ).bind(id, title, raw.author || "", totalPages, createdAt, now).run();
-
-    await env.DB.prepare("DELETE FROM book_pages WHERE book_id = ?").bind(id).run();
-    for (let i = 0; i < pages.length; i += 1) {
-      await env.DB.prepare("INSERT INTO book_pages (book_id, page, content) VALUES (?, ?, ?)").bind(id, i + 1, pages[i]).run();
-      importedPages += 1;
-    }
-
-    for (const reader of ["layla", "kld"] as const) {
-      const page = Math.min(clampPage(raw.progress?.[reader]), totalPages);
-      await env.DB.prepare(
-        `INSERT INTO book_progress (book_id, reader, page, updated_at)
-         VALUES (?, ?, ?, ?)
-         ON CONFLICT(book_id, reader) DO UPDATE SET page = excluded.page, updated_at = excluded.updated_at`
-      ).bind(id, reader, page, now).run();
-    }
-
-    await env.DB.prepare("DELETE FROM book_comments WHERE book_id = ?").bind(id).run();
-    const comments = raw.comments || {};
-    for (const [pageText, items] of Object.entries(comments)) {
-      const page = Math.min(clampPage(pageText), totalPages);
-      for (const item of items || []) {
-        const content = String(item.content || "").trim();
-        if (!content) continue;
-        const createdAtComment = item.time ? new Date(item.time).toISOString() : now;
-        await env.DB.prepare(
-          "INSERT INTO book_comments (id, book_id, page, author, content, created_at) VALUES (?, ?, ?, ?, ?, ?)"
-        ).bind(newId("comment"), id, page, cleanReader(item.author), content, createdAtComment).run();
-        importedComments += 1;
-      }
-    }
-
+    const { statements, pageCount, commentCount } = buildImportStatements(env.DB, raw, now);
+    await runBatched(env.DB, statements);
     importedBooks += 1;
+    importedPages += pageCount;
+    importedComments += commentCount;
   }
 
   return json({ success: true, imported_books: importedBooks, imported_pages: importedPages, imported_comments: importedComments });
