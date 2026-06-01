@@ -1,5 +1,6 @@
 import { RETENTION_POLICY } from "../memory/retention";
 import type { Env } from "../types";
+import { isAuthorized, unauthorized } from "./adminBoard/auth";
 
 interface MaintenanceStats {
   total: number;
@@ -25,31 +26,6 @@ function htmlEscape(value: unknown): string {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
-}
-
-function unauthorized(): Response {
-  return new Response("Authentication required", {
-    status: 401,
-    headers: { "www-authenticate": 'Basic realm="Memory Home"' }
-  });
-}
-
-function adminPassword(env: Env): string | null {
-  return env.ADMIN_PASSWORD || null;
-}
-
-function isAuthorized(request: Request, env: Env): boolean {
-  const expected = adminPassword(env);
-  if (!expected) return false;
-  const header = request.headers.get("authorization") || "";
-  if (!header.toLowerCase().startsWith("basic ")) return false;
-  try {
-    const decoded = atob(header.slice(6));
-    const password = decoded.includes(":") ? decoded.slice(decoded.indexOf(":") + 1) : decoded;
-    return password === expected;
-  } catch {
-    return false;
-  }
 }
 
 async function fetchStats(env: Env): Promise<MaintenanceStats> {
@@ -118,7 +94,7 @@ function renderPage(stats: MaintenanceStats, types: TypeStat[], recent: Array<{ 
   return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Memory Home Maintenance</title><style>
   *{box-sizing:border-box}body{margin:0;min-height:100vh;background:#fff0f3;color:#5c4a4f;font-family:Georgia,'Noto Serif SC',serif;padding:24px}.page{max-width:860px;margin:0 auto}.top{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:20px}h1{font-size:1.35rem;font-weight:400;color:#d4899a;margin:0}.nav{display:flex;gap:8px;flex-wrap:wrap}.nav a,.pill{border:1px solid rgba(212,137,154,.45);border-radius:999px;padding:7px 12px;color:#d4899a;text-decoration:none;background:#fffbfc;font-size:.82rem}.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}.card{background:#fffbfc;border:1px solid rgba(232,160,176,.24);border-radius:14px;padding:16px;box-shadow:0 4px 18px rgba(232,160,176,.16);margin-bottom:14px}.value{font-size:1.45rem;color:#d4899a}.label{font-size:.72rem;color:#9a8389;margin-top:4px}.section-title{font-size:.9rem;color:#9a8389;letter-spacing:1px;margin:4px 0 12px}.two{display:grid;grid-template-columns:1fr 1fr;gap:14px}table{width:100%;border-collapse:collapse;font-size:.82rem}td,th{border-bottom:1px solid rgba(232,160,176,.18);padding:8px 4px;text-align:left;vertical-align:top}th{color:#9a8389;font-weight:400}.note{line-height:1.75;font-size:.86rem;color:#6a555b}.ok{color:#548765}.warn{color:#9a6b43}@media(max-width:720px){.grid{grid-template-columns:repeat(2,1fr)}.two{grid-template-columns:1fr}.top{align-items:flex-start;flex-direction:column}}
   </style></head><body><main class="page"><div class="top"><div><h1>Memory Home Maintenance</h1><div class="label">后台维护状态</div></div><nav class="nav"><a href="/admin/memories">记忆小家</a><a href="/admin/startup-context">Startup</a><a href="/health">Health</a></nav></div>
-  <section class="grid"><div class="card"><div class="value">${stats.total}</div><div class="label">总记忆</div></div><div class="card"><div class="value">${stats.active}</div><div class="label">active</div></div><div class="card"><div class="value">${stats.vectorReady}</div><div class="label">可索引记忆 / ${vectorPercent}%</div></div><div class="card"><div class="value">${stats.deleted}</div><div class="label">软删除</div></div></section>
+  <section class="grid"><div class="card"><div class="value">${stats.total}</div><div class="label">总记忆</div></div><div class="card"><div class="value">${stats.active}</div><div class="label">active</div></div><div class="card"><div class="value">${stats.deleted}</div><div class="label">deleted</div></div><div class="card"><div class="value">${vectorPercent}%</div><div class="label">可索引记忆</div></div></section>
   <section class="two"><div class="card"><div class="section-title">来源</div><table><tbody><tr><td>旧 VPS 迁移</td><td>${stats.legacyVps}</td></tr><tr><td>前端写入</td><td>${stats.adminBoard}</td></tr><tr><td>expired</td><td>${stats.expired}</td></tr><tr><td>superseded</td><td>${stats.superseded}</td></tr><tr><td>low confidence</td><td>${stats.lowConfidence}</td></tr></tbody></table></div><div class="card"><div class="section-title">类型分布</div><table><thead><tr><th>type</th><th>count</th></tr></thead><tbody>${renderTypeRows(types)}</tbody></table></div></section>
   <section class="card"><div class="section-title">保留策略</div><div class="note">${renderRetentionNote()}</div></section>
   <section class="card"><div class="section-title">Vectorize 说明</div><div class="note"><span class="warn">这里的“可索引记忆”来自 D1 的 vector_id 字段，不等于 Cloudflare 面板的 stored vector 实时计数。</span> 它用于判断哪些 active 记忆具备向量索引身份；真正的语义搜索会先查 Vectorize，查不到时再走文字搜索兜底。</div></section>
