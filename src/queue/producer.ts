@@ -1,6 +1,5 @@
-import { countUnprocessedChunkMessages } from "../db/messages";
+import { listUnprocessedChunkMessages } from "../db/messages";
 import type { Env, QueueMessage } from "../types";
-import { newId } from "../utils/ids";
 import { handleQueueMessage } from "./consumer";
 
 const DEFAULT_CHUNK_THRESHOLD = 10;
@@ -35,6 +34,44 @@ function chunkThreshold(env: Env): number {
   return Number.isFinite(value) && value > 0 ? Math.floor(value) : DEFAULT_CHUNK_THRESHOLD;
 }
 
+function keyPart(value: string | number | undefined): string {
+  return encodeURIComponent(String(value ?? ""));
+}
+
+function memoryMaintenanceKey(input: {
+  namespace: string;
+  conversationId: string;
+  fromMessageId: string;
+  toMessageId: string;
+}): string {
+  return [
+    "memory_maintenance",
+    input.namespace,
+    input.conversationId,
+    input.fromMessageId,
+    input.toMessageId
+  ].map(keyPart).join(":");
+}
+
+function conversationChunkKey(input: {
+  namespace: string;
+  conversationId: string;
+  source: string;
+  firstMessageId: string;
+  lastMessageId: string;
+  count: number;
+}): string {
+  return [
+    "conversation_chunk",
+    input.namespace,
+    input.conversationId,
+    input.source,
+    input.firstMessageId,
+    input.lastMessageId,
+    input.count
+  ].map(keyPart).join(":");
+}
+
 export async function enqueueMemoryMaintenanceIfNeeded(
   env: Env,
   input: {
@@ -56,7 +93,12 @@ export async function enqueueMemoryMaintenanceIfNeeded(
     fromMessageId: input.fromMessageId,
     toMessageId: input.toMessageId,
     source: input.source,
-    idempotencyKey: newId("idem")
+    idempotencyKey: memoryMaintenanceKey({
+      namespace: input.namespace,
+      conversationId: input.conversationId,
+      fromMessageId: input.fromMessageId,
+      toMessageId: input.toMessageId
+    })
   };
 
   await sendQueueMessage(env, message);
@@ -79,13 +121,18 @@ export async function enqueueConversationChunkingIfNeeded(
   if (env.ENABLE_AUTO_MEMORY === "false") return;
   if ((env.MEMORY_MODE || "external") === "none") return;
 
-  const unprocessedCount = await countUnprocessedChunkMessages(env.DB, {
-    namespace: input.namespace,
-    conversationId: input.conversationId
-  });
   const threshold = chunkThreshold(env);
+  const candidates = await listUnprocessedChunkMessages(env.DB, {
+    namespace: input.namespace,
+    conversationId: input.conversationId,
+    limit: Math.max(threshold, Number(env.AUTO_CHUNK_MAX_MESSAGES || threshold))
+  });
+  const unprocessedCount = candidates.length;
   if (unprocessedCount < threshold && !input.force) return;
   if (unprocessedCount <= 0) return;
+
+  const firstMessage = candidates[0];
+  const lastMessage = candidates[candidates.length - 1];
 
   await sendQueueMessage(env, {
     type: "conversation_chunk",
@@ -93,7 +140,14 @@ export async function enqueueConversationChunkingIfNeeded(
     conversationId: input.conversationId,
     source: input.source,
     maxMessages: Math.max(unprocessedCount, threshold),
-    idempotencyKey: newId("idem")
+    idempotencyKey: conversationChunkKey({
+      namespace: input.namespace,
+      conversationId: input.conversationId,
+      source: input.source,
+      firstMessageId: firstMessage.id,
+      lastMessageId: lastMessage.id,
+      count: unprocessedCount
+    })
   });
 }
 
