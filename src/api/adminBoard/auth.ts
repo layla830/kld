@@ -7,6 +7,10 @@ export function unauthorized(): Response {
   });
 }
 
+export function forbidden(): Response {
+  return new Response("Forbidden", { status: 403 });
+}
+
 export function adminPassword(env: Env): string | null {
   return env.ADMIN_PASSWORD || null;
 }
@@ -20,6 +24,22 @@ export function isAuthorized(request: Request, env: Env): boolean {
     const decoded = atob(header.slice(6));
     const password = decoded.includes(":") ? decoded.slice(decoded.indexOf(":") + 1) : decoded;
     return password === expected;
+  } catch {
+    return false;
+  }
+}
+
+export function isSameOriginAdminPost(request: Request): boolean {
+  if (request.method !== "POST") return true;
+
+  const expectedOrigin = new URL(request.url).origin;
+  const origin = request.headers.get("origin");
+  if (origin) return origin === expectedOrigin;
+
+  const referer = request.headers.get("referer");
+  if (!referer) return false;
+  try {
+    return new URL(referer).origin === expectedOrigin;
   } catch {
     return false;
   }
