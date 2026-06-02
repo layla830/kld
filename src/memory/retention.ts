@@ -13,7 +13,8 @@ import type { Env } from "../types";
 import { pruneProcessedCcConnectMessages } from "./ccConnectRetention";
 
 // ---------------------------------------------------------------------------
-// Default retention policy (hardcoded, not user-configurable)
+// Default retention policy. Environment variables can override the day/hour
+// windows without changing code; invalid values fall back to these defaults.
 // ---------------------------------------------------------------------------
 
 export const RETENTION_POLICY = {
@@ -26,9 +27,39 @@ export const RETENTION_POLICY = {
   throttleHours: 24,
 } as const;
 
+interface ResolvedRetentionPolicy {
+  activeMemoryAutoExpiry: false;
+  messagesDays: number;
+  usageLogsDays: number;
+  memoryEventsDays: number;
+  idempotencyKeysDays: number;
+  terminalMemoryHardDeleteDays: number;
+  throttleHours: number;
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+function readPositiveInteger(value: string | undefined, fallback: number): number {
+  const parsed = Number(value || fallback);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+}
+
+function retentionPolicy(env: Env): ResolvedRetentionPolicy {
+  return {
+    activeMemoryAutoExpiry: false,
+    messagesDays: readPositiveInteger(env.MEMORY_RETENTION_MESSAGES_DAYS, RETENTION_POLICY.messagesDays),
+    usageLogsDays: readPositiveInteger(env.MEMORY_RETENTION_USAGE_LOGS_DAYS, RETENTION_POLICY.usageLogsDays),
+    memoryEventsDays: readPositiveInteger(env.MEMORY_RETENTION_EVENTS_DAYS, RETENTION_POLICY.memoryEventsDays),
+    idempotencyKeysDays: readPositiveInteger(env.MEMORY_RETENTION_IDEMPOTENCY_DAYS, RETENTION_POLICY.idempotencyKeysDays),
+    terminalMemoryHardDeleteDays: readPositiveInteger(
+      env.MEMORY_RETENTION_TERMINAL_MEMORY_DAYS,
+      RETENTION_POLICY.terminalMemoryHardDeleteDays
+    ),
+    throttleHours: readPositiveInteger(env.MEMORY_RETENTION_THROTTLE_HOURS, RETENTION_POLICY.throttleHours),
+  };
+}
 
 function daysAgo(days: number): string {
   return new Date(Date.now() - days * 86_400_000).toISOString();
@@ -55,20 +86,21 @@ async function deleteVectorizeBatched(
 // ---------------------------------------------------------------------------
 // runMemoryRetention
 //
-// Called from background tasks after chat. Uses processing_cursors for 24h
-// per-namespace throttling so it doesn't run on every request.
+// Called from background tasks after chat. Uses processing_cursors for per-
+// namespace throttling so it doesn't run on every request.
 // ---------------------------------------------------------------------------
 
 export async function runMemoryRetention(
   env: Env,
   namespace: string
 ): Promise<{ ran: boolean; stats?: Record<string, number> }> {
+  const policy = retentionPolicy(env);
   const cursorName = `retention:${namespace}`;
   const lastRun = await readCursor(env.DB, cursorName);
 
   if (lastRun) {
     const lastRunMs = new Date(lastRun).getTime();
-    if (lastRunMs > hoursAgoMs(RETENTION_POLICY.throttleHours)) {
+    if (lastRunMs > hoursAgoMs(policy.throttleHours)) {
       return { ran: false };
     }
   }
@@ -76,17 +108,17 @@ export async function runMemoryRetention(
   const now = new Date().toISOString();
   const stats: Record<string, number> = {};
 
-  stats.messages = await deleteOldMessages(env.DB, namespace, daysAgo(RETENTION_POLICY.messagesDays));
+  stats.messages = await deleteOldMessages(env.DB, namespace, daysAgo(policy.messagesDays));
   stats.ccConnectProcessedMessages = await pruneProcessedCcConnectMessages(env, namespace);
-  stats.usageLogs = await deleteOldUsageLogs(env.DB, namespace, daysAgo(RETENTION_POLICY.usageLogsDays));
-  stats.memoryEvents = await deleteOldMemoryEvents(env.DB, namespace, daysAgo(RETENTION_POLICY.memoryEventsDays));
-  stats.idempotencyKeys = await deleteOldIdempotencyKeys(env.DB, daysAgo(RETENTION_POLICY.idempotencyKeysDays));
+  stats.usageLogs = await deleteOldUsageLogs(env.DB, namespace, daysAgo(policy.usageLogsDays));
+  stats.memoryEvents = await deleteOldMemoryEvents(env.DB, namespace, daysAgo(policy.memoryEventsDays));
+  stats.idempotencyKeys = await deleteOldIdempotencyKeys(env.DB, daysAgo(policy.idempotencyKeysDays));
 
   // Active long-term memories do not expire automatically. Manual deletes still
   // become hard-deletable after the terminal-memory retention window.
   stats.expiredMemories = 0;
 
-  const hardCutoff = daysAgo(RETENTION_POLICY.terminalMemoryHardDeleteDays);
+  const hardCutoff = daysAgo(policy.terminalMemoryHardDeleteDays);
   const deletable = await listHardDeletableMemories(env.DB, namespace, hardCutoff);
 
   if (deletable.length > 0) {
