@@ -1,4 +1,4 @@
-import { markMemoriesRecalled, searchMemoriesByText } from "../db/memories";
+﻿import { markMemoriesRecalled, searchMemoriesByText } from "../db/memories";
 import { searchMessagesForRecall } from "../db/messages";
 import type { Env, MemoryApiRecord, MemoryRecord, MessageRecord } from "../types";
 import { postProcessMemorySearchResults } from "./postProcess";
@@ -399,7 +399,7 @@ function getCandidateLimit(topK: number): number {
 }
 
 function shouldRecordRecall(input: SearchMemoriesInput): boolean {
-  return input.recordRecall === true || (input.includeMessages === true && input.rawQuery !== undefined);
+  return input.recordRecall === true;
 }
 
 function mergeSearchResults(
@@ -484,3 +484,4 @@ export async function searchMemories(env: Env, input: SearchMemoriesInput): Prom
 
   return processedRecords;
 }
+
