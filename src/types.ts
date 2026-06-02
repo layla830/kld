@@ -44,6 +44,12 @@ export interface Env {
   CC_CONNECT_AUTO_DIARY_MIN_MESSAGES?: string;
   CC_CONNECT_AUTO_DIARY_MAX_MESSAGES?: string;
   CC_CONNECT_MESSAGE_RETENTION_DAYS?: string;
+  MEMORY_RETENTION_MESSAGES_DAYS?: string;
+  MEMORY_RETENTION_USAGE_LOGS_DAYS?: string;
+  MEMORY_RETENTION_EVENTS_DAYS?: string;
+  MEMORY_RETENTION_IDEMPOTENCY_DAYS?: string;
+  MEMORY_RETENTION_TERMINAL_MEMORY_DAYS?: string;
+  MEMORY_RETENTION_THROTTLE_HOURS?: string;
   INJECTION_MODE?: string;
   EMBEDDING_MODEL?: string;
   MEMORY_TOP_K?: string;
@@ -84,6 +90,7 @@ export interface ConversationChunkQueueMessage {
 export interface RetentionQueueMessage {
   type: "retention";
   namespace: string;
+  idempotencyKey: string;
 }
 
 export type QueueMessage = MemoryMaintenanceQueueMessage | ConversationChunkQueueMessage | RetentionQueueMessage;
