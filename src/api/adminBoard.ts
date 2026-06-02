@@ -1,13 +1,14 @@
 import { deleteMemoryEmbedding, upsertMemoryEmbedding } from "../memory/embedding";
 import type { Env } from "../types";
 import { createBoardMemory, deleteBoardMemory, editBoardMemory } from "./adminBoard/actions";
-import { isAuthorized, unauthorized } from "./adminBoard/auth";
+import { forbidden, isAuthorized, isSameOriginAdminPost, unauthorized } from "./adminBoard/auth";
 import { fetchHeatmap, fetchMemories, fetchQuoteCategories, fetchStats, fetchTypes } from "./adminBoard/data";
 import { inputFromUrl, noticeUrl, qs, readFormText } from "./adminBoard/utils";
 import { renderPage } from "./adminBoard/view";
 
 export async function handleAdminBoard(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   if (!isAuthorized(request, env)) return unauthorized();
+  if (!isSameOriginAdminPost(request)) return forbidden();
   const url = new URL(request.url);
 
   if (request.method === "POST" && url.pathname === "/admin/memories/create") {
