@@ -19,7 +19,7 @@ export async function handleQueueMessage(message: QueueMessage, env: Env): Promi
       await runConversationChunking(env, message);
       return;
     case "retention":
-      await runMemoryRetention(env, message.namespace);
+      await runMemoryRetention(env, message.namespace, message.idempotencyKey);
       return;
   }
 }
