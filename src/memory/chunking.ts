@@ -1,3 +1,4 @@
+import { finishIdempotentTask, tryStartIdempotentTask } from "../db/idempotency";
 import { listUnprocessedChunkMessages, markMessagesChunkProcessed } from "../db/messages";
 import type { ConversationChunkQueueMessage, Env } from "../types";
 import { pruneProcessedCcConnectMessages } from "./ccConnectRetention";
@@ -13,7 +14,7 @@ function autoDiaryEnabled(env: Env): boolean {
   return env.AUTO_DIARY_ENABLED === "true";
 }
 
-export async function runConversationChunking(
+async function runConversationChunkingInner(
   env: Env,
   message: ConversationChunkQueueMessage
 ): Promise<{ conversations: number; chunks: number; messages: number }> {
@@ -63,4 +64,24 @@ export async function runConversationChunking(
   }
 
   return { conversations: chunkCount > 0 ? 1 : 0, chunks: chunkCount, messages: messageCount };
+}
+
+export async function runConversationChunking(
+  env: Env,
+  message: ConversationChunkQueueMessage
+): Promise<{ conversations: number; chunks: number; messages: number }> {
+  const started = await tryStartIdempotentTask(env.DB, {
+    key: message.idempotencyKey,
+    taskType: message.type
+  });
+  if (!started) return { conversations: 0, chunks: 0, messages: 0 };
+
+  try {
+    const result = await runConversationChunkingInner(env, message);
+    await finishIdempotentTask(env.DB, { key: message.idempotencyKey, status: "done" });
+    return result;
+  } catch (error) {
+    await finishIdempotentTask(env.DB, { key: message.idempotencyKey, status: "failed" });
+    throw error;
+  }
 }
