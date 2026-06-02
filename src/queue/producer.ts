@@ -81,6 +81,10 @@ function conversationChunkKey(input: {
   ].map(keyPart).join(":");
 }
 
+function retentionKey(input: { namespace: string; day: string }): string {
+  return ["retention", input.namespace, input.day].map(keyPart).join(":");
+}
+
 export async function enqueueMemoryMaintenanceIfNeeded(
   env: Env,
   input: {
@@ -164,9 +168,11 @@ export async function enqueueRetentionIfNeeded(
   env: Env,
   namespace: string
 ): Promise<void> {
+  const day = new Date().toISOString().slice(0, 10);
   const message: QueueMessage = {
     type: "retention",
     namespace,
+    idempotencyKey: retentionKey({ namespace, day })
   };
 
   await sendQueueMessage(env, message);
