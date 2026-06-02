@@ -1,5 +1,6 @@
 import { authenticate } from "../auth/apiKey";
 import { requireScope } from "../auth/scopes";
+import { markMemoriesRecalled } from "../db/memories";
 import { buildRecallContext } from "../memory/recall";
 import type { Env, KeyProfile } from "../types";
 import { json, openAiError } from "../utils/json";
@@ -42,12 +43,18 @@ export async function handleRecall(request: Request, env: Env): Promise<Response
   const prompt = readString(body.prompt) || readString(body.query);
   if (!prompt) return openAiError("prompt is required", 400);
 
+  const namespace = resolveNamespace(auth.profile, body.namespace);
   const result = await buildRecallContext(env, {
-    namespace: resolveNamespace(auth.profile, body.namespace),
+    namespace,
     prompt,
     topK: readNumber(body.top_k, Number(env.MEMORY_RECALL_TOP_K || 5)),
     force: readBoolean(body.force)
   });
+
+  if (result.should_recall) {
+    const memoryIds = result.memories.map((memory) => memory.id).filter((id) => !id.startsWith("msg_"));
+    await markMemoriesRecalled(env.DB, { namespace, ids: memoryIds });
+  }
 
   return json(result);
 }
