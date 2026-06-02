@@ -9,6 +9,7 @@ import {
   writeCursor,
   RETENTION_BATCH_SIZE,
 } from "../db/retention";
+import { finishIdempotentTask, tryStartIdempotentTask } from "../db/idempotency";
 import type { Env } from "../types";
 import { pruneProcessedCcConnectMessages } from "./ccConnectRetention";
 
@@ -90,7 +91,7 @@ async function deleteVectorizeBatched(
 // namespace throttling so it doesn't run on every request.
 // ---------------------------------------------------------------------------
 
-export async function runMemoryRetention(
+async function runMemoryRetentionInner(
   env: Env,
   namespace: string
 ): Promise<{ ran: boolean; stats?: Record<string, number> }> {
@@ -158,4 +159,27 @@ export async function runMemoryRetention(
   await writeCursor(env.DB, cursorName, now);
 
   return { ran: true, stats };
+}
+
+export async function runMemoryRetention(
+  env: Env,
+  namespace: string,
+  idempotencyKey?: string
+): Promise<{ ran: boolean; stats?: Record<string, number> }> {
+  if (!idempotencyKey) return runMemoryRetentionInner(env, namespace);
+
+  const started = await tryStartIdempotentTask(env.DB, {
+    key: idempotencyKey,
+    taskType: "retention"
+  });
+  if (!started) return { ran: false };
+
+  try {
+    const result = await runMemoryRetentionInner(env, namespace);
+    await finishIdempotentTask(env.DB, { key: idempotencyKey, status: "done" });
+    return result;
+  } catch (error) {
+    await finishIdempotentTask(env.DB, { key: idempotencyKey, status: "failed" });
+    throw error;
+  }
 }
