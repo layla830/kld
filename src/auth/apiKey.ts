@@ -1,5 +1,6 @@
 import { KEY_PROFILES } from "../config/keyProfiles";
 import type { AuthResult, Env } from "../types";
+import { constantTimeEqual } from "./constantTime";
 
 function allowsUrlToken(request: Request): boolean {
   const pathname = new URL(request.url).pathname;
@@ -24,23 +25,23 @@ export async function authenticate(request: Request, env: Env): Promise<AuthResu
   const token = getBearerToken(request);
   if (!token) return { ok: false };
 
-  if (env.CHATBOX_API_KEY && token === env.CHATBOX_API_KEY) {
+  if (env.CHATBOX_API_KEY && constantTimeEqual(token, env.CHATBOX_API_KEY)) {
     return { ok: true, profile: KEY_PROFILES.chatbox, keyName: "CHATBOX_API_KEY" };
   }
 
-  if (env.IM_API_KEY && token === env.IM_API_KEY) {
+  if (env.IM_API_KEY && constantTimeEqual(token, env.IM_API_KEY)) {
     return { ok: true, profile: KEY_PROFILES.im, keyName: "IM_API_KEY" };
   }
 
-  if (env.DEBUG_API_KEY && token === env.DEBUG_API_KEY) {
+  if (env.DEBUG_API_KEY && constantTimeEqual(token, env.DEBUG_API_KEY)) {
     return { ok: true, profile: KEY_PROFILES.debug, keyName: "DEBUG_API_KEY" };
   }
 
-  if (env.MEMORY_MCP_API_KEY && token === env.MEMORY_MCP_API_KEY) {
+  if (env.MEMORY_MCP_API_KEY && constantTimeEqual(token, env.MEMORY_MCP_API_KEY)) {
     return { ok: true, profile: KEY_PROFILES.mcp, keyName: "MEMORY_MCP_API_KEY" };
   }
 
-  if (env.GUIDE_DOG_API_KEY && token === env.GUIDE_DOG_API_KEY) {
+  if (env.GUIDE_DOG_API_KEY && constantTimeEqual(token, env.GUIDE_DOG_API_KEY)) {
     return { ok: true, profile: KEY_PROFILES.guideDog, keyName: "GUIDE_DOG_API_KEY" };
   }
 

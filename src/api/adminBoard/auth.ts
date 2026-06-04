@@ -1,4 +1,5 @@
 import type { Env } from "../../types";
+import { constantTimeEqual } from "../../auth/constantTime";
 
 export function unauthorized(): Response {
   return new Response("Authentication required", {
@@ -23,7 +24,7 @@ export function isAuthorized(request: Request, env: Env): boolean {
   try {
     const decoded = atob(header.slice(6));
     const password = decoded.includes(":") ? decoded.slice(decoded.indexOf(":") + 1) : decoded;
-    return password === expected;
+    return constantTimeEqual(password, expected);
   } catch {
     return false;
   }
