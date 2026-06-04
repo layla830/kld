@@ -1,4 +1,5 @@
 import { requireScope } from "../auth/scopes";
+import { extractLocalRecallChunk } from "../memory/localChunkExtract";
 import { persistChunkMemory } from "../memory/chunkPersistence";
 import { formatShanghaiDateTime } from "../memory/chunkPeriods";
 import { summarizeChunk } from "../memory/chunkSummary";
@@ -46,6 +47,45 @@ function readLocalDiaryMessages(
     const byTime = a.created_at.localeCompare(b.created_at);
     if (byTime !== 0) return byTime;
     return a.id.localeCompare(b.id);
+  });
+}
+
+export async function handleExtractCcConnectLocalChunk(
+  request: Request,
+  env: Env,
+  profile: KeyProfile
+): Promise<Response> {
+  const scopeError = requireScope(profile, "memory:write");
+  if (scopeError) return scopeError;
+
+  const body = await readBody(request);
+  if (!body) return openAiError("Request body must be a JSON object", 400);
+
+  const namespace = resolveNamespace(profile, body.namespace);
+  const conversationId = readString(body.conversation_id) || "cc-connect:local";
+  const source = readString(body.source) || "cc-connect-vps";
+  const messages = readLocalDiaryMessages(body.messages, { namespace, conversationId, source });
+
+  if (messages.length === 0) return openAiError("messages must contain at least one message", 400);
+
+  const maxMessages = positiveInteger(body.max_messages, 80);
+  if (messages.length > maxMessages) {
+    return openAiError(`messages must contain at most ${maxMessages} items`, 400);
+  }
+
+  const periodLabel = localPeriodLabel(body, messages);
+  const extracted = await extractLocalRecallChunk(env, messages, periodLabel);
+  if (!extracted) return openAiError("Failed to extract local chunk", 502);
+
+  return json({
+    data: {
+      ...extracted,
+      namespace,
+      conversation_id: conversationId,
+      source,
+      message_count: messages.length,
+      period_label: periodLabel
+    }
   });
 }
 

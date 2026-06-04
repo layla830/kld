@@ -20,6 +20,7 @@ export const TABS = [
   { id: "diary", label: "交换日记" },
   { id: "auto_diary", label: "自动日记" },
   { id: "quote", label: "语录" },
+  { id: "timeline", label: "分段日记" },
   { id: "browse", label: "记忆浏览" }
 ] as const;
 export const MOODS = ["", "开心", "平静", "兴奋", "委屈", "低落", "生气", "焦虑", "疲惫", "感动"];

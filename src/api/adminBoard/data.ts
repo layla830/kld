@@ -76,14 +76,25 @@ export async function fetchHeatmap(env: Env): Promise<HeatDay[]> {
   return days;
 }
 
+export async function fetchTimelineDates(env: Env): Promise<Set<string>> {
+  const rows = await env.DB.prepare("SELECT tags FROM memories WHERE namespace = 'default' AND status = 'active' AND source = ?").bind(TIMELINE_SPLIT_SOURCE).all<{ tags: string | null }>();
+  const dates = new Set<string>();
+  for (const row of rows.results ?? []) {
+    for (const tag of parseTags(row.tags)) {
+      if (tag.startsWith("date:")) dates.add(tag.slice(5));
+    }
+  }
+  return dates;
+}
+
 function applyTabWhere(input: PageInput, binds: unknown[]): string {
   if (input.tab === "message") {
     binds.push(AUTO_DIARY_TYPE, like("留言"), like("unread"), "message");
     return " AND type != ? AND (tags LIKE ? ESCAPE '\\' OR tags LIKE ? ESCAPE '\\' OR type = ?)";
   }
   if (input.tab === "diary") {
-    binds.push(AUTO_DIARY_TYPE, "diary", "layla_diary", like("日记"));
-    return " AND type != ? AND (type IN (?, ?) OR tags LIKE ? ESCAPE '\\')";
+    binds.push(AUTO_DIARY_TYPE, TIMELINE_SPLIT_SOURCE, "diary", "layla_diary", like("日记"));
+    return " AND type != ? AND (source IS NULL OR source != ?) AND (type IN (?, ?) OR tags LIKE ? ESCAPE '\\')";
   }
   if (input.tab === "auto_diary") {
     binds.push(AUTO_DIARY_TYPE);
@@ -95,6 +106,15 @@ function applyTabWhere(input: PageInput, binds: unknown[]): string {
     if (input.category) {
       clause += " AND tags LIKE ? ESCAPE '\\'";
       binds.push(like(input.category));
+    }
+    return clause;
+  }
+  if (input.tab === "timeline") {
+    binds.push(AUTO_DIARY_TYPE, TIMELINE_SPLIT_SOURCE);
+    let clause = " AND type != ? AND source = ?";
+    if (input.date) {
+      clause += " AND tags LIKE ? ESCAPE '\\'";
+      binds.push(like(`date:${input.date}`));
     }
     return clause;
   }

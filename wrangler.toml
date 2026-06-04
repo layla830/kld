@@ -1,4 +1,4 @@
-name = "kld"
+﻿name = "kld"
 main = "src/index.ts"
 compatibility_date = "2026-04-01"
 keep_vars = true
@@ -59,3 +59,8 @@ queue = "companion-memory"
 queue = "companion-memory"
 max_batch_size = 10
 max_batch_timeout = 30
+[[d1_databases]]
+binding = "DB"
+database_name = "companion_memory_proxy"
+database_id = "a84c9bab-ff2f-46d7-af8f-4c4a6d7c5482"
+

@@ -22,10 +22,46 @@ interface PageData {
   total: number;
   records: MemoryRecord[];
   heatmap: HeatDay[];
+  timelineDates: Set<string>;
 }
 
 function renderTabs(input: PageInput): string {
   return `<nav class="tabs">${TABS.map((tab) => `<a class="tab ${input.tab === tab.id ? "active" : ""}" href="${adminPath(input, { tab: tab.id, page: 1, q: "", type: "", tag: "", date: "", category: "", mood: "", notice: "", searchMode: "keyword" })}">${tab.label}</a>`).join("")}</nav>`;
+}
+
+function renderCalendar(input: PageInput, dates: Set<string>): string {
+  const now = new Date();
+  const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+  let defaultYear = now.getFullYear();
+  let defaultMonth = now.getMonth() + 1;
+  const sortedDates = [...dates].sort();
+  if (sortedDates.length > 0) {
+    const latest = sortedDates[sortedDates.length - 1];
+    defaultYear = parseInt(latest.slice(0, 4));
+    defaultMonth = parseInt(latest.slice(5, 7));
+  }
+  const year = input.date ? parseInt(input.date.slice(0, 4)) : defaultYear;
+  const month = input.date ? parseInt(input.date.slice(5, 7)) : defaultMonth;
+  const firstDay = new Date(year, month - 1, 1);
+  const lastDay = new Date(year, month, 0);
+  const startDow = firstDay.getDay();
+  const totalDays = lastDay.getDate();
+  const prevMonth = month === 1 ? `${year - 1}-12` : `${year}-${String(month - 1).padStart(2, "0")}`;
+  const nextMonth = month === 12 ? `${year + 1}-01` : `${year}-${String(month + 1).padStart(2, "0")}`;
+  const weekdays = ["日", "一", "二", "三", "四", "五", "六"];
+  const headerCells = weekdays.map((item) => `<span class="cal-dow">${item}</span>`).join("");
+  let cells = "";
+  for (let i = 0; i < startDow; i += 1) cells += '<span class="cal-day empty"></span>';
+  for (let day = 1; day <= totalDays; day += 1) {
+    const dateStr = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+    const hasEntries = dates.has(dateStr);
+    const isToday = dateStr === todayStr;
+    const isActive = input.date === dateStr;
+    const cls = ["cal-day", isToday ? "today" : "", isActive ? "active" : "", hasEntries ? "has-entries" : "no-entries"].filter(Boolean).join(" ");
+    const href = hasEntries ? adminPath(input, { date: dateStr, page: 1, notice: "" }) : "#";
+    cells += `<a class="${cls}" href="${href}"${hasEntries ? "" : ' style="pointer-events:none"'}>${day}</a>`;
+  }
+  return `<section class="card cal-card"><div class="cal-header"><a class="cal-nav" href="${adminPath(input, { date: `${prevMonth}-01`, page: 1, notice: "" })}">◀</a><span class="cal-title">${year}年${month}月</span><a class="cal-nav" href="${adminPath(input, { date: `${nextMonth}-01`, page: 1, notice: "" })}">▶</a></div><div class="cal-grid">${headerCells}${cells}</div>${input.date ? `<div class="cal-clear"><a class="small-btn" href="${adminPath(input, { date: "", page: 1, notice: "" })}">清除日期筛选</a></div>` : ""}</section>`;
 }
 
 function renderMoodOptions(selected: string, empty = "不标记"): string {
@@ -74,8 +110,11 @@ function renderMemory(record: MemoryRecord, tab: string): string {
   const tags = parseTags(record.tags);
   const tagHtml = tags.slice(0, 6).map((tag) => `<span class="tag-pill ${moodClass(tag.replace("mood:", ""))}">${htmlEscape(tag)}</span>`).join("");
   const deleteForm = record.status === "active" ? `<form method="POST" action="/admin/memories/delete" class="delete-form" onsubmit="return confirm('确认删除吗？这会软删除，不会立刻物理清空。')"><input type="hidden" name="id" value="${attr(record.id)}"><button class="action-btn delete" type="submit">删除</button></form>` : "";
-  const cardClass = tab === "diary" || tab === "auto_diary" ? `diary-card ${record.type === "diary" ? "kld" : "layla"}` : tab === "quote" ? "quote-card" : tab === "browse" ? "memory-card" : "message-card";
-  return `<article class="${cardClass} ${record.status !== "active" ? "muted" : ""}"><div class="message-header"><span class="message-time">${htmlEscape(formatTime(record.created_at || record.updated_at))}</span></div><div class="message-content">${htmlEscape(record.content)}</div><div class="memory-meta"><span class="score-pill">${htmlEscape(record.type || "note")}</span>${record.pinned ? '<span class="tag-pill">pinned</span>' : ""}${tagHtml}</div>${renderEditForm(record)}<div class="actions">${deleteForm}</div></article>`;
+  const cardClass = tab === "diary" || tab === "auto_diary" ? `diary-card ${record.type === "diary" ? "kld" : "layla"}` : tab === "quote" ? "quote-card" : tab === "timeline" ? "timeline-card" : tab === "browse" ? "memory-card" : "message-card";
+  const typeLabel = tab === "timeline" ? `<span class="tl-type-badge tl-${record.type}">${htmlEscape(record.type || "")}</span>` : `<span class="score-pill">${htmlEscape(record.type || "note")}</span>`;
+  const summaryLine = tab === "timeline" && record.summary ? `<div class="tl-summary">${htmlEscape(record.summary)}</div>` : "";
+  const dateLine = tab === "timeline" ? `<div class="tl-date">${htmlEscape(formatTime(record.created_at || record.updated_at))}</div>` : `<div class="message-header"><span class="message-time">${htmlEscape(formatTime(record.created_at || record.updated_at))}</span></div>`;
+  return `<article class="${cardClass} ${record.status !== "active" ? "muted" : ""}">${dateLine}${summaryLine}<div class="message-content">${htmlEscape(record.content)}</div><div class="memory-meta">${typeLabel}${record.pinned ? '<span class="tag-pill">pinned</span>' : ""}${tagHtml}</div>${renderEditForm(record)}<div class="actions">${deleteForm}</div></article>`;
 }
 
 function renderPagination(input: PageInput, total: number): string {
@@ -96,11 +135,12 @@ function renderQuoteFilter(input: PageInput, categories: string[]): string {
 
 export function renderPage(input: PageInput, data: PageData): string {
   const searchPrefix = input.searchMode === "semantic" ? "语义搜索" : "搜索";
-  const listTitle = input.tab === "message" ? "历史留言" : input.tab === "diary" ? "我们的日记" : input.tab === "auto_diary" ? "自动日记" : input.tab === "quote" ? "我的语录" : input.date ? `${input.date} 的记忆` : input.q ? `${searchPrefix}：${input.q}` : "记忆列表";
+  const listTitle = input.tab === "message" ? "历史留言" : input.tab === "diary" ? "我们的日记" : input.tab === "auto_diary" ? "自动日记" : input.tab === "quote" ? "我的语录" : input.tab === "timeline" ? "分段日记" : input.date ? `${input.date} 的记忆` : input.q ? `${searchPrefix}：${input.q}` : "记忆列表";
   const list = data.records.length ? data.records.map((record) => renderMemory(record, input.tab)).join("") : '<div class="empty">这里还没有内容</div>';
   const dashboard = input.tab === "browse" ? renderDashboard(input, data) : "";
+  const calendar = input.tab === "timeline" ? renderCalendar(input, data.timelineDates) : "";
   const composer = renderComposer(input, renderBrowseTypeOptions(data.types, input.type));
   const quoteFilter = renderQuoteFilter(input, data.quoteCategories);
 
-  return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>♡</title><meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate"><link rel="preconnect" href="https://fonts.googleapis.com"><link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@300;400;500&display=swap" rel="stylesheet"><style>${ADMIN_BOARD_CSS}</style></head><body><div class="page"><header><div class="heart">♡</div><h1>我们的记忆小家</h1><div class="subtitle">MEMORY HOME</div></header>${renderTabs(input)}${dashboard}${composer}${quoteFilter}<div class="header-row"><span class="section-title">${htmlEscape(listTitle)}</span><div class="divider"></div><a class="small-btn" href="${adminPath(input, { page: 1, q: "", tag: "", date: "", category: "", mood: "", notice: "", searchMode: "keyword" })}">刷新</a></div>${list}${renderPagination(input, data.total)}</div><div class="toast" id="toast"></div><script>const n=${JSON.stringify(input.notice)};const m={created:'已保存 ♡',edited:'修改成功 ♡',deleted:'已删除',empty:'没有内容',error:'保存失败'};if(n&&m[n]){const t=document.getElementById('toast');t.textContent=m[n];t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2500);history.replaceState(null,'',location.pathname+location.search.replace(/[?&]notice=[^&]*/,''));}</script></body></html>`;
+  return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>♡</title><meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate"><link rel="preconnect" href="https://fonts.googleapis.com"><link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@300;400;500&display=swap" rel="stylesheet"><style>${ADMIN_BOARD_CSS}</style></head><body><div class="page"><header><div class="heart">♡</div><h1>我们的记忆小家</h1><div class="subtitle">MEMORY HOME</div></header>${renderTabs(input)}${dashboard}${calendar}${composer}${quoteFilter}<div class="header-row"><span class="section-title">${htmlEscape(listTitle)}</span><div class="divider"></div><a class="small-btn" href="${adminPath(input, { page: 1, q: "", tag: "", date: "", category: "", mood: "", notice: "", searchMode: "keyword" })}">刷新</a></div>${list}${renderPagination(input, data.total)}</div><div class="toast" id="toast"></div><script>const n=${JSON.stringify(input.notice)};const m={created:'已保存 ♡',edited:'修改成功 ♡',deleted:'已删除',empty:'没有内容',error:'保存失败'};if(n&&m[n]){const t=document.getElementById('toast');t.textContent=m[n];t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2500);history.replaceState(null,'',location.pathname+location.search.replace(/[?&]notice=[^&]*/,''));}</script></body></html>`;
 }

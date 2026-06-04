@@ -1,4 +1,4 @@
-export interface Env {
+﻿export interface Env {
   DB: D1Database;
   AI?: Ai;
   MEMORY_QUEUE?: Queue<QueueMessage>;
@@ -41,6 +41,7 @@ export interface Env {
   AUTO_CHUNK_MIN_MESSAGES?: string;
   AUTO_CHUNK_MAX_MESSAGES?: string;
   AUTO_CHUNK_SUMMARY_MODEL?: string;
+  CC_CONNECT_CHUNK_EXTRACT_MODEL?: string;
   CC_CONNECT_AUTO_DIARY_MIN_MESSAGES?: string;
   CC_CONNECT_AUTO_DIARY_MAX_MESSAGES?: string;
   CC_CONNECT_MESSAGE_RETENTION_DAYS?: string;
@@ -49,8 +50,7 @@ export interface Env {
   MEMORY_RETENTION_EVENTS_DAYS?: string;
   MEMORY_RETENTION_IDEMPOTENCY_DAYS?: string;
   MEMORY_RETENTION_TERMINAL_MEMORY_DAYS?: string;
-  MEMORY_RETENTION_THROTTLE_HOURS?: string;
-  INJECTION_MODE?: string;
+  MEMORY_RETENTION_THROTTLE_HOURS?: string;  INJECTION_MODE?: string;
   EMBEDDING_MODEL?: string;
   MEMORY_TOP_K?: string;
   MEMORY_RECALL_TOP_K?: string;
@@ -242,3 +242,4 @@ export interface SummaryRecord {
   created_at: string;
   updated_at: string;
 }
+

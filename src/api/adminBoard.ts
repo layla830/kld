@@ -2,7 +2,7 @@ import { deleteMemoryEmbedding, upsertMemoryEmbedding } from "../memory/embeddin
 import type { Env } from "../types";
 import { createBoardMemory, deleteBoardMemory, editBoardMemory } from "./adminBoard/actions";
 import { forbidden, isAuthorized, isSameOriginAdminPost, unauthorized } from "./adminBoard/auth";
-import { fetchHeatmap, fetchMemories, fetchQuoteCategories, fetchStats, fetchTypes } from "./adminBoard/data";
+import { fetchHeatmap, fetchMemories, fetchQuoteCategories, fetchStats, fetchTimelineDates, fetchTypes } from "./adminBoard/data";
 import { inputFromUrl, noticeUrl, qs, readFormText } from "./adminBoard/utils";
 import { renderPage } from "./adminBoard/view";
 
@@ -43,15 +43,16 @@ export async function handleAdminBoard(request: Request, env: Env, ctx: Executio
 
   const input = inputFromUrl(url);
   const needsDashboard = input.tab === "browse";
-  const [types, quoteCategories, memories, stats, heatmap] = await Promise.all([
+  const [types, quoteCategories, memories, stats, heatmap, timelineDates] = await Promise.all([
     fetchTypes(env),
     input.tab === "quote" ? fetchQuoteCategories(env) : Promise.resolve([]),
     fetchMemories(env, input),
     needsDashboard ? fetchStats(env) : Promise.resolve({ active: 0, deleted: 0, total: 0, vectorized: 0 }),
-    needsDashboard ? fetchHeatmap(env) : Promise.resolve([])
+    needsDashboard ? fetchHeatmap(env) : Promise.resolve([]),
+    input.tab === "timeline" ? fetchTimelineDates(env) : Promise.resolve(new Set<string>())
   ]);
 
-  return new Response(renderPage(input, { stats, types, quoteCategories, total: memories.total, records: memories.records, heatmap }), {
+  return new Response(renderPage(input, { stats, types, quoteCategories, total: memories.total, records: memories.records, heatmap, timelineDates }), {
     headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" }
   });
 }
