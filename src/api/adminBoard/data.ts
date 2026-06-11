@@ -141,6 +141,7 @@ function apiRecordToMemoryRecord(record: MemoryApiRecord): MemoryRecord {
     source: record.source,
     source_message_ids: JSON.stringify(record.source_message_ids ?? []),
     vector_id: record.vector_id,
+    vector_synced: 0,
     last_recalled_at: record.last_recalled_at,
     recall_count: record.recall_count,
     created_at: record.created_at,

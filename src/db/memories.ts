@@ -66,6 +66,7 @@ export async function createMemory(db: D1Database, input: CreateMemoryInput): Pr
     source: input.source ?? null,
     source_message_ids: JSON.stringify(input.sourceMessageIds ?? []),
     vector_id: vectorId,
+    vector_synced: 0,
     last_recalled_at: null,
     recall_count: 0,
     created_at: now,
@@ -203,6 +204,7 @@ export async function updateMemory(
 
   if (assignments.length === 0) return getMemoryById(db, input);
 
+  set("vector_synced", 0);
   set("updated_at", nowIso());
 
   const where = ["namespace = ?", "id = ?"];

@@ -378,6 +378,7 @@ function messageToMemoryRecord(message: MessageRecord & { score: number }): Scor
     source: message.source || "messages",
     source_message_ids: JSON.stringify([message.id]),
     vector_id: null,
+    vector_synced: 0,
     last_recalled_at: null,
     recall_count: 0,
     created_at: message.created_at,

@@ -86,6 +86,7 @@ function toLegacyMemoryRecord(match: VectorizeMatch, input: { namespace: string 
     source: readMetadataString(metadata, "source_id") || readMetadataString(metadata, "source") || "vectorize-legacy",
     source_message_ids: JSON.stringify([]),
     vector_id: match.id,
+    vector_synced: 1,
     last_recalled_at: null,
     recall_count: 0,
     created_at: readMetadataString(metadata, "created_at") || now,

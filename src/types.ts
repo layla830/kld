@@ -201,6 +201,7 @@ export interface MemoryRecord {
   source: string | null;
   source_message_ids: string | null;
   vector_id: string | null;
+  vector_synced: number;
   last_recalled_at: string | null;
   recall_count: number;
   created_at: string;
