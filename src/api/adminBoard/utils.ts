@@ -194,7 +194,7 @@ export function qs(input: PageInput, patch: Partial<PageInput>): string {
   if (next.searchMode === "semantic" && next.tab === "browse") params.set("mode", "semantic");
   if (next.type && next.tab === "browse") params.set("type", next.type);
   if (next.tag && next.tab === "browse") params.set("tag", next.tag);
-  if (next.date && next.tab === "browse") params.set("date", next.date);
+  if (next.date && (next.tab === "browse" || next.tab === "timeline")) params.set("date", next.date);
   if (next.mood && next.tab === "browse") params.set("mood", next.mood);
   if (next.category && next.tab === "quote") params.set("category", next.category);
   if (next.status !== "active") params.set("status", next.status);
