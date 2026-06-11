@@ -102,14 +102,20 @@ const VECTOR_RESYNC_BATCH = 50;
  */
 async function resyncUnsyncedVectors(env: Env, namespace: string): Promise<number> {
   if (!env.VECTORIZE) return 0;
-  const result = await env.DB
-    .prepare(
-      `SELECT * FROM memories
-       WHERE namespace = ? AND status = 'active' AND vector_synced = 0
-       ORDER BY updated_at DESC LIMIT ?`
-    )
-    .bind(namespace, VECTOR_RESYNC_BATCH)
-    .all<MemoryRecord>();
+  let result: D1Result<MemoryRecord>;
+  try {
+    result = await env.DB
+      .prepare(
+        `SELECT * FROM memories
+         WHERE namespace = ? AND status = 'active' AND vector_synced = 0
+         ORDER BY updated_at DESC LIMIT ?`
+      )
+      .bind(namespace, VECTOR_RESYNC_BATCH)
+      .all<MemoryRecord>();
+  } catch (error) {
+    console.warn("retention: vector_synced column unavailable; skipping vector resync", error);
+    return 0;
+  }
 
   let synced = 0;
   for (const memory of result.results || []) {

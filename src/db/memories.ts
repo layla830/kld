@@ -48,6 +48,14 @@ function chunk<T>(items: T[], size: number): T[][] {
   return chunks;
 }
 
+async function markMemoryVectorUnsynced(db: D1Database, input: { namespace: string; id: string }): Promise<void> {
+  try {
+    await db.prepare("UPDATE memories SET vector_synced = 0 WHERE namespace = ? AND id = ?").bind(input.namespace, input.id).run();
+  } catch (error) {
+    console.warn("memory vector_synced flag unavailable", input.id, error);
+  }
+}
+
 export async function createMemory(db: D1Database, input: CreateMemoryInput): Promise<MemoryRecord> {
   const id = newId("mem");
   const now = nowIso();
@@ -204,7 +212,6 @@ export async function updateMemory(
 
   if (assignments.length === 0) return getMemoryById(db, input);
 
-  set("vector_synced", 0);
   set("updated_at", nowIso());
 
   const where = ["namespace = ?", "id = ?"];
@@ -223,6 +230,7 @@ export async function updateMemory(
     .run();
 
   if ((result.meta.changes ?? 0) === 0) return null;
+  await markMemoryVectorUnsynced(db, input);
   return getMemoryById(db, input);
 }
 
