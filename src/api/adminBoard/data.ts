@@ -14,6 +14,7 @@ import {
 
 const AUTO_DIARY_TYPE = "auto_diary";
 const TIMELINE_SPLIT_SOURCE = "timeline_split";
+const TIMELINE_DAY_TYPE = "timeline_day";
 
 export interface HeatDay {
   day: string;
@@ -28,13 +29,26 @@ export interface BoardStats {
   vectorized: number;
 }
 
-export async function fetchTypes(env: Env): Promise<Array<{ type: string; count: number }>> {
-  const result = await env.DB.prepare("SELECT type, COUNT(*) AS count FROM memories WHERE namespace = 'default' AND status = 'active' AND type != ? GROUP BY type ORDER BY type").bind(AUTO_DIARY_TYPE).all<{ type: string; count: number }>();
-  return result.results ?? [];
+function appendBrowseHiddenRecordFilter(binds: unknown[]): string {
+  binds.push(AUTO_DIARY_TYPE, TIMELINE_SPLIT_SOURCE, TIMELINE_DAY_TYPE, like('"timeline"'));
+  return "type != ? AND (source IS NULL OR source != ?) AND type != ? AND (tags IS NULL OR tags NOT LIKE ? ESCAPE '\\')";
 }
 
+function isTimelineRecord(record: MemoryRecord): boolean {
+  return record.source === TIMELINE_SPLIT_SOURCE || record.type === TIMELINE_DAY_TYPE || parseTags(record.tags).includes("timeline");
+}
+
+export async function fetchTypes(env: Env): Promise<Array<{ type: string; count: number }>> {
+  const binds: unknown[] = [];
+  const hiddenFilter = appendBrowseHiddenRecordFilter(binds);
+  const result = await env.DB.prepare(`SELECT type, COUNT(*) AS count FROM memories WHERE namespace = 'default' AND status = 'active' AND ${hiddenFilter} GROUP BY type ORDER BY type`).bind(...binds).all<{ type: string; count: number }>();
+  return result.results ?? [];
+}
 export async function fetchQuoteCategories(env: Env): Promise<string[]> {
-  const result = await env.DB.prepare("SELECT tags FROM memories WHERE namespace = 'default' AND status = 'active' AND type != ? AND tags LIKE ? ESCAPE '\\' ORDER BY updated_at DESC LIMIT 300").bind(AUTO_DIARY_TYPE, like("语录")).all<{ tags: string | null }>();
+  const binds: unknown[] = [];
+  const hiddenFilter = appendBrowseHiddenRecordFilter(binds);
+  binds.push(like("语录"));
+  const result = await env.DB.prepare(`SELECT tags FROM memories WHERE namespace = 'default' AND status = 'active' AND ${hiddenFilter} AND tags LIKE ? ESCAPE '\\' ORDER BY updated_at DESC LIMIT 300`).bind(...binds).all<{ tags: string | null }>();
   const categories = new Set<string>();
   for (const row of result.results ?? []) {
     for (const tag of parseTags(row.tags)) {
@@ -43,15 +57,18 @@ export async function fetchQuoteCategories(env: Env): Promise<string[]> {
   }
   return [...categories].sort((a, b) => a.localeCompare(b, "zh-CN"));
 }
-
 export async function fetchStats(env: Env): Promise<BoardStats> {
-  const result = await env.DB.prepare("SELECT COUNT(*) AS total, SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) AS active, SUM(CASE WHEN status = 'deleted' THEN 1 ELSE 0 END) AS deleted, SUM(CASE WHEN vector_id IS NOT NULL AND vector_id != '' THEN 1 ELSE 0 END) AS vectorized FROM memories WHERE namespace = 'default' AND type != ?").bind(AUTO_DIARY_TYPE).first<BoardStats>();
+  const binds: unknown[] = [];
+  const hiddenFilter = appendBrowseHiddenRecordFilter(binds);
+  const result = await env.DB.prepare(`SELECT COUNT(*) AS total, SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) AS active, SUM(CASE WHEN status = 'deleted' THEN 1 ELSE 0 END) AS deleted, SUM(CASE WHEN vector_id IS NOT NULL AND vector_id != '' THEN 1 ELSE 0 END) AS vectorized FROM memories WHERE namespace = 'default' AND ${hiddenFilter}`).bind(...binds).first<BoardStats>();
   return { active: result?.active ?? 0, deleted: result?.deleted ?? 0, total: result?.total ?? 0, vectorized: result?.vectorized ?? 0 };
 }
-
 export async function fetchHeatmap(env: Env): Promise<HeatDay[]> {
   const since = new Date(Date.now() - 90 * 86400000).toISOString().slice(0, 19).replace("T", " ");
-  const rows = await env.DB.prepare("SELECT created_at, tags FROM memories WHERE namespace = 'default' AND status = 'active' AND type != ? AND created_at >= ?").bind(AUTO_DIARY_TYPE, since).all<{ created_at: string | null; tags: string | null }>();
+  const binds: unknown[] = [];
+  const hiddenFilter = appendBrowseHiddenRecordFilter(binds);
+  binds.push(since);
+  const rows = await env.DB.prepare(`SELECT created_at, tags FROM memories WHERE namespace = 'default' AND status = 'active' AND ${hiddenFilter} AND created_at >= ?`).bind(...binds).all<{ created_at: string | null; tags: string | null }>();
   const counts = new Map<string, number>();
   const moods = new Map<string, Map<string, number>>();
   for (const row of rows.results ?? []) {
@@ -75,7 +92,6 @@ export async function fetchHeatmap(env: Env): Promise<HeatDay[]> {
   }
   return days;
 }
-
 export async function fetchTimelineDates(env: Env): Promise<Set<string>> {
   const rows = await env.DB
     .prepare("SELECT tags FROM memories WHERE namespace = 'default' AND status = 'active' AND (source = ? OR tags LIKE ? ESCAPE '\\')")
@@ -121,8 +137,7 @@ function applyTabWhere(input: PageInput, binds: unknown[]): string {
     }
     return clause;
   }
-  binds.push(AUTO_DIARY_TYPE, TIMELINE_SPLIT_SOURCE);
-  return " AND type != ? AND (source IS NULL OR source != ?)";
+  return ` AND ${appendBrowseHiddenRecordFilter(binds)}`;
 }
 
 function orderByForTab(_tab: string): string {
@@ -155,7 +170,7 @@ function apiRecordToMemoryRecord(record: MemoryApiRecord): MemoryRecord {
 
 function matchesBrowseFilters(record: MemoryRecord, input: PageInput): boolean {
   if (record.type === AUTO_DIARY_TYPE) return false;
-  if (record.source === TIMELINE_SPLIT_SOURCE) return false;
+  if (isTimelineRecord(record)) return false;
   if (input.status !== "all" && record.status !== input.status) return false;
   if (input.type && record.type !== input.type) return false;
 
