@@ -30,19 +30,93 @@ async function runBatched(db: D1Database, statements: D1PreparedStatement[]): Pr
 }
 
 export async function saveUserMessages(db: D1Database, input: { conversationId: string; namespace: string; source: string; messages: OpenAIChatMessage[]; requestModel: string; upstreamModel: string; upstreamProvider: string; stream: boolean }): Promise<string[]> {
-  const userMessages = input.messages.filter((message) => message.role === "user");
+  type UserEntry = { content: string; hash: string; prevRole: string; prevContent: string };
+
+  const entries: UserEntry[] = [];
+  const occurrences = new Map<string, number>();
+  let previousVisible: { role: string; content: string } | null = null;
+
+  for (const message of input.messages) {
+    if (message.role === "system") continue;
+    const content = contentToText(message.content);
+    if (message.role === "user") {
+      const prevRole = previousVisible?.role ?? "start";
+      const prevContent = previousVisible?.content ?? "";
+      const contextKey = `${prevRole}:${prevContent}:${content}`;
+      const occurrence = occurrences.get(contextKey) ?? 0;
+      occurrences.set(contextKey, occurrence + 1);
+      const prevHash = await sha256Hex(prevContent);
+      const hash = await sha256Hex(`${input.conversationId}:user:${prevRole}:${prevHash}:${occurrence}:${content}`);
+      entries.push({ content, hash, prevRole, prevContent });
+    }
+    if (message.role === "user" || message.role === "assistant" || message.role === "tool") {
+      previousVisible = { role: message.role, content };
+    }
+  }
+
+  if (entries.length === 0) return [];
+
+  const existing = new Map<string, string>();
+  const hashesPerQuery = D1_BIND_LIMIT - 1;
+  for (const hashes of chunk(entries.map((entry) => entry.hash), hashesPerQuery)) {
+    const placeholders = hashes.map(() => "?").join(", ");
+    const result = await db
+      .prepare(`SELECT id, client_message_hash FROM messages WHERE conversation_id = ? AND client_message_hash IN (${placeholders})`)
+      .bind(input.conversationId, ...hashes)
+      .all<{ id: string; client_message_hash: string }>();
+    for (const row of result.results || []) existing.set(row.client_message_hash, row.id);
+  }
+
+  // Legacy compatibility: rows written by the old code used a random-id salted
+  // hash, so exact hash lookup cannot find them. Match against recent message
+  // context once, then future requests use the deterministic hash above.
+  const unmatched = entries.filter((entry) => !existing.has(entry.hash));
+  const legacyIds = new Map<string, string>();
+  if (unmatched.length > 0) {
+    const recentLimit = Math.min(500, Math.max(120, input.messages.length * 2));
+    const recent = await db
+      .prepare(`SELECT id, role, content FROM messages WHERE conversation_id = ? ORDER BY created_at DESC LIMIT ?`)
+      .bind(input.conversationId, recentLimit)
+      .all<{ id: string; role: string; content: string }>();
+    const rows = [...(recent.results || [])].reverse();
+    const used = new Set<number>();
+    for (const entry of unmatched) {
+      if (!entry.prevContent) continue;
+      for (let index = rows.length - 1; index >= 0; index -= 1) {
+        const row = rows[index];
+        if (used.has(index) || row.role !== "user" || row.content !== entry.content) continue;
+        let prev: { role: string; content: string } | null = null;
+        for (let prevIndex = index - 1; prevIndex >= 0; prevIndex -= 1) {
+          const candidate = rows[prevIndex];
+          if (candidate.role === "user" || candidate.role === "assistant" || candidate.role === "tool") {
+            prev = { role: candidate.role, content: candidate.content };
+            break;
+          }
+        }
+        if (prev?.role === entry.prevRole && prev.content === entry.prevContent) {
+          legacyIds.set(entry.hash, row.id);
+          used.add(index);
+          break;
+        }
+      }
+    }
+  }
+
   const ids: string[] = [];
   const statements: D1PreparedStatement[] = [];
-  for (const message of userMessages) {
-    const content = contentToText(message.content);
+  for (const entry of entries) {
+    const existingId = existing.get(entry.hash) || legacyIds.get(entry.hash);
+    if (existingId) {
+      ids.push(existingId);
+      continue;
+    }
     const id = newId("msg");
-    const hash = await sha256Hex(`${input.conversationId}:${id}:${message.role}:${content}`);
     ids.push(id);
     statements.push(db.prepare(`INSERT INTO messages (
             id, conversation_id, namespace, role, content, source, client_message_hash,
             upstream_model, upstream_provider, request_model, stream, created_at
           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .bind(id, input.conversationId, input.namespace, "user", content, input.source, hash, input.upstreamModel, input.upstreamProvider, input.requestModel, input.stream ? 1 : 0, nowIso()));
+      .bind(id, input.conversationId, input.namespace, "user", entry.content, input.source, entry.hash, input.upstreamModel, input.upstreamProvider, input.requestModel, input.stream ? 1 : 0, nowIso()));
   }
   await runBatched(db, statements);
   return ids;

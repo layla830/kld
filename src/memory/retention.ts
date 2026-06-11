@@ -10,7 +10,8 @@ import {
   RETENTION_BATCH_SIZE,
 } from "../db/retention";
 import { finishIdempotentTask, tryStartIdempotentTask } from "../db/idempotency";
-import type { Env } from "../types";
+import { upsertMemoryEmbedding } from "./embedding";
+import type { Env, MemoryRecord } from "../types";
 import { pruneProcessedCcConnectMessages } from "./ccConnectRetention";
 
 // ---------------------------------------------------------------------------
@@ -91,6 +92,42 @@ async function deleteVectorizeBatched(
 // namespace throttling so it doesn't run on every request.
 // ---------------------------------------------------------------------------
 
+
+const VECTOR_RESYNC_BATCH = 50;
+
+/**
+ * Re-embed active memories whose vector write previously failed (or whose
+ * metadata changed since the last embed). Errors are logged per memory so a
+ * single bad record cannot block the rest of the batch.
+ */
+async function resyncUnsyncedVectors(env: Env, namespace: string): Promise<number> {
+  if (!env.VECTORIZE) return 0;
+  let result: D1Result<MemoryRecord>;
+  try {
+    result = await env.DB
+      .prepare(
+        `SELECT * FROM memories
+         WHERE namespace = ? AND status = 'active' AND vector_synced = 0
+         ORDER BY updated_at DESC LIMIT ?`
+      )
+      .bind(namespace, VECTOR_RESYNC_BATCH)
+      .all<MemoryRecord>();
+  } catch (error) {
+    console.warn("retention: vector_synced column unavailable; skipping vector resync", error);
+    return 0;
+  }
+
+  let synced = 0;
+  for (const memory of result.results || []) {
+    try {
+      if (await upsertMemoryEmbedding(env, memory)) synced += 1;
+    } catch (error) {
+      console.error("retention: vector resync failed", memory.id, error);
+    }
+  }
+  return synced;
+}
+
 async function runMemoryRetentionInner(
   env: Env,
   namespace: string
@@ -114,6 +151,7 @@ async function runMemoryRetentionInner(
   stats.usageLogs = await deleteOldUsageLogs(env.DB, namespace, daysAgo(policy.usageLogsDays));
   stats.memoryEvents = await deleteOldMemoryEvents(env.DB, namespace, daysAgo(policy.memoryEventsDays));
   stats.idempotencyKeys = await deleteOldIdempotencyKeys(env.DB, daysAgo(policy.idempotencyKeysDays));
+  stats.vectorResynced = await resyncUnsyncedVectors(env, namespace);
 
   // Active long-term memories do not expire automatically. Manual deletes still
   // become hard-deletable after the terminal-memory retention window.

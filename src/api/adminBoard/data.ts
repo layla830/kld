@@ -77,7 +77,10 @@ export async function fetchHeatmap(env: Env): Promise<HeatDay[]> {
 }
 
 export async function fetchTimelineDates(env: Env): Promise<Set<string>> {
-  const rows = await env.DB.prepare("SELECT tags FROM memories WHERE namespace = 'default' AND status = 'active' AND source = ?").bind(TIMELINE_SPLIT_SOURCE).all<{ tags: string | null }>();
+  const rows = await env.DB
+    .prepare("SELECT tags FROM memories WHERE namespace = 'default' AND status = 'active' AND (source = ? OR tags LIKE ? ESCAPE '\\')")
+    .bind(TIMELINE_SPLIT_SOURCE, like('"timeline"'))
+    .all<{ tags: string | null }>();
   const dates = new Set<string>();
   for (const row of rows.results ?? []) {
     for (const tag of parseTags(row.tags)) {
@@ -110,8 +113,8 @@ function applyTabWhere(input: PageInput, binds: unknown[]): string {
     return clause;
   }
   if (input.tab === "timeline") {
-    binds.push(AUTO_DIARY_TYPE, TIMELINE_SPLIT_SOURCE);
-    let clause = " AND type != ? AND source = ?";
+    binds.push(AUTO_DIARY_TYPE, TIMELINE_SPLIT_SOURCE, like('"timeline"'));
+    let clause = " AND type != ? AND (source = ? OR tags LIKE ? ESCAPE '\\')";
     if (input.date) {
       clause += " AND tags LIKE ? ESCAPE '\\'";
       binds.push(like(`date:${input.date}`));
@@ -141,6 +144,7 @@ function apiRecordToMemoryRecord(record: MemoryApiRecord): MemoryRecord {
     source: record.source,
     source_message_ids: JSON.stringify(record.source_message_ids ?? []),
     vector_id: record.vector_id,
+    vector_synced: 0,
     last_recalled_at: record.last_recalled_at,
     recall_count: record.recall_count,
     created_at: record.created_at,

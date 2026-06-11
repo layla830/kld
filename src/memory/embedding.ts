@@ -104,6 +104,12 @@ export async function upsertMemoryEmbedding(env: Env, memory: MemoryRecord): Pro
     }
   ]);
 
+  try {
+    await env.DB.prepare("UPDATE memories SET vector_synced = 1 WHERE id = ?").bind(memory.id).run();
+  } catch (error) {
+    console.error("memory vector_synced flag update failed", memory.id, error);
+  }
+
   return true;
 }
 

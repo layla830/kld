@@ -100,6 +100,7 @@ function toRecord(input: LegacyMemoryInput, namespace: string): MemoryRecord {
     source: "vps-mcp-memory",
     source_message_ids: JSON.stringify(unique([`vps:${legacyId}`, input.content_hash ? `hash:${input.content_hash}` : ""])),
     vector_id: buildVectorId(id),
+    vector_synced: 0,
     last_recalled_at: lastAccessed,
     recall_count: accessCount,
     created_at: readIso(input.created_at_iso, input.created_at),
