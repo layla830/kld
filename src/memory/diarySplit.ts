@@ -1,7 +1,7 @@
 import { createMemory } from "../db/memories";
 import { callOpenAICompat } from "../proxy/openaiAdapter";
 import type { Env, MemoryRecord, OpenAIChatRequest, OpenAIChatResponse } from "../types";
-import { extractJsonObject, parseJsonStringArray } from "../utils/jsonHelpers";
+import { parseJsonStringArray } from "../utils/jsonHelpers";
 import { upsertMemoryEmbedding } from "./embedding";
 
 const TIMELINE_SOURCE = "timeline_split";
@@ -119,8 +119,38 @@ function extractRawItems(parsed: unknown): RawSplitItem[] {
   return Array.isArray(firstArray) ? (firstArray as RawSplitItem[]) : [];
 }
 
+function extractJsonPayload(text: string): unknown | null {
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    // Providers sometimes wrap JSON in prose or code fences.
+  }
+
+  const objectStart = text.indexOf("{");
+  const objectEnd = text.lastIndexOf("}");
+  if (objectStart !== -1 && objectEnd > objectStart) {
+    try {
+      return JSON.parse(text.slice(objectStart, objectEnd + 1)) as unknown;
+    } catch {
+      // Continue and try array-shaped output.
+    }
+  }
+
+  const arrayStart = text.indexOf("[");
+  const arrayEnd = text.lastIndexOf("]");
+  if (arrayStart !== -1 && arrayEnd > arrayStart) {
+    try {
+      return JSON.parse(text.slice(arrayStart, arrayEnd + 1)) as unknown;
+    } catch {
+      return null;
+    }
+  }
+
+  return null;
+}
+
 function parseItems(text: string, date: string, originId: string): DiarySplitItem[] {
-  const parsed = extractJsonObject(text);
+  const parsed = extractJsonPayload(text);
   const rawItems = extractRawItems(parsed);
   const items: DiarySplitItem[] = [];
 
