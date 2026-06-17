@@ -266,7 +266,7 @@ function buildSplitPrompt(record: MemoryRecord, date: string): string {
 }
 
 async function callSplitModel(env: Env, record: MemoryRecord, date: string, includeDebug: boolean): Promise<{ items: DiarySplitItem[]; debug?: DiarySplitDebug }> {
-  const model = env.CC_CONNECT_CHUNK_EXTRACT_MODEL || env.MEMORY_MODEL || env.CHAT_MODEL || DEFAULT_SPLIT_MODEL;
+  const model = env.CC_CONNECT_CHUNK_EXTRACT_MODEL || env.AUTO_CHUNK_SUMMARY_MODEL || env.CHAT_MODEL || env.MEMORY_MODEL || DEFAULT_SPLIT_MODEL;
   const request: OpenAIChatRequest = {
     model,
     messages: [
