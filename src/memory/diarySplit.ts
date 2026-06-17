@@ -149,6 +149,44 @@ function extractJsonPayload(text: string): unknown | null {
     // Providers sometimes wrap JSON in prose or code fences.
   }
 
+  for (let start = 0; start < text.length; start += 1) {
+    const opener = text[start];
+    if (opener !== "{" && opener !== "[") continue;
+    const closer = opener === "{" ? "}" : "]";
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+
+    for (let index = start; index < text.length; index += 1) {
+      const char = text[index];
+      if (inString) {
+        if (escaped) {
+          escaped = false;
+        } else if (char === "\\") {
+          escaped = true;
+        } else if (char === "\"") {
+          inString = false;
+        }
+        continue;
+      }
+
+      if (char === "\"") {
+        inString = true;
+      } else if (char === opener) {
+        depth += 1;
+      } else if (char === closer) {
+        depth -= 1;
+        if (depth === 0) {
+          try {
+            return JSON.parse(text.slice(start, index + 1)) as unknown;
+          } catch {
+            break;
+          }
+        }
+      }
+    }
+  }
+
   const objectStart = text.indexOf("{");
   const objectEnd = text.lastIndexOf("}");
   if (objectStart !== -1 && objectEnd > objectStart) {
@@ -161,15 +199,12 @@ function extractJsonPayload(text: string): unknown | null {
 
   const arrayStart = text.indexOf("[");
   const arrayEnd = text.lastIndexOf("]");
-  if (arrayStart !== -1 && arrayEnd > arrayStart) {
-    try {
-      return JSON.parse(text.slice(arrayStart, arrayEnd + 1)) as unknown;
-    } catch {
-      return null;
-    }
+  if (arrayStart === -1 || arrayEnd <= arrayStart) return null;
+  try {
+    return JSON.parse(text.slice(arrayStart, arrayEnd + 1)) as unknown;
+  } catch {
+    return null;
   }
-
-  return null;
 }
 
 function parseItemsWithDebug(text: string, date: string, originId: string, includeDebug: boolean): { items: DiarySplitItem[]; debug?: DiarySplitDebug } {
