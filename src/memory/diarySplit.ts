@@ -21,6 +21,7 @@ const MEMORY_TYPES = new Set([
   "warmth",
   "event"
 ]);
+const ITEM_ARRAY_KEYS = ["items", "memories", "records", "results", "entries"];
 
 export interface DiarySplitItem {
   type: string;
@@ -105,10 +106,22 @@ function factKeyForItem(raw: RawSplitItem, type: string): string | null {
   return factKey;
 }
 
+function extractRawItems(parsed: unknown): RawSplitItem[] {
+  if (Array.isArray(parsed)) return parsed as RawSplitItem[];
+  if (!parsed || typeof parsed !== "object") return [];
+
+  const record = parsed as Record<string, unknown>;
+  for (const key of ITEM_ARRAY_KEYS) {
+    if (Array.isArray(record[key])) return record[key] as RawSplitItem[];
+  }
+
+  const firstArray = Object.values(record).find((value) => Array.isArray(value));
+  return Array.isArray(firstArray) ? (firstArray as RawSplitItem[]) : [];
+}
+
 function parseItems(text: string, date: string, originId: string): DiarySplitItem[] {
   const parsed = extractJsonObject(text);
-  if (!parsed || typeof parsed !== "object") return [];
-  const rawItems = Array.isArray((parsed as { items?: unknown }).items) ? (parsed as { items: RawSplitItem[] }).items : [];
+  const rawItems = extractRawItems(parsed);
   const items: DiarySplitItem[] = [];
 
   for (const raw of rawItems.slice(0, MAX_ITEMS_PER_DIARY)) {
