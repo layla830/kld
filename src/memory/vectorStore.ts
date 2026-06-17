@@ -39,6 +39,12 @@ function readMetadataBoolean(metadata: MetadataMap, field: string): boolean {
   return value === true || value === "true";
 }
 
+function readMetadataActiveFact(metadata: MetadataMap): number {
+  const value = metadata.active_fact;
+  if (value === false || value === "false" || value === 0 || value === "0") return 0;
+  return 1;
+}
+
 function readMetadataStringArray(metadata: MetadataMap, field: string): string[] {
   const value = metadata[field];
   if (Array.isArray(value)) return value.filter((item): item is string => typeof item === "string");
@@ -78,6 +84,8 @@ function toLegacyMemoryRecord(match: VectorizeMatch, input: { namespace: string 
     type: readMetadataString(metadata, "type") || "note",
     content,
     summary: readMetadataString(metadata, "summary"),
+    fact_key: readMetadataString(metadata, "fact_key"),
+    active_fact: readMetadataActiveFact(metadata),
     importance: readMetadataNumber(metadata, "importance", 0.5),
     confidence: readMetadataNumber(metadata, "confidence", 0.8),
     status: "active",

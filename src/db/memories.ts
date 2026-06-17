@@ -10,6 +10,8 @@ export interface CreateMemoryInput {
   type: string;
   content: string;
   summary?: string | null;
+  factKey?: string | null;
+  activeFact?: boolean;
   importance?: number;
   confidence?: number;
   status?: string;
@@ -31,6 +33,8 @@ export interface UpdateMemoryInput {
   type?: string;
   content?: string;
   summary?: string | null;
+  factKey?: string | null;
+  activeFact?: boolean;
   importance?: number;
   confidence?: number;
   status?: string;
@@ -56,19 +60,26 @@ async function markMemoryVectorUnsynced(db: D1Database, input: { namespace: stri
   }
 }
 
+function activeFactForStatus(status: string): number {
+  return status === "active" ? 1 : 0;
+}
+
 export async function createMemory(db: D1Database, input: CreateMemoryInput): Promise<MemoryRecord> {
   const id = newId("mem");
   const now = nowIso();
   const vectorId = buildVectorId(id);
+  const status = input.status ?? "active";
   const record: MemoryRecord = {
     id,
     namespace: input.namespace,
     type: input.type,
     content: input.content,
     summary: input.summary ?? null,
+    fact_key: input.factKey ?? null,
+    active_fact: input.activeFact === undefined ? activeFactForStatus(status) : input.activeFact ? 1 : 0,
     importance: input.importance ?? 0.5,
     confidence: input.confidence ?? 0.8,
-    status: input.status ?? "active",
+    status,
     pinned: input.pinned ? 1 : 0,
     tags: JSON.stringify(input.tags ?? []),
     source: input.source ?? null,
@@ -85,9 +96,9 @@ export async function createMemory(db: D1Database, input: CreateMemoryInput): Pr
   await db
     .prepare(
       `INSERT INTO memories (
-        id, namespace, type, content, summary, importance, confidence, status,
+        id, namespace, type, content, summary, fact_key, active_fact, importance, confidence, status,
         pinned, tags, source, source_message_ids, vector_id, created_at, updated_at, expires_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .bind(
       record.id,
@@ -95,6 +106,8 @@ export async function createMemory(db: D1Database, input: CreateMemoryInput): Pr
       record.type,
       record.content,
       record.summary,
+      record.fact_key,
+      record.active_fact,
       record.importance,
       record.confidence,
       record.status,
@@ -202,9 +215,14 @@ export async function updateMemory(
   if (input.patch.type !== undefined) set("type", input.patch.type);
   if (input.patch.content !== undefined) set("content", input.patch.content);
   if (input.patch.summary !== undefined) set("summary", input.patch.summary);
+  if (input.patch.factKey !== undefined) set("fact_key", input.patch.factKey);
+  if (input.patch.activeFact !== undefined) set("active_fact", input.patch.activeFact ? 1 : 0);
   if (input.patch.importance !== undefined) set("importance", input.patch.importance);
   if (input.patch.confidence !== undefined) set("confidence", input.patch.confidence);
-  if (input.patch.status !== undefined) set("status", input.patch.status);
+  if (input.patch.status !== undefined) {
+    set("status", input.patch.status);
+    if (input.patch.activeFact === undefined) set("active_fact", activeFactForStatus(input.patch.status));
+  }
   if (input.patch.pinned !== undefined) set("pinned", input.patch.pinned ? 1 : 0);
   if (input.patch.tags !== undefined) set("tags", JSON.stringify(input.patch.tags));
   if (input.patch.sourceMessageIds !== undefined) set("source_message_ids", JSON.stringify(input.patch.sourceMessageIds));

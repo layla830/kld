@@ -151,6 +151,8 @@ function apiRecordToMemoryRecord(record: MemoryApiRecord): MemoryRecord {
     type: record.type,
     content: record.content,
     summary: record.summary,
+    fact_key: record.fact_key,
+    active_fact: record.active_fact ? 1 : 0,
     importance: record.importance,
     confidence: record.confidence,
     status: record.status,

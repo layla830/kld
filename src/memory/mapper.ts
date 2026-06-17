@@ -17,6 +17,8 @@ export function toMemoryApiRecord(record: MemoryRecord, score?: number): MemoryA
     type: record.type,
     content: record.content,
     summary: record.summary,
+    fact_key: record.fact_key,
+    active_fact: Boolean(record.active_fact),
     importance: record.importance,
     confidence: record.confidence,
     status: record.status,

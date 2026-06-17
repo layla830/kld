@@ -92,6 +92,8 @@ function toRecord(input: LegacyMemoryInput, namespace: string): MemoryRecord {
     type,
     content,
     summary: null,
+    fact_key: null,
+    active_fact: 1,
     importance,
     confidence: 0.95,
     status: "active",
@@ -117,6 +119,8 @@ export async function ensureMemorySchema(db: D1Database): Promise<void> {
       type TEXT NOT NULL,
       content TEXT NOT NULL,
       summary TEXT,
+      fact_key TEXT,
+      active_fact INTEGER NOT NULL DEFAULT 1,
       importance REAL NOT NULL DEFAULT 0.5,
       confidence REAL NOT NULL DEFAULT 0.8,
       status TEXT NOT NULL DEFAULT 'active',
@@ -132,6 +136,8 @@ export async function ensureMemorySchema(db: D1Database): Promise<void> {
       expires_at TEXT
     )`,
     "CREATE INDEX IF NOT EXISTS idx_memories_namespace_status ON memories(namespace, status)",
+    "CREATE INDEX IF NOT EXISTS idx_memories_namespace_fact_key ON memories(namespace, fact_key)",
+    "CREATE INDEX IF NOT EXISTS idx_memories_namespace_active_fact ON memories(namespace, active_fact)",
     "CREATE INDEX IF NOT EXISTS idx_memories_type ON memories(type)",
     "CREATE INDEX IF NOT EXISTS idx_memories_pinned ON memories(pinned)"
   ];
@@ -154,10 +160,10 @@ export async function importLegacyMemory(
   await db
     .prepare(
       `INSERT OR REPLACE INTO memories (
-        id, namespace, type, content, summary, importance, confidence, status,
+        id, namespace, type, content, summary, fact_key, active_fact, importance, confidence, status,
         pinned, tags, source, source_message_ids, vector_id, last_recalled_at,
         recall_count, created_at, updated_at, expires_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .bind(
       record.id,
@@ -165,6 +171,8 @@ export async function importLegacyMemory(
       record.type,
       record.content,
       record.summary,
+      record.fact_key,
+      record.active_fact,
       record.importance,
       record.confidence,
       record.status,

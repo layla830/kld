@@ -193,6 +193,8 @@ export interface MemoryRecord {
   type: string;
   content: string;
   summary: string | null;
+  fact_key: string | null;
+  active_fact: number;
   importance: number;
   confidence: number;
   status: "active" | "deleted" | "superseded" | "low_confidence" | string;
@@ -215,6 +217,8 @@ export interface MemoryApiRecord {
   type: string;
   content: string;
   summary: string | null;
+  fact_key: string | null;
+  active_fact: boolean;
   importance: number;
   confidence: number;
   status: string;

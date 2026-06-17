@@ -90,6 +90,8 @@ export async function upsertMemoryEmbedding(env: Env, memory: MemoryRecord): Pro
         type: memory.type,
         content: truncateMetadata(memory.content, MAX_METADATA_CONTENT_CHARS),
         summary: truncateMetadata(memory.summary || "", MAX_METADATA_SUMMARY_CHARS),
+        fact_key: memory.fact_key || "",
+        active_fact: Boolean(memory.active_fact),
         importance: memory.importance,
         confidence: memory.confidence,
         status: memory.status,

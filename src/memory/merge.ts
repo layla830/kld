@@ -279,7 +279,7 @@ export async function persistMemoryWithMerge(
       id: existing.id,
       expectedStatus: "active",
       requireUnpinned: true,
-      patch: { status: "superseded" }
+      patch: { status: "superseded", activeFact: false }
     });
     if (!superseded) return createNewMemory(env, input);
 

@@ -370,6 +370,8 @@ function messageToMemoryRecord(message: MessageRecord & { score: number }): Scor
     type: "conversation_message",
     content: `${role}：${message.content}`,
     summary: null,
+    fact_key: null,
+    active_fact: 1,
     importance: message.role === "user" ? 0.42 : 0.34,
     confidence: 0.75,
     status: "active",
