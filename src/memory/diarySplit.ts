@@ -40,6 +40,7 @@ interface DiarySplitDebug {
   raw_item_count: number;
   accepted_item_count: number;
   raw_type_sample: string[];
+  raw_key_sample: string[][];
   text_preview?: string;
 }
 
@@ -65,7 +66,11 @@ export interface SplitDiaryInput {
 
 interface RawSplitItem {
   type?: unknown;
+  memory_type?: unknown;
+  category?: unknown;
   content?: unknown;
+  text?: unknown;
+  memory?: unknown;
   summary?: unknown;
   importance?: unknown;
   confidence?: unknown;
@@ -118,6 +123,14 @@ function factKeyForItem(raw: RawSplitItem, type: string): string | null {
   return factKey;
 }
 
+function rawItemType(raw: RawSplitItem): string {
+  return cleanString(raw.type ?? raw.memory_type ?? raw.category, 40).toLowerCase();
+}
+
+function rawItemContent(raw: RawSplitItem): string {
+  return cleanString(raw.content ?? raw.text ?? raw.memory, 1200);
+}
+
 function extractRawItems(parsed: unknown): RawSplitItem[] {
   if (Array.isArray(parsed)) return parsed as RawSplitItem[];
   if (!parsed || typeof parsed !== "object") return [];
@@ -129,6 +142,13 @@ function extractRawItems(parsed: unknown): RawSplitItem[] {
 
   const firstArray = Object.values(record).find((value) => Array.isArray(value));
   return Array.isArray(firstArray) ? (firstArray as RawSplitItem[]) : [];
+}
+
+function candidateShapeCount(parsed: unknown): number {
+  return extractRawItems(parsed).filter((item) => {
+    if (!item || typeof item !== "object") return false;
+    return Boolean(rawItemType(item) && rawItemContent(item));
+  }).length;
 }
 
 function parsedKind(parsed: unknown): string {
@@ -210,8 +230,13 @@ function extractJsonPayload(text: string): unknown | null {
 
   if (candidates.length === 0) return null;
   return candidates
-    .map((candidate, index) => ({ candidate, index, count: extractRawItems(candidate).length }))
-    .sort((a, b) => b.count - a.count || b.index - a.index)[0].candidate;
+    .map((candidate, index) => ({
+      candidate,
+      index,
+      shapeCount: candidateShapeCount(candidate),
+      count: extractRawItems(candidate).length
+    }))
+    .sort((a, b) => b.shapeCount - a.shapeCount || b.count - a.count || b.index - a.index)[0].candidate;
 }
 
 function parseItemsWithDebug(text: string, date: string, originId: string, includeDebug: boolean): { items: DiarySplitItem[]; debug?: DiarySplitDebug } {
@@ -221,8 +246,8 @@ function parseItemsWithDebug(text: string, date: string, originId: string, inclu
 
   for (const raw of rawItems.slice(0, MAX_ITEMS_PER_DIARY)) {
     if (!raw || typeof raw !== "object") continue;
-    const type = cleanString(raw.type, 40).toLowerCase();
-    const content = cleanString(raw.content, 1200);
+    const type = rawItemType(raw);
+    const content = rawItemContent(raw);
     if (content === "Chinese memory text") continue;
     if (!MEMORY_TYPES.has(type) || content.length < 4) continue;
 
@@ -256,7 +281,11 @@ function parseItemsWithDebug(text: string, date: string, originId: string, inclu
           parsed_keys: parsedKeys(parsed),
           raw_item_count: rawItems.length,
           accepted_item_count: items.length,
-          raw_type_sample: rawItems.map((item) => cleanString(item?.type, 80)).filter(Boolean).slice(0, 12),
+          raw_type_sample: rawItems.map((item) => rawItemType(item)).filter(Boolean).slice(0, 12),
+          raw_key_sample: rawItems
+            .filter((item) => item && typeof item === "object")
+            .map((item) => Object.keys(item as Record<string, unknown>).slice(0, 12))
+            .slice(0, 6),
           text_preview: items.length === 0 ? text.slice(0, 500) : undefined
         }
       : undefined
