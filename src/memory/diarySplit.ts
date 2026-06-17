@@ -286,7 +286,9 @@ async function callSplitModel(env: Env, record: MemoryRecord, date: string, incl
 
   const parsed = (await response.json()) as OpenAIChatResponse;
   const message = parsed.choices?.[0]?.message;
-  const text = typeof message?.content === "string" ? message.content : typeof message?.reasoning_content === "string" ? message.reasoning_content : "";
+  const content = typeof message?.content === "string" ? message.content.trim() : "";
+  const reasoningContent = typeof message?.reasoning_content === "string" ? message.reasoning_content.trim() : "";
+  const text = content || reasoningContent;
   return parseItemsWithDebug(text, date, record.id, includeDebug);
 }
 
