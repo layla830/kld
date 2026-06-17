@@ -11,6 +11,7 @@ import {
 } from "../db/memories";
 import { saveIngestMessages } from "../db/messages";
 import { deleteMemoryEmbedding, upsertMemoryEmbedding } from "../memory/embedding";
+import { splitDiaryMemories } from "../memory/diarySplit";
 import { filterAndCompressMemoriesWithMeta } from "../memory/filter";
 import { searchMemories, toMemoryApiRecord } from "../memory/search";
 import { enqueueMemoryMaintenanceIfNeeded } from "../queue/producer";
@@ -236,6 +237,32 @@ async function handleIngestMemories(
   });
 }
 
+async function handleSplitDiaryMemories(request: Request, env: Env, profile: KeyProfile): Promise<Response> {
+  const scopeError = requireScope(profile, "memory:write");
+  if (scopeError) return scopeError;
+
+  const body = await readBody(request);
+  if (!body) return openAiError("Request body must be a JSON object", 400);
+
+  const plans = await splitDiaryMemories(env, {
+    namespace: resolveNamespace(profile, body.namespace),
+    ids: readStringArray(body.ids),
+    dates: readStringArray(body.dates),
+    apply: body.apply === true,
+    force: body.force === true
+  });
+
+  return json({
+    data: {
+      apply: body.apply === true,
+      diary_count: plans.length,
+      item_count: plans.reduce((sum, plan) => sum + plan.items.length, 0),
+      fact_key_count: plans.reduce((sum, plan) => sum + plan.items.filter((item) => item.fact_key).length, 0),
+      plans
+    }
+  });
+}
+
 async function handlePatchMemory(
   request: Request,
   env: Env,
@@ -344,6 +371,10 @@ export async function handleMemories(request: Request, env: Env, ctx: ExecutionC
 
   if (tail.length === 1 && tail[0] === "ingest" && request.method === "POST") {
     return handleIngestMemories(request, env, ctx, auth.profile);
+  }
+
+  if (tail.length === 1 && tail[0] === "split-diary" && request.method === "POST") {
+    return handleSplitDiaryMemories(request, env, auth.profile);
   }
 
   if (tail.length === 2 && tail[0] === "auto-diary" && tail[1] === "cc-connect-local" && request.method === "POST") {
