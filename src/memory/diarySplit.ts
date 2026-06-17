@@ -143,8 +143,9 @@ function parsedKeys(parsed: unknown): string[] {
 }
 
 function extractJsonPayload(text: string): unknown | null {
+  const candidates: unknown[] = [];
   try {
-    return JSON.parse(text) as unknown;
+    candidates.push(JSON.parse(text) as unknown);
   } catch {
     // Providers sometimes wrap JSON in prose or code fences.
   }
@@ -178,7 +179,7 @@ function extractJsonPayload(text: string): unknown | null {
         depth -= 1;
         if (depth === 0) {
           try {
-            return JSON.parse(text.slice(start, index + 1)) as unknown;
+            candidates.push(JSON.parse(text.slice(start, index + 1)) as unknown);
           } catch {
             break;
           }
@@ -191,7 +192,7 @@ function extractJsonPayload(text: string): unknown | null {
   const objectEnd = text.lastIndexOf("}");
   if (objectStart !== -1 && objectEnd > objectStart) {
     try {
-      return JSON.parse(text.slice(objectStart, objectEnd + 1)) as unknown;
+      candidates.push(JSON.parse(text.slice(objectStart, objectEnd + 1)) as unknown);
     } catch {
       // Continue and try array-shaped output.
     }
@@ -199,12 +200,18 @@ function extractJsonPayload(text: string): unknown | null {
 
   const arrayStart = text.indexOf("[");
   const arrayEnd = text.lastIndexOf("]");
-  if (arrayStart === -1 || arrayEnd <= arrayStart) return null;
-  try {
-    return JSON.parse(text.slice(arrayStart, arrayEnd + 1)) as unknown;
-  } catch {
-    return null;
+  if (arrayStart !== -1 && arrayEnd > arrayStart) {
+    try {
+      candidates.push(JSON.parse(text.slice(arrayStart, arrayEnd + 1)) as unknown);
+    } catch {
+      // Fall through to choosing the best earlier candidate.
+    }
   }
+
+  if (candidates.length === 0) return null;
+  return candidates
+    .map((candidate, index) => ({ candidate, index, count: extractRawItems(candidate).length }))
+    .sort((a, b) => b.count - a.count || b.index - a.index)[0].candidate;
 }
 
 function parseItemsWithDebug(text: string, date: string, originId: string, includeDebug: boolean): { items: DiarySplitItem[]; debug?: DiarySplitDebug } {
@@ -216,6 +223,7 @@ function parseItemsWithDebug(text: string, date: string, originId: string, inclu
     if (!raw || typeof raw !== "object") continue;
     const type = cleanString(raw.type, 40).toLowerCase();
     const content = cleanString(raw.content, 1200);
+    if (content === "Chinese memory text") continue;
     if (!MEMORY_TYPES.has(type) || content.length < 4) continue;
 
     const tags = [
