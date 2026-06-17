@@ -249,7 +249,8 @@ async function handleSplitDiaryMemories(request: Request, env: Env, profile: Key
     ids: readStringArray(body.ids),
     dates: readStringArray(body.dates),
     apply: body.apply === true,
-    force: body.force === true
+    force: body.force === true,
+    debug: body.debug === true
   });
 
   return json({

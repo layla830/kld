@@ -33,6 +33,16 @@ export interface DiarySplitItem {
   fact_key: string | null;
 }
 
+interface DiarySplitDebug {
+  model_text_chars: number;
+  parsed_kind: string;
+  parsed_keys: string[];
+  raw_item_count: number;
+  accepted_item_count: number;
+  raw_type_sample: string[];
+  text_preview?: string;
+}
+
 export interface DiarySplitPlan {
   diary_id: string;
   date: string;
@@ -41,6 +51,7 @@ export interface DiarySplitPlan {
   existing_count?: number;
   items: DiarySplitItem[];
   created_ids?: string[];
+  debug?: DiarySplitDebug;
 }
 
 export interface SplitDiaryInput {
@@ -49,6 +60,7 @@ export interface SplitDiaryInput {
   dates?: string[];
   apply: boolean;
   force?: boolean;
+  debug?: boolean;
 }
 
 interface RawSplitItem {
@@ -119,6 +131,17 @@ function extractRawItems(parsed: unknown): RawSplitItem[] {
   return Array.isArray(firstArray) ? (firstArray as RawSplitItem[]) : [];
 }
 
+function parsedKind(parsed: unknown): string {
+  if (Array.isArray(parsed)) return "array";
+  if (parsed === null) return "null";
+  return typeof parsed;
+}
+
+function parsedKeys(parsed: unknown): string[] {
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return [];
+  return Object.keys(parsed as Record<string, unknown>).slice(0, 20);
+}
+
 function extractJsonPayload(text: string): unknown | null {
   try {
     return JSON.parse(text) as unknown;
@@ -149,7 +172,7 @@ function extractJsonPayload(text: string): unknown | null {
   return null;
 }
 
-function parseItems(text: string, date: string, originId: string): DiarySplitItem[] {
+function parseItemsWithDebug(text: string, date: string, originId: string, includeDebug: boolean): { items: DiarySplitItem[]; debug?: DiarySplitDebug } {
   const parsed = extractJsonPayload(text);
   const rawItems = extractRawItems(parsed);
   const items: DiarySplitItem[] = [];
@@ -181,7 +204,20 @@ function parseItems(text: string, date: string, originId: string): DiarySplitIte
     });
   }
 
-  return items;
+  return {
+    items,
+    debug: includeDebug
+      ? {
+          model_text_chars: text.length,
+          parsed_kind: parsedKind(parsed),
+          parsed_keys: parsedKeys(parsed),
+          raw_item_count: rawItems.length,
+          accepted_item_count: items.length,
+          raw_type_sample: rawItems.map((item) => cleanString(item?.type, 80)).filter(Boolean).slice(0, 12),
+          text_preview: items.length === 0 ? text.slice(0, 500) : undefined
+        }
+      : undefined
+  };
 }
 
 function buildSplitPrompt(record: MemoryRecord, date: string): string {
@@ -229,7 +265,7 @@ function buildSplitPrompt(record: MemoryRecord, date: string): string {
   ].join("\n");
 }
 
-async function callSplitModel(env: Env, record: MemoryRecord, date: string): Promise<DiarySplitItem[]> {
+async function callSplitModel(env: Env, record: MemoryRecord, date: string, includeDebug: boolean): Promise<{ items: DiarySplitItem[]; debug?: DiarySplitDebug }> {
   const model = env.CC_CONNECT_CHUNK_EXTRACT_MODEL || env.MEMORY_MODEL || env.CHAT_MODEL || DEFAULT_SPLIT_MODEL;
   const request: OpenAIChatRequest = {
     model,
@@ -251,7 +287,7 @@ async function callSplitModel(env: Env, record: MemoryRecord, date: string): Pro
   const parsed = (await response.json()) as OpenAIChatResponse;
   const message = parsed.choices?.[0]?.message;
   const text = typeof message?.content === "string" ? message.content : typeof message?.reasoning_content === "string" ? message.reasoning_content : "";
-  return parseItems(text, date, record.id);
+  return parseItemsWithDebug(text, date, record.id, includeDebug);
 }
 
 async function existingSplitCount(db: D1Database, input: { namespace: string; originId: string }): Promise<number> {
@@ -326,13 +362,13 @@ export async function splitDiaryMemories(env: Env, input: SplitDiaryInput): Prom
       continue;
     }
 
-    const items = await callSplitModel(env, record, date);
+    const { items, debug } = await callSplitModel(env, record, date, input.debug === true);
     if (items.length === 0) {
-      plans.push({ diary_id: record.id, date, skipped: true, reason: "no_items", items: [] });
+      plans.push({ diary_id: record.id, date, skipped: true, reason: "no_items", items: [], debug });
       continue;
     }
 
-    const plan: DiarySplitPlan = { diary_id: record.id, date, skipped: false, items };
+    const plan: DiarySplitPlan = { diary_id: record.id, date, skipped: false, items, debug };
     if (input.apply) {
       plan.created_ids = await persistItems(env, { namespace: input.namespace, diary: record, items });
     }
