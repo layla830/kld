@@ -69,7 +69,7 @@ export function supportNeedles(rawQuery: string, searchQuery: string): string[] 
 }
 
 export function supportHaystack(memory: MemoryApiRecord): string {
-  return `${memory.content} ${memory.summary || ""} ${memory.tags.join(" ")} ${memory.type} ${memory.source || ""} ${memory.created_at} ${memory.updated_at}`.toLowerCase();
+  return `${memory.content} ${memory.summary || ""} ${memory.fact_key || ""} ${memory.tags.join(" ")} ${memory.type} ${memory.source || ""} ${memory.created_at} ${memory.updated_at}`.toLowerCase();
 }
 
 export function matchesAnyNeedle(memory: MemoryApiRecord, needles: string[]): boolean {

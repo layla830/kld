@@ -194,6 +194,39 @@ export async function fetchMemoriesByIds(
   return rows.sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0));
 }
 
+export async function listActiveMemoriesByFactKeys(
+  db: D1Database,
+  input: { namespace: string; factKeys: string[]; limit: number; excludeTypes?: string[] }
+): Promise<MemoryRecord[]> {
+  const factKeys = [...new Set(input.factKeys.map((factKey) => factKey.trim()).filter(Boolean))];
+  if (factKeys.length === 0) return [];
+
+  const rows: MemoryRecord[] = [];
+  const excludeTypes = [...new Set((input.excludeTypes ?? []).map((type) => type.trim()).filter(Boolean))];
+  const typeClause = excludeTypes.length > 0 ? ` AND type NOT IN (${excludeTypes.map(() => "?").join(", ")})` : "";
+  const keysPerQuery = Math.max(1, D1_BIND_LIMIT - 2 - excludeTypes.length);
+  for (const keys of chunk(factKeys, keysPerQuery)) {
+    const placeholders = keys.map(() => "?").join(", ");
+    const result = await db
+      .prepare(
+        `SELECT * FROM memories
+         WHERE namespace = ?
+           AND status = 'active'
+           AND fact_key IN (${placeholders})
+           ${typeClause}
+         ORDER BY pinned DESC, importance DESC, updated_at DESC
+         LIMIT ?`
+      )
+      .bind(input.namespace, ...keys, ...excludeTypes, input.limit)
+      .all<MemoryRecord>();
+    rows.push(...(result.results ?? []));
+  }
+
+  return rows
+    .sort((a, b) => b.pinned - a.pinned || b.importance - a.importance || String(b.updated_at).localeCompare(String(a.updated_at)))
+    .slice(0, input.limit);
+}
+
 export async function updateMemory(
   db: D1Database,
   input: {
@@ -286,7 +319,7 @@ function tokenizeQuery(query: string): string[] {
 }
 
 function haystack(record: MemoryRecord): string {
-  return `${record.content} ${record.summary || ""} ${record.tags || ""} ${record.type}`.toLowerCase();
+  return `${record.content} ${record.summary || ""} ${record.fact_key || ""} ${record.tags || ""} ${record.type}`.toLowerCase();
 }
 
 function scoreKeywordRecord(record: MemoryRecord, query: string, tokens: string[]): number {
@@ -321,16 +354,28 @@ export async function searchMemoriesByText(
   }
 
   if (query) {
-    const clauses = [`content LIKE ? ESCAPE '\\'`, `summary LIKE ? ESCAPE '\\'`, `tags LIKE ? ESCAPE '\\'`, `type LIKE ? ESCAPE '\\'`];
+    const clauses = [
+      `content LIKE ? ESCAPE '\\'`,
+      `summary LIKE ? ESCAPE '\\'`,
+      `fact_key LIKE ? ESCAPE '\\'`,
+      `tags LIKE ? ESCAPE '\\'`,
+      `type LIKE ? ESCAPE '\\'`
+    ];
     const exactLike = `%${escapeLike(query)}%`;
-    binds.push(exactLike, exactLike, exactLike, exactLike);
+    binds.push(exactLike, exactLike, exactLike, exactLike, exactLike);
 
-    const tokenBudget = Math.max(0, Math.floor((D1_BIND_LIMIT - binds.length - 1) / 4));
+    const tokenBudget = Math.max(0, Math.floor((D1_BIND_LIMIT - binds.length - 1) / 5));
     const safeTokens = tokens.slice(0, tokenBudget);
     for (const token of safeTokens) {
       const like = `%${escapeLike(token)}%`;
-      clauses.push(`content LIKE ? ESCAPE '\\'`, `summary LIKE ? ESCAPE '\\'`, `tags LIKE ? ESCAPE '\\'`, `type LIKE ? ESCAPE '\\'`);
-      binds.push(like, like, like, like);
+      clauses.push(
+        `content LIKE ? ESCAPE '\\'`,
+        `summary LIKE ? ESCAPE '\\'`,
+        `fact_key LIKE ? ESCAPE '\\'`,
+        `tags LIKE ? ESCAPE '\\'`,
+        `type LIKE ? ESCAPE '\\'`
+      );
+      binds.push(like, like, like, like, like);
     }
 
     sql += ` AND (${clauses.join(" OR ")})`;

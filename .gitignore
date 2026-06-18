@@ -4,3 +4,5 @@ node_modules/
 .env
 .wrangler-secrets.json
 dist/
+scripts/fact_key_audit*.json
+scripts/memory_relations*.json
