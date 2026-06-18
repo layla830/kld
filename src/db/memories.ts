@@ -12,6 +12,12 @@ export interface CreateMemoryInput {
   summary?: string | null;
   factKey?: string | null;
   activeFact?: boolean;
+  thread?: string | null;
+  riskLevel?: string | null;
+  urgencyLevel?: string | null;
+  tensionScore?: number | null;
+  responsePosture?: string | null;
+  auditState?: string | null;
   importance?: number;
   confidence?: number;
   status?: string;
@@ -26,6 +32,8 @@ export interface ListMemoryFilters {
   namespace: string;
   type?: string;
   status?: string;
+  factKey?: string;
+  thread?: string;
   limit: number;
 }
 
@@ -35,6 +43,12 @@ export interface UpdateMemoryInput {
   summary?: string | null;
   factKey?: string | null;
   activeFact?: boolean;
+  thread?: string | null;
+  riskLevel?: string | null;
+  urgencyLevel?: string | null;
+  tensionScore?: number | null;
+  responsePosture?: string | null;
+  auditState?: string | null;
   importance?: number;
   confidence?: number;
   status?: string;
@@ -77,6 +91,12 @@ export async function createMemory(db: D1Database, input: CreateMemoryInput): Pr
     summary: input.summary ?? null,
     fact_key: input.factKey ?? null,
     active_fact: input.activeFact === undefined ? activeFactForStatus(status) : input.activeFact ? 1 : 0,
+    thread: input.thread ?? null,
+    risk_level: input.riskLevel ?? null,
+    urgency_level: input.urgencyLevel ?? null,
+    tension_score: input.tensionScore ?? null,
+    response_posture: input.responsePosture ?? null,
+    audit_state: input.auditState ?? null,
     importance: input.importance ?? 0.5,
     confidence: input.confidence ?? 0.8,
     status,
@@ -96,9 +116,11 @@ export async function createMemory(db: D1Database, input: CreateMemoryInput): Pr
   await db
     .prepare(
       `INSERT INTO memories (
-        id, namespace, type, content, summary, fact_key, active_fact, importance, confidence, status,
+        id, namespace, type, content, summary, fact_key, active_fact,
+        thread, risk_level, urgency_level, tension_score, response_posture, audit_state,
+        importance, confidence, status,
         pinned, tags, source, source_message_ids, vector_id, created_at, updated_at, expires_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .bind(
       record.id,
@@ -108,6 +130,12 @@ export async function createMemory(db: D1Database, input: CreateMemoryInput): Pr
       record.summary,
       record.fact_key,
       record.active_fact,
+      record.thread,
+      record.risk_level,
+      record.urgency_level,
+      record.tension_score,
+      record.response_posture,
+      record.audit_state,
       record.importance,
       record.confidence,
       record.status,
@@ -137,6 +165,16 @@ export async function listMemories(db: D1Database, filters: ListMemoryFilters): 
   if (filters.status) {
     sql += " AND status = ?";
     binds.push(filters.status);
+  }
+
+  if (filters.factKey) {
+    sql += " AND fact_key = ?";
+    binds.push(filters.factKey);
+  }
+
+  if (filters.thread) {
+    sql += " AND thread = ?";
+    binds.push(filters.thread);
   }
 
   sql += " ORDER BY pinned DESC, importance DESC, updated_at DESC LIMIT ?";
@@ -250,6 +288,12 @@ export async function updateMemory(
   if (input.patch.summary !== undefined) set("summary", input.patch.summary);
   if (input.patch.factKey !== undefined) set("fact_key", input.patch.factKey);
   if (input.patch.activeFact !== undefined) set("active_fact", input.patch.activeFact ? 1 : 0);
+  if (input.patch.thread !== undefined) set("thread", input.patch.thread);
+  if (input.patch.riskLevel !== undefined) set("risk_level", input.patch.riskLevel);
+  if (input.patch.urgencyLevel !== undefined) set("urgency_level", input.patch.urgencyLevel);
+  if (input.patch.tensionScore !== undefined) set("tension_score", input.patch.tensionScore);
+  if (input.patch.responsePosture !== undefined) set("response_posture", input.patch.responsePosture);
+  if (input.patch.auditState !== undefined) set("audit_state", input.patch.auditState);
   if (input.patch.importance !== undefined) set("importance", input.patch.importance);
   if (input.patch.confidence !== undefined) set("confidence", input.patch.confidence);
   if (input.patch.status !== undefined) {

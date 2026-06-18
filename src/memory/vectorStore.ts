@@ -39,6 +39,17 @@ function readMetadataBoolean(metadata: MetadataMap, field: string): boolean {
   return value === true || value === "true";
 }
 
+function readMetadataOptionalNumber(metadata: MetadataMap, field: string): number | null {
+  const value = metadata[field];
+  if (value === null || value === undefined || value === "") return null;
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return null;
+}
+
 function readMetadataActiveFact(metadata: MetadataMap): number {
   const value = metadata.active_fact;
   if (value === false || value === "false" || value === 0 || value === "0") return 0;
@@ -86,6 +97,12 @@ function toLegacyMemoryRecord(match: VectorizeMatch, input: { namespace: string 
     summary: readMetadataString(metadata, "summary"),
     fact_key: readMetadataString(metadata, "fact_key"),
     active_fact: readMetadataActiveFact(metadata),
+    thread: readMetadataString(metadata, "thread"),
+    risk_level: readMetadataString(metadata, "risk_level"),
+    urgency_level: readMetadataString(metadata, "urgency_level"),
+    tension_score: readMetadataOptionalNumber(metadata, "tension_score"),
+    response_posture: readMetadataString(metadata, "response_posture"),
+    audit_state: readMetadataString(metadata, "audit_state"),
     importance: readMetadataNumber(metadata, "importance", 0.5),
     confidence: readMetadataNumber(metadata, "confidence", 0.8),
     status: "active",

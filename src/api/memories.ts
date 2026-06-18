@@ -11,6 +11,14 @@ import {
 } from "../db/memories";
 import { saveIngestMessages } from "../db/messages";
 import { deleteMemoryEmbedding, upsertMemoryEmbedding } from "../memory/embedding";
+import {
+  normalizeAuditState,
+  normalizeResponsePosture,
+  normalizeRiskLevel,
+  normalizeTensionScore,
+  normalizeThread,
+  normalizeUrgencyLevel
+} from "../memory/coordinates";
 import { splitDiaryMemories } from "../memory/diarySplit";
 import { filterAndCompressMemoriesWithMeta } from "../memory/filter";
 import { searchMemories, toMemoryApiRecord } from "../memory/search";
@@ -91,6 +99,12 @@ async function handleCreateMemory(
     summary: readOptionalString(body.summary),
     factKey: readOptionalString(body.fact_key),
     activeFact: typeof body.active_fact === "boolean" ? readBoolean(body.active_fact) : undefined,
+    thread: normalizeThread(body.thread),
+    riskLevel: normalizeRiskLevel(body.risk_level),
+    urgencyLevel: normalizeUrgencyLevel(body.urgency_level),
+    tensionScore: normalizeTensionScore(body.tension_score),
+    responsePosture: normalizeResponsePosture(body.response_posture),
+    auditState: normalizeAuditState(body.audit_state),
     importance: readNumber(body.importance, 0.5),
     confidence: readNumber(body.confidence, 0.8),
     status: readString(body.status) || "active",
@@ -122,6 +136,8 @@ async function handleListMemories(request: Request, env: Env, profile: KeyProfil
     namespace,
     type,
     status: url.searchParams.get("status") || "active",
+    factKey: url.searchParams.get("fact_key") || undefined,
+    thread: url.searchParams.get("thread") || undefined,
     limit: type ? limit : 100
   });
   const apiRecords = records.map((record) => toMemoryApiRecord(record));
@@ -284,6 +300,12 @@ async function handlePatchMemory(
     summary: readOptionalString(body.summary),
     factKey: body.fact_key === undefined ? undefined : readOptionalString(body.fact_key),
     activeFact: typeof body.active_fact === "boolean" ? readBoolean(body.active_fact) : undefined,
+    thread: body.thread === undefined ? undefined : normalizeThread(body.thread),
+    riskLevel: body.risk_level === undefined ? undefined : normalizeRiskLevel(body.risk_level),
+    urgencyLevel: body.urgency_level === undefined ? undefined : normalizeUrgencyLevel(body.urgency_level),
+    tensionScore: body.tension_score === undefined ? undefined : normalizeTensionScore(body.tension_score),
+    responsePosture: body.response_posture === undefined ? undefined : normalizeResponsePosture(body.response_posture),
+    auditState: body.audit_state === undefined ? undefined : normalizeAuditState(body.audit_state),
     importance: typeof body.importance === "number" ? readNumber(body.importance, 0.5) : undefined,
     confidence: typeof body.confidence === "number" ? readNumber(body.confidence, 0.8) : undefined,
     status: readString(body.status),

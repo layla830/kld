@@ -94,6 +94,12 @@ function toRecord(input: LegacyMemoryInput, namespace: string): MemoryRecord {
     summary: null,
     fact_key: null,
     active_fact: 1,
+    thread: null,
+    risk_level: null,
+    urgency_level: null,
+    tension_score: null,
+    response_posture: null,
+    audit_state: null,
     importance,
     confidence: 0.95,
     status: "active",
@@ -121,6 +127,12 @@ export async function ensureMemorySchema(db: D1Database): Promise<void> {
       summary TEXT,
       fact_key TEXT,
       active_fact INTEGER NOT NULL DEFAULT 1,
+      thread TEXT,
+      risk_level TEXT,
+      urgency_level TEXT,
+      tension_score REAL,
+      response_posture TEXT,
+      audit_state TEXT,
       importance REAL NOT NULL DEFAULT 0.5,
       confidence REAL NOT NULL DEFAULT 0.8,
       status TEXT NOT NULL DEFAULT 'active',
@@ -138,6 +150,8 @@ export async function ensureMemorySchema(db: D1Database): Promise<void> {
     "CREATE INDEX IF NOT EXISTS idx_memories_namespace_status ON memories(namespace, status)",
     "CREATE INDEX IF NOT EXISTS idx_memories_namespace_fact_key ON memories(namespace, fact_key)",
     "CREATE INDEX IF NOT EXISTS idx_memories_namespace_active_fact ON memories(namespace, active_fact)",
+    "CREATE INDEX IF NOT EXISTS idx_memories_thread ON memories(namespace, thread, status)",
+    "CREATE INDEX IF NOT EXISTS idx_memories_experience ON memories(namespace, risk_level, urgency_level, tension_score, status)",
     "CREATE INDEX IF NOT EXISTS idx_memories_type ON memories(type)",
     "CREATE INDEX IF NOT EXISTS idx_memories_pinned ON memories(pinned)"
   ];
@@ -160,10 +174,12 @@ export async function importLegacyMemory(
   await db
     .prepare(
       `INSERT OR REPLACE INTO memories (
-        id, namespace, type, content, summary, fact_key, active_fact, importance, confidence, status,
+        id, namespace, type, content, summary, fact_key, active_fact,
+        thread, risk_level, urgency_level, tension_score, response_posture, audit_state,
+        importance, confidence, status,
         pinned, tags, source, source_message_ids, vector_id, last_recalled_at,
         recall_count, created_at, updated_at, expires_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .bind(
       record.id,
@@ -173,6 +189,12 @@ export async function importLegacyMemory(
       record.summary,
       record.fact_key,
       record.active_fact,
+      record.thread,
+      record.risk_level,
+      record.urgency_level,
+      record.tension_score,
+      record.response_posture,
+      record.audit_state,
       record.importance,
       record.confidence,
       record.status,

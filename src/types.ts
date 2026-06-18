@@ -195,6 +195,12 @@ export interface MemoryRecord {
   summary: string | null;
   fact_key: string | null;
   active_fact: number;
+  thread: string | null;
+  risk_level: string | null;
+  urgency_level: string | null;
+  tension_score: number | null;
+  response_posture: string | null;
+  audit_state: string | null;
   importance: number;
   confidence: number;
   status: "active" | "deleted" | "superseded" | "low_confidence" | string;
@@ -219,6 +225,12 @@ export interface MemoryApiRecord {
   summary: string | null;
   fact_key: string | null;
   active_fact: boolean;
+  thread: string | null;
+  risk_level: string | null;
+  urgency_level: string | null;
+  tension_score: number | null;
+  response_posture: string | null;
+  audit_state: string | null;
   importance: number;
   confidence: number;
   status: string;
