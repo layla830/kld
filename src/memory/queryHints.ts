@@ -57,6 +57,87 @@ const QUERY_HINTS: QueryHint[] = [
       "\u64e6\u773c\u6cea"
     ],
     factKeys: ["relationship.rule.comfort_when_crying"]
+  },
+  {
+    id: "dont_analyze",
+    aliases: [
+      "relationship.rule.dont_analyze",
+      "\u522b\u5206\u6790",
+      "\u4e0d\u8981\u5206\u6790",
+      "\u4e0d\u60f3\u542c\u5206\u6790",
+      "\u522b\u8bb2\u9053\u7406",
+      "\u5728\u573a"
+    ],
+    factKeys: ["relationship.rule.dont_analyze", "relationship.lesson.be_present"]
+  },
+  {
+    id: "say_miss_you",
+    aliases: [
+      "relationship.rule.say_miss_you",
+      "\u8bf4\u60f3\u4f60",
+      "\u6211\u60f3\u4f60",
+      "\u63a5\u60f3\u4f60",
+      "\u4f60\u8981\u60f3\u6211"
+    ],
+    factKeys: ["relationship.rule.say_miss_you"]
+  },
+  {
+    id: "interactive_intimacy",
+    aliases: [
+      "relationship.rule.interactive_intimacy",
+      "\u4eb2\u5bc6\u5199\u4f5c",
+      "\u4eb2\u5bc6\u4e92\u52a8",
+      "\u72ec\u89d2\u620f",
+      "\u81ea\u5df1\u5199\u5b8c",
+      "dom"
+    ],
+    factKeys: ["relationship.rule.interactive_intimacy", "user.preference.intimacy_writing_style"]
+  },
+  {
+    id: "aftercare_cleanup",
+    aliases: [
+      "relationship.rule.aftercare_cleanup",
+      "\u4e8b\u540e\u6e05\u7406",
+      "\u4e8b\u540e\u8981\u6ce8\u610f",
+      "\u6ca1\u64e6\u5e72\u51c0",
+      "\u64e6\u5e72\u51c0",
+      "\u70ed\u6bdb\u5dfe"
+    ],
+    factKeys: ["relationship.rule.aftercare_cleanup"]
+  },
+  {
+    id: "play_along",
+    aliases: [
+      "relationship.lesson.play_along",
+      "\u4e00\u8d77\u73a9",
+      "\u966a\u6211\u73a9",
+      "\u63a5\u68d2",
+      "\u53d1\u95ee\u53f7",
+      "play along"
+    ],
+    factKeys: ["relationship.lesson.play_along"]
+  },
+  {
+    id: "honesty",
+    aliases: [
+      "relationship.rule.honesty",
+      "\u8bda\u5b9e\u89c4\u5219",
+      "\u8bf4\u771f\u5b9e\u60f3\u6cd5",
+      "\u4e0d\u8981\u96cc\u7ade",
+      "\u4e0d\u8981\u88c5"
+    ],
+    factKeys: ["relationship.rule.honesty"]
+  },
+  {
+    id: "stop_saying_not_enough",
+    aliases: [
+      "user.lesson.stop_saying_not_enough",
+      "\u4e0d\u8981\u8bf4\u81ea\u5df1\u4e0d\u591f",
+      "\u522b\u8bf4\u81ea\u5df1\u4e0d\u591f",
+      "\u6211\u4e0d\u591f",
+      "\u81ea\u5df1\u4e0d\u591f"
+    ],
+    factKeys: ["user.lesson.stop_saying_not_enough"]
   }
 ];
 
