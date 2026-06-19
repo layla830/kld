@@ -6,9 +6,10 @@ const FILTER_TIMEOUT_MS = 8000;
 const UTTERANCE_RE = /原话|怎么说|说什么|说过什么|表达|口头禅|称呼|叫/;
 const FACT_RE = /是什么|哪个|哪种|喜欢什么|讨厌什么|设定|偏好|雷点|底线|怎么来的|由来/;
 const TIME_RE = /什么时候|哪天|多久|第几次|上次|昨天|前天|那天|那次|当时|日期|时间|发生了什么|发生什么|怎么聊|聊了什么/;
+const GUIDANCE_RE = /应该怎么做|怎么办|怎么接|怎么哄|怎么回应|怎么处理|怎么开口|怎么说|要怎么做|该怎么办/;
 const SHORT_UTTERANCE_NOISE_RE = /待会|现在|公司|回消息|自己玩|洗澡|回来|找你|睡觉|睡前|醒的时候|摸鱼/;
 
-type IntentKind = "utterance" | "fact" | "time" | "general";
+type IntentKind = "utterance" | "fact" | "time" | "guidance" | "general";
 
 function getMaxOutput(env: Env, requestedTopK: number): number {
   const value = Number(env.MEMORY_SEARCH_MAX_OUTPUT || 8);
@@ -21,6 +22,7 @@ function intentKind(rawQuery: string, query: string): IntentKind {
   if (UTTERANCE_RE.test(text)) return "utterance";
   if (TIME_RE.test(text)) return "time";
   if (FACT_RE.test(text)) return "fact";
+  if (GUIDANCE_RE.test(text)) return "guidance";
   return "general";
 }
 
@@ -64,6 +66,10 @@ function isLongNarrative(memory: MemoryApiRecord): boolean {
   return memory.content.length > 180 || /diary|summary|日记|总结|legacy:vps/i.test(meta(memory));
 }
 
+function isGuidanceRecord(memory: MemoryApiRecord): boolean {
+  return Boolean(memory.fact_key) && /^(rule|lesson|core|preference)$/i.test(memory.type);
+}
+
 function directHit(memory: MemoryApiRecord, query: string): boolean {
   const needle = compact(query);
   return needle.length >= 2 && compact(haystack(memory)).includes(needle);
@@ -96,6 +102,14 @@ function scoreMemory(memory: MemoryApiRecord, input: { kind: IntentKind; query: 
     if (isQuote(memory)) score += 1;
     if (SHORT_UTTERANCE_NOISE_RE.test(memory.content)) score -= 0.7;
     if (isLongNarrative(memory)) score -= 0.7;
+  }
+
+  if (input.kind === "guidance") {
+    if (isGuidanceRecord(memory)) score += 1.05;
+    if (memory.response_posture && isGuidanceRecord(memory)) score += 0.25;
+    if (isQuote(memory) || isMilestone(memory) || isTimeline(memory)) score -= 0.85;
+    if (/^(diary|layla_diary|quarrel|message|identity)$/i.test(memory.type)) score -= 0.75;
+    if (isLongNarrative(memory) && !isGuidanceRecord(memory)) score -= 0.9;
   }
 
   return score - input.index * 0.001;
@@ -158,6 +172,7 @@ export async function postProcessMemorySearchResults(
   const rawQuery = input.rawQuery || query;
   const { kind, memories } = rerank(query, rawQuery, input.memories);
   const candidates = withoutIncidentalHandoff(rawQuery, memories);
+  if (kind === "guidance") return candidates.slice(0, maxOutput);
   const filtered = await filterWithTimeout(env, rawQuery, candidates);
   return keepLead(kind, query, rawQuery, candidates, filtered, maxOutput);
 }

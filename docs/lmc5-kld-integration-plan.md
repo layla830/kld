@@ -42,89 +42,100 @@ Aelios translates LMC-5/XYZEM ideas into a Cloudflare Worker + D1 shape. Do not 
 
 ## Current KLD State
 
-Already done:
+Snapshot as of 2026-06-19:
 
 - Added `fact_key` and `active_fact` to memories.
 - Backfilled selected high-value long-term facts.
 - Added `memory_relations`.
-- Imported the first two relation batches from DS output.
-- Added `queryHints` so common questions can directly target known fact keys.
+- Imported reviewed relation batches from DS output.
+- Added and expanded `queryHints` so common questions can directly target known fact keys.
+- Added lightweight LMC-5 coordinate fields on memories:
+  - `thread`
+  - `risk_level`
+  - `urgency_level`
+  - `tension_score`
+  - `response_posture`
+  - `audit_state`
+- Added import/audit script for reviewed coordinate JSON:
+  - `scripts/lmc5-coordinate-audit.mjs`
+  - `npm run memory:lmc5-coordinates`
 - Updated recall/search so rules and preferences can lead, while diary/quote/milestone memories act as context.
 - Deployed and pushed commit `844c893 Add fact-key guided memory recall`.
+- Deployed and pushed commit `94e0a96 Add LMC-5 memory coordinate fields`.
+- Deployed and pushed commit `ea88345 Add LMC-5 coordinate import script`.
+- Deployed query hint expansion to Cloudflare, and committed the remote change as `83a979d Expand memory query hints`.
+- Another model added a small E-axis ranking boost in commit `286b2e0 Boost rule/lesson/boundary memories in recall ranking via E-axis`.
 
-Current deployed behavior was checked with:
+Current remote data checks:
 
-- communication style prompt
-- six boundaries prompt
-- comfort while crying prompt
+- Active memories: about 687.
+- Coordinate coverage: 49 active memories with at least one coordinate signal.
+- `memory_relations`: 83 rows.
+- `vps_291` was corrected from `relationship.lesson.be_present` to `identity.about_her` and its `audit_state` was cleared.
+- `relationship.lesson.be_present`, `relationship.rule.honesty`, and `user.lesson.stop_saying_not_enough` are no longer isolated:
+  - `be_present`: 7 touching relations.
+  - `honesty`: 6 touching relations.
+  - `stop_saying_not_enough`: 4 touching relations.
 
-The intended behavior is that the relevant rule/preference comes first, with supporting quote/diary/context after it.
+Current known review item:
+
+- `vps_306` was the last known `review_candidate`: a 2026-03-23 one-month milestone. It is low risk and likely does not need a durable rule `fact_key`; it can remain milestone/context or have `audit_state` cleared if already reviewed.
+
+The intended behavior remains: the relevant rule/preference should come first, with supporting quote/diary/context after it.
 
 ## What KLD Has From LMC-5 So Far
 
-- Partial Z: `fact_key` and `active_fact`.
+- Partial X: `thread` coordinates on reviewed memories.
 - Partial Y: `memory_relations`.
+- Partial Z: `fact_key`, `active_fact`, and `audit_state`.
+- Partial E: `risk_level`, `urgency_level`, `tension_score`, `response_posture`, plus a small ranking boost for rule-like/high-tension memories.
 - Small M-shaped behavior: diary-like records should not win as primary fact-key matches; they should support rules as examples/context.
 - Query hints are not part of LMC-5 itself. They are a KLD adaptation that makes natural prompts hit the right structured memory coordinates.
 
 KLD does not yet have full:
 
-- X timeline/thread behavior.
-- E ranking or response posture behavior.
+- X timeline/thread behavior across the whole corpus.
+- E response posture behavior in final answer generation.
 - M patrol/review workflow.
 - Z conflict audit and supersession workflow.
 
 ## Current Step
 
-Add a lightweight LMC-5 coordinate layer without changing recall ranking yet.
+Do not start a new schema or ranking change. The next normal step is real recall evaluation.
 
-Migration fields:
+Run a small fixed evaluation set against the deployed recall endpoint when access is available:
 
-```sql
-ALTER TABLE memories ADD COLUMN thread TEXT;
-ALTER TABLE memories ADD COLUMN risk_level TEXT;
-ALTER TABLE memories ADD COLUMN urgency_level TEXT;
-ALTER TABLE memories ADD COLUMN tension_score REAL;
-ALTER TABLE memories ADD COLUMN response_posture TEXT;
-ALTER TABLE memories ADD COLUMN audit_state TEXT;
+- `我哭的时候你应该怎么做？`
+- `别分析是什么意思？`
+- `六条底线是什么？`
+- `我说想你的时候你怎么接？`
+- `亲密写作不能怎么样？`
+- `事后清理要注意什么？`
+- `诚实规则是什么？`
+- `为什么不要说自己不够？`
+- `我是谁/我的背景是什么？`
 
-CREATE INDEX IF NOT EXISTS idx_memories_thread
-ON memories(namespace, thread, status);
+Expected result:
 
-CREATE INDEX IF NOT EXISTS idx_memories_experience
-ON memories(namespace, risk_level, urgency_level, tension_score, status);
-```
+- Rule/preference/lesson memories should rank before diaries, quotes, and timeline context.
+- Diaries, quotes, and milestone memories should still appear as supporting context when related.
+- `identity.about_her` should answer identity/profile prompts, not `be_present` prompts.
 
-Important: do not add `fact_key` or `memory_relations` again. KLD already has them.
+Current access blocker:
 
-Code changes:
+- Direct access from this Codex environment to `https://kld.yuxin2247.workers.dev` times out on port 443.
+- VPS access reaches Cloudflare but is blocked by Cloudflare edge error `1010`.
+- `wrangler deployments list` works, so Cloudflare account/API control plane access is fine.
+- `wrangler dev --remote` starts but preview requests hang/exit, so it is not stable enough for recall evaluation here.
 
-- Add `src/memory/coordinates.ts` with simple normalizers:
-  - `normalizeThread`
-  - `normalizeRiskLevel`
-  - `normalizeUrgencyLevel`
-  - `normalizeTensionScore`
-  - `normalizeResponsePosture`
-  - `normalizeAuditState`
-- Extend `MemoryRecord` and `MemoryApiRecord`.
-- Extend `createMemory`, `updateMemory`, and mapper/API paths to read/write these nullable fields.
-- Add fields to Vectorize metadata for future debugging/search migration.
-- Do not let E-axis values affect ranking until enough records have reliable data.
-
-Validation:
-
-- `npm run typecheck`
-- local D1 migration
-- remote D1 migration
-- deploy with `npx wrangler deploy --keep-vars`
-- smoke recall for the known prompts above
+Until that network path works, continue with D1 structure checks only and do not treat them as full end-to-end recall results.
 
 ## Borrow Later
 
 Borrow after coordinate fields exist and data quality is visible:
 
 - Aelios `backfill-xyzem-memories.mjs` prompt structure, adapted for DS/manual review.
-- Aelios E-axis resonance idea in search, but only after enough memories have `risk_level`, `urgency_level`, and `tension_score`.
+- Aelios E-axis resonance idea in search. A small version already exists in KLD; keep it measured and reversible.
 - Aelios Z audit idea for duplicate `fact_key` groups.
 - Aelios M patrol idea for review backlog, stale memories, duplicate facts, and relation hygiene.
 
@@ -175,6 +186,22 @@ Output shape:
 }
 ```
 
+For relation work, ask DS for both coordinates and relations:
+
+```text
+Output JSON only. Do not change content. Do not delete memories.
+Propose only high-confidence memory_relations and nullable LMC-5 coordinates.
+Allowed relation_type values:
+- same_topic
+- instance_of
+- derived_from
+- same_event
+- origin_split
+- in_thread
+
+Use review_needed rather than inventing a relation.
+```
+
 ## Decision Rule
 
 Prefer small, reversible, additive changes:
@@ -186,3 +213,10 @@ Prefer small, reversible, additive changes:
 5. Only then let E/Z/M affect ranking or maintenance.
 
 This keeps KLD production-safe while still moving toward the full LMC-5 model.
+
+Update after 2026-06-19:
+
+- Steps 1-3 are done for the first reviewed high-value clusters.
+- A small E-axis boost has already been deployed; do not expand it until real recall evaluation is available.
+- Next code work should be driven by concrete recall failures, not by speculative ranking changes.
+- Next data work should target measured gaps: review candidates, isolated fact_key groups, duplicate or stale fact keys, and missing coordinates on high-value rules.

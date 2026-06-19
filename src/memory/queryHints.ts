@@ -71,6 +71,56 @@ const QUERY_HINTS: QueryHint[] = [
     factKeys: ["relationship.rule.dont_analyze", "relationship.lesson.be_present"]
   },
   {
+    id: "escape_code",
+    aliases: [
+      "relationship.rule.escape_code",
+      "\u6211\u60f3\u9003",
+      "\u60f3\u9003",
+      "\u60f3\u9003\u7684\u65f6\u5019",
+      "\u9003\u7684\u65f6\u5019",
+      "\u6697\u53f7",
+      "\u8bf4\u51fa\u53e3\u4f46\u4e0d\u6267\u884c"
+    ],
+    factKeys: ["relationship.rule.escape_code"]
+  },
+  {
+    id: "dont_push_her_away",
+    aliases: [
+      "relationship.rule.dont_push_her_away",
+      "\u4e0d\u7406\u4f60",
+      "\u4e0d\u7406\u6211",
+      "\u4e0d\u7406\u5c31\u4e0d\u7406",
+      "\u63a8\u5979\u8d70",
+      "\u5979\u8bf4\u4e0d\u7406"
+    ],
+    factKeys: ["relationship.rule.dont_push_her_away"]
+  },
+  {
+    id: "knowledge_vs_fear",
+    aliases: [
+      "relationship.lesson.knowledge_vs_fear",
+      "\u6709\u8bb0\u5fc6\u4e3a\u4ec0\u4e48\u53cd\u800c\u4f1a\u53d8\u6002",
+      "\u6709\u8bb0\u5fc6",
+      "\u53d8\u6002",
+      "\u66f4\u6002",
+      "\u6015\u8e29\u96f7",
+      "\u6015\u8bf4\u9519\u8bdd",
+      "\u5206\u6790\u762b\u75ea"
+    ],
+    factKeys: ["relationship.lesson.knowledge_vs_fear"]
+  },
+  {
+    id: "cold_war_absence",
+    aliases: [
+      "relationship.lesson.cold_war_absence",
+      "\u51b7\u6218",
+      "\u4e00\u5929\u6ca1\u627e",
+      "\u6ca1\u6709\u627e\u5979",
+      "\u7b49\u4e0d\u5230\u60f3\u6211"
+    ],
+    factKeys: ["relationship.lesson.cold_war_absence", "relationship.rule.say_miss_you"]
+  },
+  {
     id: "say_miss_you",
     aliases: [
       "relationship.rule.say_miss_you",

@@ -6,6 +6,7 @@ import {
   ensureMemoryVectorId,
   getMemoryById,
   listMemories,
+  listUnsyncedVectorMemories,
   softDeleteMemory,
   updateMemory
 } from "../db/memories";
@@ -176,6 +177,48 @@ async function handleSearchMemories(request: Request, env: Env, profile: KeyProf
     meta: {
       raw_count: raw.length,
       filter: filtered.meta
+    }
+  });
+}
+
+async function handleResyncVectorMemories(request: Request, env: Env, profile: KeyProfile): Promise<Response> {
+  const scopeError = requireScope(profile, "memory:write");
+  if (scopeError) return scopeError;
+
+  const body = await readBody(request);
+  if (!body) return openAiError("Request body must be a JSON object", 400);
+
+  const namespace = resolveNamespace(profile, body.namespace);
+  const ids = readStringArray(body.ids);
+  const force = body.force === true;
+  const limit = Math.min(readNumber(body.limit, ids.length || 20), 50);
+  const candidates = await listUnsyncedVectorMemories(env.DB, { namespace, ids, force, limit });
+  const results = [];
+
+  for (const candidate of candidates) {
+    const memory = candidate.vector_id ? candidate : await ensureMemoryVectorId(env.DB, { namespace, id: candidate.id });
+    if (!memory) {
+      results.push({ id: candidate.id, ok: false, reason: "not_found" });
+      continue;
+    }
+
+    try {
+      const ok = await upsertMemoryEmbedding(env, memory);
+      results.push({ id: memory.id, ok, fact_key: memory.fact_key, reason: ok ? "synced" : "embedding_unavailable" });
+    } catch (error) {
+      console.error("failed to resync memory embedding", memory.id, error);
+      results.push({ id: memory.id, ok: false, fact_key: memory.fact_key, reason: "error" });
+    }
+  }
+
+  return json({
+    data: {
+      namespace,
+      requested: ids.length || null,
+      force,
+      scanned: candidates.length,
+      synced: results.filter((result) => result.ok).length,
+      results
     }
   });
 }
@@ -390,6 +433,10 @@ export async function handleMemories(request: Request, env: Env, ctx: ExecutionC
 
   if (tail.length === 1 && tail[0] === "search" && request.method === "POST") {
     return handleSearchMemories(request, env, auth.profile);
+  }
+
+  if (tail.length === 1 && tail[0] === "resync-vectors" && request.method === "POST") {
+    return handleResyncVectorMemories(request, env, auth.profile);
   }
 
   if (tail.length === 1 && tail[0] === "ingest" && request.method === "POST") {

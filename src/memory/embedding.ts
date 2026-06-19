@@ -4,6 +4,7 @@ import { callOpenAICompatEmbeddings } from "../proxy/openaiAdapter";
 const DEFAULT_EMBEDDING_MODEL = "workers-ai/@cf/google/embeddinggemma-300m";
 const MAX_METADATA_CONTENT_CHARS = 1_000;
 const MAX_METADATA_SUMMARY_CHARS = 500;
+const MAX_EMBEDDING_FIELD_CHARS = 1_500;
 
 function workersAiModelName(model: string): string | null {
   const normalized = model.trim();
@@ -44,6 +45,20 @@ function truncateMetadata(value: string, maxChars: number): string {
   return value.length > maxChars ? value.slice(0, maxChars) : value;
 }
 
+function embeddingText(memory: MemoryRecord): string {
+  return [
+    memory.content,
+    memory.summary ? `summary: ${memory.summary}` : "",
+    memory.fact_key ? `fact_key: ${memory.fact_key}` : "",
+    memory.thread ? `thread: ${memory.thread}` : "",
+    memory.response_posture ? `response_posture: ${memory.response_posture}` : "",
+    memory.tags ? `tags: ${memory.tags}` : ""
+  ]
+    .filter(Boolean)
+    .map((field) => truncateMetadata(field, MAX_EMBEDDING_FIELD_CHARS))
+    .join("\n");
+}
+
 export async function createEmbedding(env: Env, text: string): Promise<number[] | null> {
   const model = env.EMBEDDING_MODEL || DEFAULT_EMBEDDING_MODEL;
   const workersAiModel = workersAiModelName(model);
@@ -76,7 +91,7 @@ export async function createEmbedding(env: Env, text: string): Promise<number[] 
 export async function upsertMemoryEmbedding(env: Env, memory: MemoryRecord): Promise<boolean> {
   if (!env.VECTORIZE || memory.status !== "active") return false;
 
-  const vector = await createEmbedding(env, memory.content);
+  const vector = await createEmbedding(env, embeddingText(memory));
   if (!vector || !memory.vector_id) return false;
 
   await env.VECTORIZE.upsert([

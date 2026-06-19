@@ -1,4 +1,4 @@
-﻿import { listActiveMemoriesByFactKeys, markMemoriesRecalled, searchMemoriesByText } from "../db/memories";
+﻿import { listActiveMemoriesByFactKeys, listGuidanceSeedMemories, markMemoriesRecalled, searchMemoriesByText } from "../db/memories";
 import { listRelationExpandedMemories } from "../db/memoryRelations";
 import { searchMessagesForRecall } from "../db/messages";
 import type { Env, MemoryApiRecord, MemoryRecord, MessageRecord } from "../types";
@@ -13,7 +13,9 @@ const STRONG_KEYWORD_SCORE = 0.54;
 const WEAK_KEYWORD_SCORE = 0.48;
 const VECTOR_ONLY_SCORE_WITH_STRONG_KEYWORDS = 0.78;
 const QUERY_HINT_SCORE = 1.35;
+const GUIDANCE_SEED_SCORE = 0.72;
 const RRF_K = 60;
+const GUIDANCE_QUERY_RE = /应该怎么做|怎么办|怎么接|怎么哄|怎么回应|怎么处理|怎么开口|怎么说|要怎么做|该怎么办/;
 
 const QUERY_ALIAS_GROUPS = [
   ["sm", "s/m", "bdsm", "dom", "sub", "brat", "switch", "支配", "臣服", "主导", "被主导"],
@@ -524,7 +526,8 @@ export async function searchMemories(env: Env, input: SearchMemoriesInput): Prom
   const timeIntent = parseTimeIntent(rawQuery);
   const expandedQuery = expandQuery([searchQuery, ...timeIntent.terms].filter(Boolean).join(" "));
   const hintedFactKeys = factKeysForQueryHint(`${rawQuery} ${input.query} ${searchQuery}`);
-  const [vectorRecords, keywordRecords, hintedRecords, messageRecords] = await Promise.all([
+  const shouldAddGuidanceSeeds = GUIDANCE_QUERY_RE.test(`${rawQuery} ${input.query} ${searchQuery}`);
+  const [vectorRecords, keywordRecords, hintedRecords, guidanceSeedRecords, messageRecords] = await Promise.all([
     searchVectorMemories(env, { namespace: input.namespace, query: expandedQuery, types: input.types, topK: candidateLimit }),
     searchMemoriesByText(env.DB, { namespace: input.namespace, query: expandedQuery, types: input.types, limit: candidateLimit }),
     hintedFactKeys.length > 0
@@ -535,6 +538,7 @@ export async function searchMemories(env: Env, input: SearchMemoriesInput): Prom
           excludeTypes: ["diary", "layla_diary"]
         })
       : Promise.resolve([]),
+    shouldAddGuidanceSeeds ? listGuidanceSeedMemories(env.DB, { namespace: input.namespace, limit: 18 }) : Promise.resolve([]),
     input.includeMessages
       ? searchMessagesForRecall(env.DB, {
           namespace: input.namespace,
@@ -551,6 +555,11 @@ export async function searchMemories(env: Env, input: SearchMemoriesInput): Prom
     [
       ...keywordRecords.map((record) => ({ ...record, keywordScore: record.score })),
       ...hintedRecords.map((record) => ({ ...record, score: QUERY_HINT_SCORE, keywordScore: QUERY_HINT_SCORE })),
+      ...guidanceSeedRecords.map((record) => ({
+        ...record,
+        score: GUIDANCE_SEED_SCORE + Math.min(0.24, record.relation_count * 0.015) + record.importance * 0.08,
+        keywordScore: GUIDANCE_SEED_SCORE
+      })),
       ...messageRecords.map(messageToMemoryRecord)
     ],
     { query: searchQuery, expandedQuery, topK: candidateLimit, timeIntent }

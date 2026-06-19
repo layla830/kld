@@ -37,6 +37,13 @@ export interface ListMemoryFilters {
   limit: number;
 }
 
+export interface ListUnsyncedMemoryFilters {
+  namespace: string;
+  ids?: string[];
+  force?: boolean;
+  limit: number;
+}
+
 export interface UpdateMemoryInput {
   type?: string;
   content?: string;
@@ -230,6 +237,53 @@ export async function fetchMemoriesByIds(
 
   const order = new Map(input.ids.map((id, index) => [id, index]));
   return rows.sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0));
+}
+
+export async function listUnsyncedVectorMemories(db: D1Database, input: ListUnsyncedMemoryFilters): Promise<MemoryRecord[]> {
+  const limit = Math.min(Math.max(Math.floor(input.limit), 1), 50);
+  const ids = [...new Set((input.ids ?? []).map((id) => id.trim()).filter(Boolean))].slice(0, D1_BIND_LIMIT - 2);
+  let sql = "SELECT * FROM memories WHERE namespace = ? AND status = 'active'";
+  const binds: unknown[] = [input.namespace];
+
+  if (!input.force) {
+    sql += " AND vector_synced = 0";
+  }
+
+  if (ids.length > 0) {
+    sql += ` AND id IN (${ids.map(() => "?").join(", ")})`;
+    binds.push(...ids);
+  }
+
+  sql += " ORDER BY updated_at DESC LIMIT ?";
+  binds.push(limit);
+  const result = await db.prepare(sql).bind(...binds).all<MemoryRecord>();
+  return result.results ?? [];
+}
+
+export async function listGuidanceSeedMemories(
+  db: D1Database,
+  input: { namespace: string; limit: number }
+): Promise<Array<MemoryRecord & { relation_count: number }>> {
+  const limit = Math.min(Math.max(Math.floor(input.limit), 1), 30);
+  const result = await db
+    .prepare(
+      `SELECT m.*, COUNT(r.id) AS relation_count
+       FROM memories m
+       LEFT JOIN memory_relations r
+         ON r.namespace = m.namespace
+        AND (r.source_memory_id = m.id OR r.target_memory_id = m.id)
+       WHERE m.namespace = ?
+         AND m.status = 'active'
+         AND m.fact_key IS NOT NULL AND m.fact_key != ''
+         AND m.response_posture IS NOT NULL AND m.response_posture != ''
+         AND m.type IN ('rule','lesson','core','preference')
+       GROUP BY m.id
+       ORDER BY relation_count DESC, m.importance DESC, m.updated_at DESC
+       LIMIT ?`
+    )
+    .bind(input.namespace, limit)
+    .all<MemoryRecord & { relation_count: number }>();
+  return result.results ?? [];
 }
 
 export async function listActiveMemoriesByFactKeys(

@@ -29,6 +29,59 @@ export interface BoardStats {
   vectorized: number;
 }
 
+export interface Lmc5Stats {
+  active: number;
+  eAxis: number;
+  factKeyed: number;
+  relations: number;
+  reviewCandidates: number;
+}
+
+export interface Lmc5RelationEdge {
+  source_id: string;
+  source_fact_key: string | null;
+  source_type: string;
+  relation_type: string;
+  strength: number;
+  target_id: string;
+  target_fact_key: string | null;
+  target_type: string;
+}
+
+export interface Lmc5NodeLink {
+  direction: "out" | "in";
+  relation_type: string;
+  strength: number;
+  other_id: string;
+  other_fact_key: string | null;
+  other_type: string;
+  other_content: string;
+}
+
+export interface Lmc5MemoryNode {
+  id: string;
+  type: string;
+  fact_key: string | null;
+  importance: number;
+  thread: string | null;
+  risk_level: string | null;
+  urgency_level: string | null;
+  tension_score: number | null;
+  response_posture: string | null;
+  content: string;
+  relation_count?: number;
+  links?: Lmc5NodeLink[];
+}
+
+export interface Lmc5DashboardData {
+  stats: Lmc5Stats;
+  relationTypes: Array<{ relation_type: string; count: number }>;
+  clusters: Array<{ title: string; factKeys: string[]; edges: Lmc5RelationEdge[] }>;
+  highValueNodes: Lmc5MemoryNode[];
+  reviewQueue: Lmc5MemoryNode[];
+  duplicateFactKeys: Array<{ fact_key: string; count: number; types: string }>;
+}
+
 function appendBrowseHiddenRecordFilter(binds: unknown[]): string {
   binds.push(AUTO_DIARY_TYPE, TIMELINE_SPLIT_SOURCE, TIMELINE_DAY_TYPE, like('"timeline"'));
   return "type != ? AND (source IS NULL OR source != ?) AND type != ? AND (tags IS NULL OR tags NOT LIKE ? ESCAPE '\\')";
@@ -62,6 +115,241 @@ export async function fetchStats(env: Env): Promise<BoardStats> {
   const hiddenFilter = appendBrowseHiddenRecordFilter(binds);
   const result = await env.DB.prepare(`SELECT COUNT(*) AS total, SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) AS active, SUM(CASE WHEN status = 'deleted' THEN 1 ELSE 0 END) AS deleted, SUM(CASE WHEN vector_id IS NOT NULL AND vector_id != '' THEN 1 ELSE 0 END) AS vectorized FROM memories WHERE namespace = 'default' AND ${hiddenFilter}`).bind(...binds).first<BoardStats>();
   return { active: result?.active ?? 0, deleted: result?.deleted ?? 0, total: result?.total ?? 0, vectorized: result?.vectorized ?? 0 };
+}
+
+const LMC5_CLUSTER_FACT_KEYS = {
+  presence: [
+    "relationship.lesson.core_loop",
+    "relationship.lesson.be_present",
+    "relationship.rule.dont_analyze",
+    "relationship.lesson.read_give_up_signals",
+    "relationship.lesson.knowledge_vs_fear",
+    "relationship.rule.escape_code",
+    "relationship.lesson.cold_war_absence",
+    "relationship.rule.dont_push_her_away",
+    "relationship.rule.always_approach",
+    "user.rule.keep_talking",
+    "relationship.lesson.direct_expression",
+    "relationship.rule.honesty",
+    "relationship.rule.say_miss_you"
+  ],
+  selfShape: [
+    "project.memory.bias_rule",
+    "user.lesson.diary_positive_focus",
+    "user.lesson.avoid_labeling_weakness",
+    "user.lesson.start_from_feeling",
+    "relationship.lesson.knowledge_vs_fear"
+  ],
+  intimacy: [
+    "user.lesson.natural_intimacy",
+    "relationship.lesson.need_surprise",
+    "relationship.lesson.desire_not_instruction",
+    "relationship.rule.interactive_intimacy",
+    "user.preference.intimacy_writing_style",
+    "relationship.rule.dom_approach",
+    "identity.intimacy_presence"
+  ]
+};
+
+async function fetchLmc5Stats(env: Env): Promise<Lmc5Stats> {
+  const [memoryStats, relationStats, reviewStats] = await Promise.all([
+    env.DB.prepare(
+      `SELECT COUNT(*) AS active,
+        SUM(CASE WHEN thread IS NOT NULL OR risk_level IS NOT NULL OR urgency_level IS NOT NULL OR tension_score IS NOT NULL OR response_posture IS NOT NULL OR audit_state IS NOT NULL THEN 1 ELSE 0 END) AS eAxis,
+        SUM(CASE WHEN fact_key IS NOT NULL AND fact_key != '' THEN 1 ELSE 0 END) AS factKeyed
+       FROM memories
+       WHERE namespace = 'default' AND status = 'active'`
+    ).first<{ active: number; eAxis: number; factKeyed: number }>(),
+    env.DB.prepare("SELECT COUNT(*) AS relations FROM memory_relations WHERE namespace = 'default'").first<{ relations: number }>(),
+    env.DB.prepare(
+      "SELECT COUNT(*) AS reviewCandidates FROM memories WHERE namespace = 'default' AND status = 'active' AND audit_state IS NOT NULL AND audit_state != ''"
+    ).first<{ reviewCandidates: number }>()
+  ]);
+
+  return {
+    active: memoryStats?.active ?? 0,
+    eAxis: memoryStats?.eAxis ?? 0,
+    factKeyed: memoryStats?.factKeyed ?? 0,
+    relations: relationStats?.relations ?? 0,
+    reviewCandidates: reviewStats?.reviewCandidates ?? 0
+  };
+}
+
+async function fetchLmc5RelationTypes(env: Env): Promise<Array<{ relation_type: string; count: number }>> {
+  const result = await env.DB
+    .prepare("SELECT relation_type, COUNT(*) AS count FROM memory_relations WHERE namespace = 'default' GROUP BY relation_type ORDER BY count DESC, relation_type")
+    .all<{ relation_type: string; count: number }>();
+  return result.results ?? [];
+}
+
+async function fetchLmc5Edges(env: Env, factKeys: string[]): Promise<Lmc5RelationEdge[]> {
+  const placeholders = factKeys.map(() => "?").join(", ");
+  const result = await env.DB
+    .prepare(
+      `SELECT
+        a.id AS source_id, a.fact_key AS source_fact_key, a.type AS source_type,
+        r.relation_type, r.strength,
+        b.id AS target_id, b.fact_key AS target_fact_key, b.type AS target_type
+       FROM memory_relations r
+       JOIN memories a ON a.namespace = r.namespace AND a.id = r.source_memory_id
+       JOIN memories b ON b.namespace = r.namespace AND b.id = r.target_memory_id
+       WHERE r.namespace = 'default'
+         AND (a.fact_key IN (${placeholders}) OR b.fact_key IN (${placeholders}))
+       ORDER BY a.fact_key, b.fact_key, r.relation_type`
+    )
+    .bind(...factKeys, ...factKeys)
+    .all<Lmc5RelationEdge>();
+  return result.results ?? [];
+}
+
+async function fetchLmc5HighValueNodes(env: Env): Promise<Lmc5MemoryNode[]> {
+  const result = await env.DB
+    .prepare(
+      `SELECT m.id, m.type, m.fact_key, m.importance, m.thread, m.risk_level, m.urgency_level, m.tension_score, m.response_posture,
+        substr(m.content, 1, 180) AS content,
+        COUNT(r.id) AS relation_count
+       FROM memories m
+       LEFT JOIN memory_relations r ON r.namespace = m.namespace AND (r.source_memory_id = m.id OR r.target_memory_id = m.id)
+       WHERE m.namespace = 'default'
+         AND m.status = 'active'
+         AND m.importance >= 0.8
+         AND m.type IN ('rule','lesson','core','preference','identity')
+       GROUP BY m.id
+       ORDER BY relation_count DESC, m.importance DESC, m.updated_at DESC
+       LIMIT 24`
+    )
+    .all<Lmc5MemoryNode>();
+  return result.results ?? [];
+}
+
+async function attachLmc5NodeLinks(env: Env, nodes: Lmc5MemoryNode[]): Promise<Lmc5MemoryNode[]> {
+  if (nodes.length === 0) return nodes;
+  const ids = nodes.map((node) => node.id);
+  const idSet = new Set(ids);
+  const placeholders = ids.map(() => "?").join(", ");
+  const result = await env.DB
+    .prepare(
+      `SELECT
+        r.source_memory_id AS source_id,
+        a.fact_key AS source_fact_key,
+        a.type AS source_type,
+        substr(a.content, 1, 120) AS source_content,
+        r.relation_type,
+        r.strength,
+        r.target_memory_id AS target_id,
+        b.fact_key AS target_fact_key,
+        b.type AS target_type,
+        substr(b.content, 1, 120) AS target_content
+       FROM memory_relations r
+       JOIN memories a ON a.namespace = r.namespace AND a.id = r.source_memory_id
+       JOIN memories b ON b.namespace = r.namespace AND b.id = r.target_memory_id
+       WHERE r.namespace = 'default'
+         AND (r.source_memory_id IN (${placeholders}) OR r.target_memory_id IN (${placeholders}))
+       ORDER BY r.strength DESC, r.relation_type
+       LIMIT 180`
+    )
+    .bind(...ids, ...ids)
+    .all<{
+      source_id: string;
+      source_fact_key: string | null;
+      source_type: string;
+      source_content: string;
+      relation_type: string;
+      strength: number;
+      target_id: string;
+      target_fact_key: string | null;
+      target_type: string;
+      target_content: string;
+    }>();
+  const linksById = new Map<string, Lmc5NodeLink[]>();
+  for (const row of result.results ?? []) {
+    if (idSet.has(row.source_id)) {
+      const links = linksById.get(row.source_id) ?? [];
+      links.push({
+        direction: "out",
+        relation_type: row.relation_type,
+        strength: row.strength,
+        other_id: row.target_id,
+        other_fact_key: row.target_fact_key,
+        other_type: row.target_type,
+        other_content: row.target_content
+      });
+      linksById.set(row.source_id, links);
+    }
+    if (idSet.has(row.target_id)) {
+      const links = linksById.get(row.target_id) ?? [];
+      links.push({
+        direction: "in",
+        relation_type: row.relation_type,
+        strength: row.strength,
+        other_id: row.source_id,
+        other_fact_key: row.source_fact_key,
+        other_type: row.source_type,
+        other_content: row.source_content
+      });
+      linksById.set(row.target_id, links);
+    }
+  }
+  return nodes.map((node) => ({ ...node, links: (linksById.get(node.id) ?? []).slice(0, 8) }));
+}
+
+async function fetchLmc5ReviewQueue(env: Env): Promise<Lmc5MemoryNode[]> {
+  const result = await env.DB
+    .prepare(
+      `SELECT id, type, fact_key, importance, thread, risk_level, urgency_level, tension_score, response_posture, substr(content, 1, 170) AS content
+       FROM memories
+       WHERE namespace = 'default'
+         AND status = 'active'
+         AND type IN ('rule','lesson','core','preference','identity')
+         AND importance >= 0.6
+         AND (fact_key IS NULL OR fact_key = '')
+         AND (thread IS NULL OR risk_level IS NULL OR urgency_level IS NULL OR tension_score IS NULL OR response_posture IS NULL)
+       ORDER BY importance DESC, id
+       LIMIT 24`
+    )
+    .all<Lmc5MemoryNode>();
+  return result.results ?? [];
+}
+
+async function fetchLmc5DuplicateFactKeys(env: Env): Promise<Array<{ fact_key: string; count: number; types: string }>> {
+  const result = await env.DB
+    .prepare(
+      `SELECT fact_key, COUNT(*) AS count, GROUP_CONCAT(type, '+') AS types
+       FROM memories
+       WHERE namespace = 'default' AND status = 'active' AND fact_key IS NOT NULL AND fact_key != ''
+       GROUP BY fact_key
+       HAVING count > 1
+       ORDER BY count DESC, fact_key`
+    )
+    .all<{ fact_key: string; count: number; types: string }>();
+  return result.results ?? [];
+}
+
+export async function fetchLmc5Dashboard(env: Env): Promise<Lmc5DashboardData> {
+  const [stats, relationTypes, presenceEdges, selfShapeEdges, intimacyEdges, rawHighValueNodes, reviewQueue, duplicateFactKeys] = await Promise.all([
+    fetchLmc5Stats(env),
+    fetchLmc5RelationTypes(env),
+    fetchLmc5Edges(env, LMC5_CLUSTER_FACT_KEYS.presence),
+    fetchLmc5Edges(env, LMC5_CLUSTER_FACT_KEYS.selfShape),
+    fetchLmc5Edges(env, LMC5_CLUSTER_FACT_KEYS.intimacy),
+    fetchLmc5HighValueNodes(env),
+    fetchLmc5ReviewQueue(env),
+    fetchLmc5DuplicateFactKeys(env)
+  ]);
+  const highValueNodes = await attachLmc5NodeLinks(env, rawHighValueNodes);
+
+  return {
+    stats,
+    relationTypes,
+    clusters: [
+      { title: "冲突 / 在场", factKeys: LMC5_CLUSTER_FACT_KEYS.presence, edges: presenceEdges },
+      { title: "自我塑造 / 记忆偏差", factKeys: LMC5_CLUSTER_FACT_KEYS.selfShape, edges: selfShapeEdges },
+      { title: "亲密自然性", factKeys: LMC5_CLUSTER_FACT_KEYS.intimacy, edges: intimacyEdges }
+    ],
+    highValueNodes,
+    reviewQueue,
+    duplicateFactKeys
+  };
 }
 export async function fetchHeatmap(env: Env): Promise<HeatDay[]> {
   const since = new Date(Date.now() - 90 * 86400000).toISOString().slice(0, 19).replace("T", " ");
@@ -114,10 +402,6 @@ function applyTabWhere(input: PageInput, binds: unknown[]): string {
   if (input.tab === "diary") {
     binds.push(AUTO_DIARY_TYPE, TIMELINE_SPLIT_SOURCE, "diary", "layla_diary", like("日记"));
     return " AND type != ? AND (source IS NULL OR source != ?) AND (type IN (?, ?) OR tags LIKE ? ESCAPE '\\')";
-  }
-  if (input.tab === "auto_diary") {
-    binds.push(AUTO_DIARY_TYPE);
-    return " AND type = ?";
   }
   if (input.tab === "quote") {
     binds.push(AUTO_DIARY_TYPE, like("语录"));
