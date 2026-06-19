@@ -67,6 +67,23 @@ const QUERY_NOISE_PATTERNS = [
 ];
 
 const LEADING_PRONOUN_PATTERN = /^(你们|我们|他们|她们|它们|你|我|她|他|它)+/;
+
+const RULE_LIKE_TYPES = new Set(["rule", "lesson", "core", "preference", "identity"]);
+const CONTEXT_TYPES = new Set(["diary", "layla_diary", "quote", "message", "timeline_day", "conversation_message"]);
+
+function eAxisBoost(record: HybridScoredMemoryRecord): number {
+  const type = record.type;
+  if (CONTEXT_TYPES.has(type)) return 0;
+  let boost = 0;
+  if (RULE_LIKE_TYPES.has(type)) boost += 0.06;
+  const tension = typeof record.tension_score === "number" ? record.tension_score : null;
+  if (tension !== null && tension >= 0.5) boost += 0.04;
+  const risk = record.risk_level;
+  if (risk === "high") boost += 0.03;
+  else if (risk === "medium") boost += 0.015;
+  if (record.thread && String(record.thread).startsWith("relationship.boundaries")) boost += 0.02;
+  return Math.min(boost, 0.15);
+}
 const SHANGHAI_OFFSET_MS = 8 * 60 * 60 * 1000;
 
 type TimeIntentMode = "none" | "hard_range" | "soft_recent" | "past_reference";
@@ -350,7 +367,8 @@ function rankHybridRecord(record: HybridScoredMemoryRecord): number {
     rankScore * 8 +
     record.importance * 0.08 +
     pinnedBoost +
-    recencyBoost(record) * 0.04
+    recencyBoost(record) * 0.04 +
+    eAxisBoost(record)
   );
 }
 
