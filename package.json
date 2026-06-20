@@ -10,6 +10,7 @@
     "memory:fact-key-audit": "node scripts/fact-key-audit.mjs",
     "memory:relations-audit": "node scripts/memory-relations-audit.mjs",
     "memory:lmc5-coordinates": "node scripts/lmc5-coordinate-audit.mjs",
+    "test:recall-regression": "node scripts/recall-regression.mjs",
     "deploy:cloudflare": "wrangler deploy --keep-vars",
     "typecheck": "tsc --noEmit",
     "db:migrate:local": "wrangler d1 migrations apply companion_memory_proxy --local",
