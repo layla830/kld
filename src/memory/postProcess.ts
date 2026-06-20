@@ -6,7 +6,7 @@ const FILTER_TIMEOUT_MS = 8000;
 const UTTERANCE_RE = /原话|怎么说|说什么|说过什么|表达|口头禅|称呼|叫/;
 const FACT_RE = /是什么|哪个|哪种|喜欢什么|讨厌什么|设定|偏好|雷点|底线|怎么来的|由来/;
 const TIME_RE = /什么时候|哪天|多久|第几次|上次|昨天|前天|那天|那次|当时|日期|时间|发生了什么|发生什么|怎么聊|聊了什么/;
-const GUIDANCE_RE = /应该怎么做|怎么办|怎么接|怎么哄|怎么回应|怎么处理|怎么开口|怎么说|要怎么做|该怎么办/;
+const GUIDANCE_RE = /应该怎么做|怎么办|怎么接|怎么哄|怎么回应|怎么处理|要怎么做|该怎么办/;
 const SHORT_UTTERANCE_NOISE_RE = /待会|现在|公司|回消息|自己玩|洗澡|回来|找你|睡觉|睡前|醒的时候|摸鱼/;
 
 type IntentKind = "utterance" | "fact" | "time" | "guidance" | "general";

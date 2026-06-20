@@ -15,7 +15,7 @@ const VECTOR_ONLY_SCORE_WITH_STRONG_KEYWORDS = 0.78;
 const QUERY_HINT_SCORE = 1.35;
 const GUIDANCE_SEED_SCORE = 0.72;
 const RRF_K = 60;
-const GUIDANCE_QUERY_RE = /应该怎么做|怎么办|怎么接|怎么哄|怎么回应|怎么处理|怎么开口|怎么说|要怎么做|该怎么办/;
+const GUIDANCE_QUERY_RE = /应该怎么做|怎么办|怎么接|怎么哄|怎么回应|怎么处理|要怎么做|该怎么办/;
 
 const QUERY_ALIAS_GROUPS = [
   ["sm", "s/m", "bdsm", "dom", "sub", "brat", "switch", "支配", "臣服", "主导", "被主导"],
