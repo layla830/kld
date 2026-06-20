@@ -158,25 +158,13 @@ function leadFor(kind: IntentKind, query: string, rawQuery: string, memories: Me
   return undefined;
 }
 
-export function utteranceLeadFirst(memories: MemoryApiRecord[], rawQuery: string): MemoryApiRecord[] {
+export function applyLead(memories: MemoryApiRecord[], rawQuery: string): MemoryApiRecord[] {
   const kind = intentKind(rawQuery, rawQuery);
-  if (kind !== "utterance") return memories;
-  const lead = memories.find(isQuote);
+  if (kind === "general" || kind === "guidance") return memories;
+  const lead = leadFor(kind, rawQuery, rawQuery, memories);
   if (!lead) return memories;
   const rest = memories.filter((memory) => memory.id !== lead.id);
   return [lead, ...rest];
-}
-
-function keepLead(kind: IntentKind, query: string, rawQuery: string, candidates: MemoryApiRecord[], filtered: MemoryApiRecord[], maxOutput: number): MemoryApiRecord[] {
-  const lead = leadFor(kind, query, rawQuery, candidates);
-  if (!lead) return filtered.slice(0, maxOutput);
-
-  if (kind === "fact" || kind === "utterance" || isQuote(lead)) {
-    const focused = filtered.filter((memory) => memory.id !== lead.id);
-    return [lead, ...focused].slice(0, maxOutput);
-  }
-
-  return [lead, ...filtered.filter((memory) => memory.id !== lead.id)].slice(0, maxOutput);
 }
 
 export async function postProcessMemorySearchResults(
@@ -192,5 +180,5 @@ export async function postProcessMemorySearchResults(
   const candidates = withoutIncidentalHandoff(rawQuery, memories);
   if (kind === "guidance") return candidates.slice(0, maxOutput);
   const filtered = await filterWithTimeout(env, rawQuery, candidates);
-  return keepLead(kind, query, rawQuery, candidates, filtered, maxOutput);
+  return filtered.slice(0, maxOutput);
 }

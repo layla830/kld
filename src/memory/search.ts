@@ -2,7 +2,7 @@
 import { listRelationExpandedMemories } from "../db/memoryRelations";
 import { searchMessagesForRecall } from "../db/messages";
 import type { Env, MemoryApiRecord, MemoryRecord, MessageRecord } from "../types";
-import { postProcessMemorySearchResults, utteranceLeadFirst } from "./postProcess";
+import { postProcessMemorySearchResults, applyLead } from "./postProcess";
 import { toMemoryApiRecord } from "./mapper";
 import { factKeysForQueryHint, queryHintAliasGroups } from "./queryHints";
 import { searchVectorMemories, type ScoredMemoryRecord } from "./vectorStore";
@@ -579,7 +579,7 @@ export async function searchMemories(env: Env, input: SearchMemoriesInput): Prom
   });
   const relatedApiRecords = finalRelationRecords.map((record) => toMemoryApiRecord(record, record.score));
   const hintedApiRecords = hintedRecords.map((record) => toMemoryApiRecord(record, QUERY_HINT_SCORE));
-  const outputRecords = utteranceLeadFirst(
+  const outputRecords = applyLead(
     keepRelatedContext(keepExplicitHintContext(processedRecords, hintedApiRecords, topK), relatedApiRecords, topK),
     rawQuery
   );

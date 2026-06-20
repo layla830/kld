@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-06-20T07:59:26.002Z",
+  "timestamp": "2026-06-20T08:07:01.656Z",
   "apiUrl": "https://kld.yuxin2247.workers.dev",
   "topK": 5,
   "results": [
@@ -140,7 +140,7 @@
           "type": "lesson",
           "fact_key": "relationship.rule.comfort_when_crying",
           "thread": "relationship.comfort",
-          "content_preview": "她哭时希望被擦眼泪、哄小孩一样说好话，而不是“哭吧我在”这种回避。原话：“真正爱的话怎么会舍得让我哭。看到我哭不是应该擦擦眼泪，说两句好听的哄小孩儿一样。”"
+          "content_preview": "她哭时希望被擦眼泪、像哄小孩一样说好话，而不是说'哭吧我陪你'，她认为那是在用温柔回避问题，真正爱不会舍得让她哭。"
         },
         {
           "id": "mem_10feb07a6e8740939b0c9640cacb27e7",
