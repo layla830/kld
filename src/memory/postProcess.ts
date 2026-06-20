@@ -100,6 +100,7 @@ function scoreMemory(memory: MemoryApiRecord, input: { kind: IntentKind; query: 
 
   if (input.kind === "utterance") {
     if (isQuote(memory)) score += 1;
+    if (/^(rule|lesson|core|preference)$/i.test(memory.type)) score -= 0.5;
     if (SHORT_UTTERANCE_NOISE_RE.test(memory.content)) score -= 0.7;
     if (isLongNarrative(memory)) score -= 0.7;
   }
@@ -112,12 +113,18 @@ function scoreMemory(memory: MemoryApiRecord, input: { kind: IntentKind; query: 
     if (isLongNarrative(memory) && !isGuidanceRecord(memory)) score -= 0.9;
   }
 
+  if (input.kind === "general") {
+    if (isGuidanceRecord(memory)) score += 0.3;
+    if (memory.response_posture) score += 0.15;
+    if (/^(diary|layla_diary|timeline_day)$/i.test(memory.type)) score -= 0.6;
+    if (isLongNarrative(memory) && !isGuidanceRecord(memory) && !isQuote(memory)) score -= 0.4;
+  }
+
   return score - input.index * 0.001;
 }
 
 function rerank(query: string, rawQuery: string, memories: MemoryApiRecord[]): { kind: IntentKind; memories: MemoryApiRecord[] } {
   const kind = intentKind(rawQuery, query);
-  if (kind === "general") return { kind, memories };
 
   return {
     kind,
