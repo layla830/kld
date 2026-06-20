@@ -67,9 +67,10 @@ const TESTS = [
   {
     name: "says-this-kind-of-thing",
     query: "她怎么说这种话",
-    expectTop1NotType: ["diary", "timeline_day"],
+    expectTop1Type: "quote",
+    expectTop1NotType: ["diary", "timeline_day", "layla_diary", "lesson"],
     expectTop3NotType: ["timeline_day"],
-    rationale: "utterance (怎么说 hits UTTERANCE_RE not GUIDANCE_RE after 652030d); diary must not lead",
+    rationale: "utterance (怎么说 hits UTTERANCE_RE not GUIDANCE_RE after 652030d); quote must lead via utteranceLeadFirst",
   },
   {
     name: "what-do-you-think-of-me",
