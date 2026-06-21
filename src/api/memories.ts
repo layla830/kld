@@ -35,7 +35,7 @@ import {
   readStringArray,
   resolveNamespace
 } from "./common";
-import { handleExtractCcConnectLocalChunk, handleGenerateCcConnectDiaryFromMessages, handleResetCcConnect } from "./ccConnect";
+import { handleResetCcConnect } from "./ccConnect";
 
 const AUTO_DIARY_TYPE = "auto_diary";
 
@@ -445,14 +445,6 @@ export async function handleMemories(request: Request, env: Env, ctx: ExecutionC
 
   if (tail.length === 1 && tail[0] === "split-diary" && request.method === "POST") {
     return handleSplitDiaryMemories(request, env, auth.profile);
-  }
-
-  if (tail.length === 2 && tail[0] === "auto-diary" && tail[1] === "cc-connect-local" && request.method === "POST") {
-    return handleGenerateCcConnectDiaryFromMessages(request, env, ctx, auth.profile);
-  }
-
-  if (tail.length === 2 && tail[0] === "chunk-extract" && tail[1] === "cc-connect-local" && request.method === "POST") {
-    return handleExtractCcConnectLocalChunk(request, env, auth.profile);
   }
 
   if (tail.length === 2 && tail[0] === "reset" && tail[1] === "cc-connect" && request.method === "POST") {
