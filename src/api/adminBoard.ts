@@ -3,6 +3,7 @@ import type { Env } from "../types";
 import { approveDreamReview, createBoardMemory, deleteBoardMemory, editBoardMemory, rejectDreamReview } from "./adminBoard/actions";
 import { forbidden, isAuthorized, isSameOriginAdminPost, unauthorized } from "./adminBoard/auth";
 import { fetchHeatmap, fetchLmc5Dashboard, fetchMemories, fetchQuoteCategories, fetchStats, fetchTimelineDates, fetchTypes } from "./adminBoard/data";
+import { fetchDreamReviewMemories } from "./adminBoard/reviewData";
 import { inputFromUrl, noticeUrl, qs, readFormText } from "./adminBoard/utils";
 import { renderPage } from "./adminBoard/view";
 
@@ -73,7 +74,7 @@ export async function handleAdminBoard(request: Request, env: Env, ctx: Executio
   const [types, quoteCategories, memories, stats, heatmap, timelineDates, lmc5] = await Promise.all([
     fetchTypes(env),
     input.tab === "quote" ? fetchQuoteCategories(env) : Promise.resolve([]),
-    input.tab === "lmc5" ? Promise.resolve({ total: 0, records: [] }) : fetchMemories(env, input),
+    input.tab === "lmc5" ? Promise.resolve({ total: 0, records: [] }) : input.tab === "review" ? fetchDreamReviewMemories(env, input) : fetchMemories(env, input),
     needsDashboard ? fetchStats(env) : Promise.resolve({ active: 0, deleted: 0, total: 0, vectorized: 0 }),
     needsDashboard ? fetchHeatmap(env) : Promise.resolve([]),
     input.tab === "timeline" ? fetchTimelineDates(env) : Promise.resolve(new Set<string>()),
