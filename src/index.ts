@@ -9,6 +9,7 @@ import { handleBooks } from "./api/books";
 import { handleBooksReaderPage } from "./api/booksReader";
 import { handleBooksUpload } from "./api/booksUpload";
 import { handleMemories } from "./api/memories";
+import { handleMemoryRelations } from "./api/memoryRelations";
 import { handleMcp } from "./api/mcp";
 import { handleMigration } from "./api/migration";
 import { handleModels } from "./api/models";
@@ -87,6 +88,10 @@ export default {
 
     if (request.method === "POST" && url.pathname === "/v1/memories/recall") {
       return handleRecall(request, env);
+    }
+
+    if (url.pathname === "/v1/memory-relations") {
+      return handleMemoryRelations(request, env);
     }
 
     if (url.pathname.startsWith("/v1/memories")) {
