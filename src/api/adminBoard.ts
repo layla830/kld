@@ -1,6 +1,6 @@
 import { deleteMemoryEmbedding, upsertMemoryEmbedding } from "../memory/embedding";
 import type { Env } from "../types";
-import { createBoardMemory, deleteBoardMemory, editBoardMemory } from "./adminBoard/actions";
+import { approveDreamReview, createBoardMemory, deleteBoardMemory, editBoardMemory, rejectDreamReview } from "./adminBoard/actions";
 import { forbidden, isAuthorized, isSameOriginAdminPost, unauthorized } from "./adminBoard/auth";
 import { fetchHeatmap, fetchLmc5Dashboard, fetchMemories, fetchQuoteCategories, fetchStats, fetchTimelineDates, fetchTypes } from "./adminBoard/data";
 import { inputFromUrl, noticeUrl, qs, readFormText } from "./adminBoard/utils";
@@ -37,6 +37,33 @@ export async function handleAdminBoard(request: Request, env: Env, ctx: Executio
     const deleted = await deleteBoardMemory(env, await request.formData());
     if (deleted) ctx.waitUntil(deleteMemoryEmbedding(env, deleted));
     return Response.redirect(`${url.origin}${noticeUrl(ref, "deleted")}`, 303);
+  }
+
+  if (request.method === "POST" && url.pathname === "/admin/memories/review/approve") {
+    const ref = request.headers.get("referer") || `${url.origin}/admin/memories?tab=review`;
+    try {
+      const result = await approveDreamReview(env, await request.formData());
+      if (result?.target) {
+        ctx.waitUntil(result.action === "delete" ? deleteMemoryEmbedding(env, result.target) : upsertMemoryEmbedding(env, result.target));
+      }
+      if (result?.proposal) ctx.waitUntil(deleteMemoryEmbedding(env, result.proposal));
+      return Response.redirect(`${url.origin}${noticeUrl(ref, result ? "approved" : "empty")}`, 303);
+    } catch (error) {
+      console.error("admin dream review approve failed", error);
+      return Response.redirect(`${url.origin}${noticeUrl(ref, "error")}`, 303);
+    }
+  }
+
+  if (request.method === "POST" && url.pathname === "/admin/memories/review/reject") {
+    const ref = request.headers.get("referer") || `${url.origin}/admin/memories?tab=review`;
+    try {
+      const result = await rejectDreamReview(env, await request.formData());
+      if (result?.proposal) ctx.waitUntil(deleteMemoryEmbedding(env, result.proposal));
+      return Response.redirect(`${url.origin}${noticeUrl(ref, result ? "rejected" : "empty")}`, 303);
+    } catch (error) {
+      console.error("admin dream review reject failed", error);
+      return Response.redirect(`${url.origin}${noticeUrl(ref, "error")}`, 303);
+    }
   }
 
   if (request.method !== "GET") return new Response("Method not allowed", { status: 405 });
