@@ -4,7 +4,6 @@ import { handleCacheHealth } from "./api/debug";
 import { handleChatCompletions } from "./api/chatCompletions";
 import { handleGuideDogChatCompletions } from "./api/guideDog";
 import { handleAdminBoard } from "./api/adminBoard";
-import { handleAdminMaintenance } from "./api/adminMaintenance";
 import { handleAdminStartupContext, handleAdminStartupContextLite } from "./api/adminStartup";
 import { handleBooks } from "./api/books";
 import { handleBooksReaderPage } from "./api/booksReader";
@@ -26,12 +25,17 @@ export default {
       return handleHealth(env);
     }
 
-    if (["/admin/memories", "/admin/memories/create", "/admin/memories/edit", "/admin/memories/delete"].includes(url.pathname)) {
+    if (
+      [
+        "/admin/memories",
+        "/admin/memories/create",
+        "/admin/memories/edit",
+        "/admin/memories/delete",
+        "/admin/memories/review/approve",
+        "/admin/memories/review/reject"
+      ].includes(url.pathname)
+    ) {
       return handleAdminBoard(request, env, ctx);
-    }
-
-    if (url.pathname === "/admin/maintenance") {
-      return handleAdminMaintenance(request, env);
     }
 
     if (url.pathname === "/admin/startup-context") {
