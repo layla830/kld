@@ -193,8 +193,9 @@ export async function approveDreamReview(env: Env, form: FormData): Promise<Drea
   const target = await getMemoryById(env.DB, { namespace: "default", id: review.target_id! });
   if (!target) return null;
 
+  const action = review.action === "delete" ? "delete" : "update";
   let updatedTarget: MemoryRecord | null = null;
-  if (review.action === "delete") {
+  if (action === "delete") {
     updatedTarget = await updateMemory(env.DB, {
       namespace: "default",
       id: target.id,
@@ -211,7 +212,7 @@ export async function approveDreamReview(env: Env, form: FormData): Promise<Drea
   }
 
   const resolvedProposal = await markReviewResolved(env, proposal, "approved");
-  return { action: review.action, proposal: resolvedProposal ?? proposal, target: updatedTarget };
+  return { action, proposal: resolvedProposal ?? proposal, target: updatedTarget };
 }
 
 export async function rejectDreamReview(env: Env, form: FormData): Promise<DreamReviewResult | null> {
