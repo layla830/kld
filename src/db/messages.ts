@@ -288,3 +288,42 @@ export async function searchMessagesForRecall(db: D1Database, input: { namespace
     .sort((a, b) => b.score - a.score || b.created_at.localeCompare(a.created_at))
     .slice(0, input.limit);
 }
+
+export async function listMessagesByNamespaceInRange(
+  db: D1Database,
+  input: {
+    namespace: string;
+    startCreatedAt: string;
+    endCreatedAt: string;
+    afterCreatedAt?: string | null;
+    limit: number;
+  }
+): Promise<MessageRecord[]> {
+  const limit = Math.min(Math.max(Math.floor(input.limit), 1), 1000);
+  const after = input.afterCreatedAt ?? null;
+  const sql = after
+    ? `SELECT id, conversation_id, namespace, role, content, source, created_at
+       FROM messages
+       WHERE namespace = ?
+         AND role IN ('user', 'assistant')
+         AND content != ''
+         AND created_at >= ?
+         AND created_at >= ?
+         AND created_at < ?
+       ORDER BY created_at ASC
+       LIMIT ?`
+    : `SELECT id, conversation_id, namespace, role, content, source, created_at
+       FROM messages
+       WHERE namespace = ?
+         AND role IN ('user', 'assistant')
+         AND content != ''
+         AND created_at >= ?
+         AND created_at < ?
+       ORDER BY created_at ASC
+       LIMIT ?`;
+  const binds = after
+    ? [input.namespace, input.startCreatedAt, after, input.endCreatedAt, limit]
+    : [input.namespace, input.startCreatedAt, input.endCreatedAt, limit];
+  const result = await db.prepare(sql).bind(...binds).all<MessageRecord>();
+  return result.results ?? [];
+}

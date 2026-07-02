@@ -18,6 +18,8 @@ export interface CreateMemoryInput {
   tensionScore?: number | null;
   responsePosture?: string | null;
   auditState?: string | null;
+  valence?: number | null;
+  arousal?: number | null;
   importance?: number;
   confidence?: number;
   status?: string;
@@ -56,6 +58,8 @@ export interface UpdateMemoryInput {
   tensionScore?: number | null;
   responsePosture?: string | null;
   auditState?: string | null;
+  valence?: number | null;
+  arousal?: number | null;
   importance?: number;
   confidence?: number;
   status?: string;
@@ -63,6 +67,7 @@ export interface UpdateMemoryInput {
   tags?: string[];
   sourceMessageIds?: string[];
   expiresAt?: string | null;
+  vectorSyncStatus?: string;
 }
 
 function chunk<T>(items: T[], size: number): T[][] {
@@ -104,6 +109,8 @@ export async function createMemory(db: D1Database, input: CreateMemoryInput): Pr
     tension_score: input.tensionScore ?? null,
     response_posture: input.responsePosture ?? null,
     audit_state: input.auditState ?? null,
+    valence: input.valence ?? null,
+    arousal: input.arousal ?? null,
     importance: input.importance ?? 0.5,
     confidence: input.confidence ?? 0.8,
     status,
@@ -125,9 +132,10 @@ export async function createMemory(db: D1Database, input: CreateMemoryInput): Pr
       `INSERT INTO memories (
         id, namespace, type, content, summary, fact_key, active_fact,
         thread, risk_level, urgency_level, tension_score, response_posture, audit_state,
+        valence, arousal,
         importance, confidence, status,
         pinned, tags, source, source_message_ids, vector_id, created_at, updated_at, expires_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .bind(
       record.id,
@@ -143,6 +151,8 @@ export async function createMemory(db: D1Database, input: CreateMemoryInput): Pr
       record.tension_score,
       record.response_posture,
       record.audit_state,
+      record.valence,
+      record.arousal,
       record.importance,
       record.confidence,
       record.status,
@@ -348,6 +358,8 @@ export async function updateMemory(
   if (input.patch.tensionScore !== undefined) set("tension_score", input.patch.tensionScore);
   if (input.patch.responsePosture !== undefined) set("response_posture", input.patch.responsePosture);
   if (input.patch.auditState !== undefined) set("audit_state", input.patch.auditState);
+  if (input.patch.valence !== undefined) set("valence", input.patch.valence);
+  if (input.patch.arousal !== undefined) set("arousal", input.patch.arousal);
   if (input.patch.importance !== undefined) set("importance", input.patch.importance);
   if (input.patch.confidence !== undefined) set("confidence", input.patch.confidence);
   if (input.patch.status !== undefined) {
@@ -358,6 +370,7 @@ export async function updateMemory(
   if (input.patch.tags !== undefined) set("tags", JSON.stringify(input.patch.tags));
   if (input.patch.sourceMessageIds !== undefined) set("source_message_ids", JSON.stringify(input.patch.sourceMessageIds));
   if (input.patch.expiresAt !== undefined) set("expires_at", input.patch.expiresAt);
+  if (input.patch.vectorSyncStatus !== undefined) set("vector_sync_status", input.patch.vectorSyncStatus);
 
   if (assignments.length === 0) return getMemoryById(db, input);
 
@@ -379,7 +392,7 @@ export async function updateMemory(
     .run();
 
   if ((result.meta.changes ?? 0) === 0) return null;
-  await markMemoryVectorUnsynced(db, input);
+  if (input.patch.vectorSyncStatus === undefined) await markMemoryVectorUnsynced(db, input);
   return getMemoryById(db, input);
 }
 
@@ -514,4 +527,45 @@ export async function markMemoriesRecalled(
       .bind(nowIso(), input.namespace, ...ids)
       .run();
   }
+}
+
+export async function listFactKeyConflicts(
+  db: D1Database,
+  input: { namespace: string; limit: number }
+): Promise<Array<{ fact_key: string; ids: string; count: number }>> {
+  const limit = Math.min(Math.max(Math.floor(input.limit), 1), 500);
+  const result = await db
+    .prepare(
+      `SELECT fact_key, GROUP_CONCAT(id) AS ids, COUNT(*) AS count
+       FROM memories
+       WHERE namespace = ?
+         AND fact_key IS NOT NULL AND fact_key != ''
+         AND status IN ('active', 'review')
+       GROUP BY fact_key
+       HAVING count > 1
+       ORDER BY count DESC
+       LIMIT ?`
+    )
+    .bind(input.namespace, limit)
+    .all<{ fact_key: string; ids: string; count: number }>();
+  return result.results ?? [];
+}
+
+export async function listMemoriesSince(
+  db: D1Database,
+  input: { namespace: string; since: string; limit: number }
+): Promise<MemoryRecord[]> {
+  const limit = Math.min(Math.max(Math.floor(input.limit), 1), 1000);
+  const result = await db
+    .prepare(
+      `SELECT * FROM memories
+       WHERE namespace = ?
+         AND created_at >= ?
+         AND status IN ('active', 'review')
+       ORDER BY created_at ASC
+       LIMIT ?`
+    )
+    .bind(input.namespace, input.since, limit)
+    .all<MemoryRecord>();
+  return result.results ?? [];
 }

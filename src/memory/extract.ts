@@ -10,6 +10,14 @@ export interface ExtractedMemory {
   confidence: number;
   tags: string[];
   source_message_ids: string[];
+  fact_key?: string | null;
+  thread?: string | null;
+  risk_level?: string | null;
+  urgency_level?: string | null;
+  tension_score?: number | null;
+  response_posture?: string | null;
+  valence?: number | null;
+  arousal?: number | null;
 }
 
 export interface MemoryExtractionResult {

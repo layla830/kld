@@ -100,6 +100,8 @@ function toRecord(input: LegacyMemoryInput, namespace: string): MemoryRecord {
     tension_score: null,
     response_posture: null,
     audit_state: null,
+    valence: null,
+    arousal: null,
     importance,
     confidence: 0.95,
     status: "active",

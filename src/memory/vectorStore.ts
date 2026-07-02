@@ -103,6 +103,8 @@ function toLegacyMemoryRecord(match: VectorizeMatch, input: { namespace: string 
     tension_score: readMetadataOptionalNumber(metadata, "tension_score"),
     response_posture: readMetadataString(metadata, "response_posture"),
     audit_state: readMetadataString(metadata, "audit_state"),
+    valence: readMetadataOptionalNumber(metadata, "valence"),
+    arousal: readMetadataOptionalNumber(metadata, "arousal"),
     importance: readMetadataNumber(metadata, "importance", 0.5),
     confidence: readMetadataNumber(metadata, "confidence", 0.8),
     status: "active",

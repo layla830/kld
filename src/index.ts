@@ -1,6 +1,6 @@
 import { handleHealth } from "./api/health";
 import { handleCache } from "./api/cache";
-import { handleCacheHealth } from "./api/debug";
+import { handleCacheHealth, handleDreamDryRun, handleZAuditApprove, handleZAuditPending, handleZAuditScan, handleXyzemMaintenance } from "./api/debug";
 import { handleChatCompletions } from "./api/chatCompletions";
 import { handleGuideDogChatCompletions } from "./api/guideDog";
 import { handleAdminBoard } from "./api/adminBoard";
@@ -14,9 +14,45 @@ import { handleMcp } from "./api/mcp";
 import { handleMigration } from "./api/migration";
 import { handleModels } from "./api/models";
 import { handleRecall } from "./api/recall";
+import { runDailyMemoryDigest } from "./memory/dailyDigest";
+import { runMemoryRetention } from "./memory/retention";
+import { runXyzemNightlyMaintenance } from "./memory/xyzem";
+import { retryStaleVectorSyncs } from "./memory/state";
 import { handleQueueMessage } from "./queue/consumer";
 import type { Env, QueueMessage } from "./types";
 import { openAiError } from "./utils/json";
+
+function getDreamNamespace(env: Env): string {
+  const value = env.DREAM_NAMESPACE?.trim();
+  return value || "default";
+}
+
+function getDreamMaxRuns(env: Env): number {
+  const parsed = Number(env.DREAM_MAX_RUNS || 10);
+  if (!Number.isFinite(parsed)) return 10;
+  return Math.min(Math.max(Math.floor(parsed), 1), 10);
+}
+
+function isDreamEnabled(env: Env): boolean {
+  const flag = env.ENABLE_DREAM?.trim();
+  return flag ? flag !== "false" : false;
+}
+
+function isDreamDryRun(env: Env): boolean {
+  const flag = env.DREAM_DRY_RUN?.trim();
+  return flag ? flag !== "false" : true;
+}
+
+async function runDreamBatches(env: Env, namespace: string): Promise<unknown[]> {
+  const results: unknown[] = [];
+  const maxRuns = getDreamMaxRuns(env);
+  for (let i = 0; i < maxRuns; i += 1) {
+    const result = await runDailyMemoryDigest(env, namespace);
+    results.push(result);
+    if (!result.ran || !result.stats?.hasMore) break;
+  }
+  return results;
+}
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -106,6 +142,26 @@ export default {
       return handleCacheHealth(request, env);
     }
 
+    if (request.method === "POST" && url.pathname === "/v1/debug/dream_dry_run") {
+      return handleDreamDryRun(request, env);
+    }
+
+    if (request.method === "POST" && url.pathname === "/v1/debug/z_audit_scan") {
+      return handleZAuditScan(request, env);
+    }
+
+    if (request.method === "POST" && url.pathname === "/v1/debug/z_pending") {
+      return handleZAuditPending(request, env);
+    }
+
+    if (request.method === "POST" && url.pathname === "/v1/debug/z_approve") {
+      return handleZAuditApprove(request, env);
+    }
+
+    if (request.method === "POST" && url.pathname === "/v1/debug/xyzem_maintenance") {
+      return handleXyzemMaintenance(request, env);
+    }
+
     return openAiError("Not found", 404);
   },
 
@@ -119,5 +175,23 @@ export default {
         message.retry();
       }
     }
+  },
+
+  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    const namespace = getDreamNamespace(env);
+    ctx.waitUntil(
+      Promise.all([
+        runDreamBatches(env, namespace).then(async (digest) => ({
+          digest,
+          xyzem: isDreamEnabled(env)
+            ? await runXyzemNightlyMaintenance(env, namespace, { dryRun: isDreamDryRun(env) })
+            : { skipped: "dream_disabled" as const }
+        })),
+        runMemoryRetention(env, namespace),
+        retryStaleVectorSyncs(env, namespace, 50)
+      ]).then(([dream, retention, syncRetry]) => {
+        console.log("scheduled daily memory maintenance", { namespace, dream, retention, syncRetry });
+      })
+    );
   }
 };

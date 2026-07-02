@@ -25,6 +25,8 @@ export function toMemoryApiRecord(record: MemoryRecord, score?: number): MemoryA
     tension_score: record.tension_score ?? null,
     response_posture: record.response_posture ?? null,
     audit_state: record.audit_state ?? null,
+    valence: record.valence ?? null,
+    arousal: record.arousal ?? null,
     importance: record.importance,
     confidence: record.confidence,
     status: record.status,

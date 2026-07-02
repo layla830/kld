@@ -47,15 +47,36 @@ function relevantExcerpt(memory: MemoryApiRecord, query: string): string {
   return clip(content);
 }
 
+function formatCoordHints(memory: MemoryApiRecord): { prefix: string; suffix: string } {
+  const prefixParts: string[] = [];
+  const suffixParts: string[] = [];
+
+  if (memory.thread) prefixParts.push(`线:${memory.thread}`);
+
+  const risk = memory.risk_level;
+  const tension = memory.tension_score;
+  if (risk === "high") prefixParts.push("⚠high");
+  else if (risk === "medium") prefixParts.push("⚠med");
+  if (typeof tension === "number" && tension >= 0.6) prefixParts.push("敏感");
+
+  if (memory.response_posture) suffixParts.push(`以后: ${memory.response_posture}`);
+
+  return {
+    prefix: prefixParts.length ? `[${prefixParts.join("|")}]` : "",
+    suffix: suffixParts.length ? ` → ${suffixParts.join(" · ")}` : ""
+  };
+}
+
 export function formatRecallBlock(memories: MemoryApiRecord[], query: string): string {
   const lines = memories.flatMap((memory) => {
     const content = relevantExcerpt(memory, query);
     if (!content) return [];
     const tags = memory.tags.length ? ` tags=${memory.tags.slice(0, 4).join(",")}` : "";
     const pinned = memory.pinned ? " pinned=true" : "";
-    return [`- id=${memory.id} type=${memory.type} importance=${memory.importance.toFixed(2)}${pinned}${tags}: ${content}`];
+    const coords = formatCoordHints(memory);
+    return [`- id=${memory.id} type=${memory.type}${coords.prefix ? ` ${coords.prefix}` : ""} importance=${memory.importance.toFixed(2)}${pinned}${tags}: ${content}${coords.suffix}`];
   });
 
   if (lines.length === 0) return "";
-  return ["<recall>", "Relevant long-term memories. Use only if helpful; do not mention the memory system.", ...lines, "</recall>"].join("\n");
+  return ["<recall>", "Relevant long-term memories. Use only if helpful; do not mention the memory system.", "Lines marked → 以后: tell you how to respond next time. ⚠ marks sensitive/high-risk topics — approach carefully.", ...lines, "</recall>"].join("\n");
 }

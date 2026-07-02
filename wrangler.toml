@@ -25,6 +25,18 @@ AUTO_DIARY_ENABLED = "false"
 AUTO_CHUNK_MIN_MESSAGES = "40"
 AUTO_CHUNK_MAX_MESSAGES = "80"
 AUTO_CHUNK_SUMMARY_MODEL = "deepseek/deepseek-v4-pro"
+# Dream / nightly memory maintenance. Default OFF + dry-run ON per integration plan
+# "Do Not Borrow Yet" constraint. First run via /v1/debug/dream_dry_run, review
+# the plan, then set ENABLE_DREAM=true / DREAM_DRY_RUN=false to go live.
+ENABLE_DREAM = "false"
+DREAM_DRY_RUN = "true"
+DREAM_MODEL = "deepseek/deepseek-v4-pro"
+DREAM_TIME_ZONE = "Asia/Shanghai"
+DREAM_MAX_MESSAGES = "40"
+DREAM_MAX_RUNS = "5"
+DREAM_MAX_TOKENS = "3000"
+DREAM_MEMORY_CONTEXT_LIMIT = "40"
+DREAM_EXCERPT_LIMIT = "8"
 CC_CONNECT_MESSAGE_RETENTION_DAYS = "7"
 MEMORY_RETENTION_MESSAGES_DAYS = "14"
 MEMORY_RETENTION_USAGE_LOGS_DAYS = "30"
@@ -59,6 +71,10 @@ queue = "companion-memory"
 queue = "companion-memory"
 max_batch_size = 10
 max_batch_timeout = 30
+
+[triggers]
+crons = ["10 20 * * *"]
+
 [[d1_databases]]
 binding = "DB"
 database_name = "companion_memory_proxy"

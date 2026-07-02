@@ -403,6 +403,8 @@ function messageToMemoryRecord(message: MessageRecord & { score: number }): Scor
     tension_score: null,
     response_posture: null,
     audit_state: null,
+    valence: null,
+    arousal: null,
     importance: message.role === "user" ? 0.42 : 0.34,
     confidence: 0.75,
     status: "active",

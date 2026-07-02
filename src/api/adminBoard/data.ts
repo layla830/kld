@@ -443,6 +443,8 @@ function apiRecordToMemoryRecord(record: MemoryApiRecord): MemoryRecord {
     tension_score: record.tension_score,
     response_posture: record.response_posture,
     audit_state: record.audit_state,
+    valence: record.valence ?? null,
+    arousal: record.arousal ?? null,
     importance: record.importance,
     confidence: record.confidence,
     status: record.status,

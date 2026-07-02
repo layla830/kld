@@ -64,6 +64,20 @@
   CACHE_DEFAULT_TTL_SECONDS?: string;
   CACHE_MAX_VALUE_BYTES?: string;
   SUMMARY_MODEL?: string;
+  ENABLE_DREAM?: string;
+  DREAM_DRY_RUN?: string;
+  DREAM_MODEL?: string;
+  DREAM_TIME_ZONE?: string;
+  DREAM_MAX_MESSAGES?: string;
+  DREAM_MAX_RUNS?: string;
+  DREAM_MAX_TOKENS?: string;
+  DREAM_MEMORY_CONTEXT_LIMIT?: string;
+  DREAM_EXCERPT_LIMIT?: string;
+  DREAM_NAMESPACE?: string;
+  ENABLE_DAILY_SUMMARY_MEMORY?: string;
+  EMPTY_MEMORY_MIN_CHARS?: string;
+  E_AXIS_STARTED_AT?: string;
+  E_AXIS_SHADOW_DAYS?: string;
 }
 
 export interface MemoryMaintenanceQueueMessage {
@@ -199,6 +213,8 @@ export interface MemoryRecord {
   tension_score: number | null;
   response_posture: string | null;
   audit_state: string | null;
+  valence: number | null;
+  arousal: number | null;
   importance: number;
   confidence: number;
   status: "active" | "deleted" | "superseded" | "low_confidence" | string;
@@ -208,6 +224,7 @@ export interface MemoryRecord {
   source_message_ids: string | null;
   vector_id: string | null;
   vector_synced: number;
+  vector_sync_status?: "synced" | "failed" | "pending" | "deleted" | null;
   last_recalled_at: string | null;
   recall_count: number;
   created_at: string;
@@ -229,6 +246,8 @@ export interface MemoryApiRecord {
   tension_score: number | null;
   response_posture: string | null;
   audit_state: string | null;
+  valence: number | null;
+  arousal: number | null;
   importance: number;
   confidence: number;
   status: string;

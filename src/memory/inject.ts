@@ -124,6 +124,26 @@ export async function selectMemoriesForInjection(
   });
 }
 
+function formatCoordHints(memory: MemoryApiRecord): { prefix: string; suffix: string } {
+  const prefixParts: string[] = [];
+  const suffixParts: string[] = [];
+
+  if (memory.thread) prefixParts.push(`线:${memory.thread}`);
+
+  const risk = memory.risk_level;
+  const tension = memory.tension_score;
+  if (risk === "high") prefixParts.push("⚠high");
+  else if (risk === "medium") prefixParts.push("⚠med");
+  if (typeof tension === "number" && tension >= 0.6) prefixParts.push("敏感");
+
+  if (memory.response_posture) suffixParts.push(`以后: ${memory.response_posture}`);
+
+  return {
+    prefix: prefixParts.length ? `[${prefixParts.join("|")}]` : "",
+    suffix: suffixParts.length ? ` → ${suffixParts.join(" · ")}` : ""
+  };
+}
+
 export function formatMemoryPatch(memories: MemoryApiRecord[]): string {
   if (memories.length === 0) return "";
 
@@ -132,7 +152,8 @@ export function formatMemoryPatch(memories: MemoryApiRecord[]): string {
     if (!content) return [];
     const importance = memory.importance.toFixed(2);
     const pinned = memory.pinned ? "[pinned]" : "";
-    return [`- [${memory.type}][importance=${importance}]${pinned} ${content}`];
+    const coords = formatCoordHints(memory);
+    return [`- [${memory.type}][importance=${importance}]${pinned}${coords.prefix ? ` ${coords.prefix}` : ""} ${content}${coords.suffix}`];
   });
 
   if (lines.length === 0) return "";
@@ -140,6 +161,7 @@ export function formatMemoryPatch(memories: MemoryApiRecord[]): string {
   return [
     "以下是你自然记得的长期记忆。只有在相关时使用，不要机械复述。",
     "不要说“根据记忆库”“系统记录”或暴露任何代理层实现。",
+    "→ 以后: 标注的是这条记忆告诉你以后怎么回应。⚠ 标注的是敏感/高风险话题，要小心接近。",
     "",
     "<memories>",
     ...lines,
