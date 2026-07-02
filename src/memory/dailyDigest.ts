@@ -20,7 +20,6 @@ import type { ExtractedMemory } from "./extract";
 import { toMemoryApiRecord } from "./search";
 import {
   createSyncedMemory,
-  patchSyncedMemory,
   deleteSyncedMemory,
 } from "./state";
 
@@ -72,6 +71,8 @@ interface DailyDigestStats {
   addedMemories: number;
   updatedMemories: number;
   deletedMemories: number;
+  updateReviewsQueued: number;
+  deleteReviewsQueued: number;
   savedExcerpts: number;
   cleanedEmptyMemories: number;
   cursorAdvanced: boolean;
@@ -645,6 +646,7 @@ async function saveDailySummaryMemory(
     content: input.content,
     importance: 0.66,
     confidence: 0.9,
+    thread: `timeline:${input.dateLabel}`,
     tags: ["dream-summary", "daily-summary", input.dateLabel],
     source: "dream",
     sourceMessageIds: input.messageIds
@@ -686,44 +688,35 @@ async function saveImportantExcerpts(
   return saved;
 }
 
-async function applyMemoryUpdates(
+async function queueMemoryMutationReviews(
   env: Env,
   input: { namespace: string; updates: DigestMemoryUpdate[]; deletes: DigestMemoryDelete[] }
-): Promise<{ updated: number; deleted: number }> {
-  let updated = 0;
-  let deleted = 0;
+): Promise<{ updateReviewsQueued: number; deleteReviewsQueued: number }> {
+  const updates: DigestMemoryUpdate[] = [];
+  const deletes: DigestMemoryDelete[] = [];
 
   for (const item of input.updates) {
     const existing = await getMemoryById(env.DB, { namespace: input.namespace, id: item.target_id });
-    if (!existing || existing.status !== "active") continue;
-
-    const next = await patchSyncedMemory(env, input.namespace, item.target_id, {
-      type: item.type,
-      content: item.content,
-      importance: item.importance,
-      confidence: item.confidence,
-      tags: item.tags,
-      factKey: item.fact_key,
-      thread: item.thread,
-      riskLevel: item.risk_level,
-      urgencyLevel: item.urgency_level,
-      tensionScore: item.tension_score,
-      responsePosture: item.response_posture,
-      valence: item.valence,
-      arousal: item.arousal
-    });
-
-    if (next) updated += 1;
+    if (existing?.status === "active") updates.push(item);
   }
-
   for (const item of input.deletes) {
     const existing = await getMemoryById(env.DB, { namespace: input.namespace, id: item.target_id });
-    if (!existing || existing.status !== "active" || existing.pinned) continue;
-    await deleteSyncedMemory(env, input.namespace, item.target_id);
-    deleted += 1;
+    if (existing?.status === "active" && !existing.pinned) deletes.push(item);
   }
 
-  return { updated, deleted };
+  if (updates.length || deletes.length) {
+    await createMemoryEvent(env.DB, {
+      namespace: input.namespace,
+      eventType: "dream_mutation_review",
+      payload: {
+        policy: "review_first",
+        updates,
+        deletes,
+        note: "Dream may propose changes, but only an explicit audited approval may mutate existing memories."
+      }
+    });
+  }
+  return { updateReviewsQueued: updates.length, deleteReviewsQueued: deletes.length };
 }
 
 async function recordDryRunPlan(
@@ -849,6 +842,8 @@ export async function runDailyMemoryDigest(
         addedMemories: 0,
         updatedMemories: 0,
         deletedMemories: 0,
+        updateReviewsQueued: (digest.memories_to_update ?? []).length,
+        deleteReviewsQueued: (digest.memories_to_delete ?? []).length,
         savedExcerpts: 0,
         cleanedEmptyMemories: 0,
         cursorAdvanced: true,
@@ -871,7 +866,7 @@ export async function runDailyMemoryDigest(
     await saveDailySummaryMemory(env, { namespace, dateLabel, content: summaryContent, messageIds });
   }
 
-  const updates = await applyMemoryUpdates(env, {
+  const mutationReviews = await queueMemoryMutationReviews(env, {
     namespace,
     updates: digest.memories_to_update ?? [],
     deletes: digest.memories_to_delete ?? []
@@ -917,8 +912,10 @@ export async function runDailyMemoryDigest(
       dryRun: false,
       processedMessages: messages.length,
       addedMemories,
-      updatedMemories: updates.updated,
-      deletedMemories: updates.deleted,
+      updatedMemories: 0,
+      deletedMemories: 0,
+      updateReviewsQueued: mutationReviews.updateReviewsQueued,
+      deleteReviewsQueued: mutationReviews.deleteReviewsQueued,
       savedExcerpts,
       cleanedEmptyMemories,
       cursorAdvanced: true,
@@ -926,3 +923,4 @@ export async function runDailyMemoryDigest(
     }
   };
 }
+

@@ -24,6 +24,7 @@ export async function persistChunkMemory(env: Env, params: {
   const sourceMessageIds = chunk.messages.map((message) => message.id);
   const dateTag = dateTagForChunk(chunk);
   const tags = ["auto-diary", "自动日记", dateTag, chunk.periodKey].filter((tag): tag is string => Boolean(tag));
+  const thread = `timeline:${dateTag ?? chunk.periodKey}`;
 
   const memory = await createMemory(env.DB, {
     namespace,
@@ -32,6 +33,7 @@ export async function persistChunkMemory(env: Env, params: {
     summary: summary.summary,
     importance: 0.62,
     confidence: 0.82,
+    thread,
     tags,
     source,
     sourceMessageIds
@@ -45,3 +47,4 @@ export async function persistChunkMemory(env: Env, params: {
 
   return memory;
 }
+

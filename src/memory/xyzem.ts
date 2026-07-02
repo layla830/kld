@@ -482,8 +482,9 @@ export async function runXyzemNightlyMaintenance(
   namespace: string,
   options: { dryRun?: boolean } = {}
 ): Promise<{ zAudit: Awaited<ReturnType<typeof runZAudit>>; patrol: Awaited<ReturnType<typeof runMetabolismPatrol>>; relations: Awaited<ReturnType<typeof runRelationBuild>> }> {
+  const relations = await runRelationBuild(env, namespace, { dryRun: options.dryRun });
   const zAudit = await runZAudit(env, namespace);
   const patrol = await runMetabolismPatrol(env, namespace);
-  const relations = await runRelationBuild(env, namespace, { dryRun: options.dryRun });
   return { zAudit, patrol, relations };
 }
+

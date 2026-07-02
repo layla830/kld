@@ -220,3 +220,18 @@ Update after 2026-06-19:
 - A small E-axis boost has already been deployed; do not expand it until real recall evaluation is available.
 - Next code work should be driven by concrete recall failures, not by speculative ranking changes.
 - Next data work should target measured gaps: review candidates, isolated fact_key groups, duplicate or stale fact keys, and missing coordinates on high-value rules.
+
+## Closed-loop hardening (2026-07-02)
+
+The current Worker-native integration now enforces these runtime contracts:
+
+- X: persisted conversation chunks receive a deterministic `timeline:<date-or-period>` thread and retain `source_message_ids`.
+- Y: safe typed edges are used by two-hop recall; review-only relation types never enter default expansion. Night maintenance builds Y before Z and M inspect the resulting state.
+- Z: nightly fact conflicts create auditable pending events. Dream-proposed updates and deletes no longer mutate existing memories; they are stored as `dream_mutation_review` events for explicit approval.
+- E: the E-axis ranking boost is actually gated by `E_AXIS_STARTED_AT` and `E_AXIS_SHADOW_DAYS`. Missing configuration remains shadow mode, so emotion/risk coordinates cannot affect ranking accidentally.
+- M: patrol remains read-only. It reports duplicate facts, stale rows, self-loops, orphan edges, and symmetric duplicates without deleting them.
+
+Run `npm run test:lmc5-circuits` for the invariant audit and `npm run typecheck` before deployment.
+
+Remaining production boundary: the Worker cannot create a D1 export from inside a scheduled invocation. Keep `DREAM_DRY_RUN=true` until reviewed, and take a D1 export or confirm the available Time Travel restore point before enabling apply mode. Deployment and database rollback remain operator-owned, not model-owned.
+

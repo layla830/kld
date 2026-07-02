@@ -1,4 +1,4 @@
-﻿import { listActiveMemoriesByFactKeys, listGuidanceSeedMemories, markMemoriesRecalled, searchMemoriesByText } from "../db/memories";
+import { listActiveMemoriesByFactKeys, listGuidanceSeedMemories, markMemoriesRecalled, searchMemoriesByText } from "../db/memories";
 import { listRelationExpandedMemories } from "../db/memoryRelations";
 import { searchMessagesForRecall } from "../db/messages";
 import type { Env, MemoryApiRecord, MemoryRecord, MessageRecord } from "../types";
@@ -6,6 +6,7 @@ import { postProcessMemorySearchResults, applyLead } from "./postProcess";
 import { toMemoryApiRecord } from "./mapper";
 import { factKeysForQueryHint, queryHintAliasGroups } from "./queryHints";
 import { searchVectorMemories, type ScoredMemoryRecord } from "./vectorStore";
+import { shouldApplyEAxisToRanking } from "./eAxis";
 
 export { toMemoryApiRecord } from "./mapper";
 
@@ -354,7 +355,7 @@ function lexicalScoreRecord(record: MemoryRecord, input: { query: string; expand
   return clamp(best + coverage * 0.22, 0, 1.1);
 }
 
-function rankHybridRecord(record: HybridScoredMemoryRecord): number {
+function rankHybridRecord(record: HybridScoredMemoryRecord, applyEAxis: boolean): number {
   const vectorScore = record.vectorScore ?? 0;
   const keywordScore = record.keywordScore ?? 0;
   const lexicalScore = record.lexicalScore ?? 0;
@@ -370,7 +371,7 @@ function rankHybridRecord(record: HybridScoredMemoryRecord): number {
     record.importance * 0.08 +
     pinnedBoost +
     recencyBoost(record) * 0.04 +
-    eAxisBoost(record)
+    (applyEAxis ? eAxisBoost(record) : 0)
   );
 }
 
@@ -441,7 +442,7 @@ function shouldRecordRecall(input: SearchMemoriesInput): boolean {
 function mergeSearchResults(
   vectorRecords: ScoredMemoryRecord[] | null,
   keywordRecords: ScoredMemoryRecord[],
-  input: { query: string; expandedQuery: string; topK: number; timeIntent: TimeIntent }
+  input: { query: string; expandedQuery: string; topK: number; timeIntent: TimeIntent; applyEAxis: boolean }
 ): ScoredMemoryRecord[] {
   const merged = new Map<string, HybridScoredMemoryRecord>();
 
@@ -454,7 +455,7 @@ function mergeSearchResults(
 
     if (!existing) {
       const next: HybridScoredMemoryRecord = { ...record, lexicalScore, rankScore, timeScore };
-      next.score = rankHybridRecord(next);
+      next.score = rankHybridRecord(next, input.applyEAxis);
       merged.set(record.id, next);
       return;
     }
@@ -470,7 +471,7 @@ function mergeSearchResults(
       timeScore: Math.max(existing.timeScore ?? 0, timeScore),
       rankScore: (existing.rankScore ?? 0) + rankScore
     };
-    next.score = rankHybridRecord(next);
+    next.score = rankHybridRecord(next, input.applyEAxis);
     merged.set(record.id, next);
   }
 
@@ -564,7 +565,13 @@ export async function searchMemories(env: Env, input: SearchMemoriesInput): Prom
       })),
       ...messageRecords.map(messageToMemoryRecord)
     ],
-    { query: searchQuery, expandedQuery, topK: candidateLimit, timeIntent }
+    {
+      query: searchQuery,
+      expandedQuery,
+      topK: candidateLimit,
+      timeIntent,
+      applyEAxis: shouldApplyEAxisToRanking(env)
+    }
   );
   const relationRecords = await listRelationExpandedMemories(env.DB, {
     namespace: input.namespace,
@@ -593,4 +600,5 @@ export async function searchMemories(env: Env, input: SearchMemoriesInput): Prom
 
   return outputRecords;
 }
+
 
