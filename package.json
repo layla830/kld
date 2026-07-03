@@ -12,7 +12,7 @@
     "memory:lmc5-coordinates": "node scripts/lmc5-coordinate-audit.mjs",
     "test:lmc5-circuits": "node scripts/lmc5-circuit-audit.mjs",
     "test:recall-regression": "node scripts/recall-regression.mjs",
-    "deploy:cloudflare": "wrangler deploy --keep-vars",
+    "deploy:cloudflare": "npm run setup:cloudflare && wrangler deploy --keep-vars",
     "typecheck": "tsc --noEmit",
     "db:migrate:local": "wrangler d1 migrations apply companion_memory_proxy --local",
     "db:migrate:remote": "wrangler d1 migrations apply companion_memory_proxy --remote"
@@ -23,4 +23,3 @@
     "wrangler": "^4.40.2"
   }
 }
-
