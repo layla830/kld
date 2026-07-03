@@ -10,6 +10,7 @@ import { handleBooksReaderPage } from "./api/booksReader";
 import { handleBooksUpload } from "./api/booksUpload";
 import { handleMemories } from "./api/memories";
 import { handleMemoryRelations } from "./api/memoryRelations";
+import { handleMemoryCandidates } from "./api/memoryCandidates";
 import { handleMcp } from "./api/mcp";
 import { handleMigration } from "./api/migration";
 import { handleModels } from "./api/models";
@@ -69,7 +70,9 @@ export default {
         "/admin/memories/edit",
         "/admin/memories/delete",
         "/admin/memories/review/approve",
-        "/admin/memories/review/reject"
+        "/admin/memories/review/reject",
+        "/admin/memories/candidates/approve",
+        "/admin/memories/candidates/reject"
       ].includes(url.pathname)
     ) {
       return handleAdminBoard(request, env, ctx);
@@ -128,6 +131,10 @@ export default {
 
     if (url.pathname === "/v1/memory-relations") {
       return handleMemoryRelations(request, env);
+    }
+
+    if (url.pathname === "/v1/memory-candidates") {
+      return handleMemoryCandidates(request, env);
     }
 
     if (url.pathname.startsWith("/v1/memories")) {

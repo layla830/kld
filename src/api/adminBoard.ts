@@ -6,6 +6,8 @@ import { fetchHeatmap, fetchLmc5Dashboard, fetchMemories, fetchQuoteCategories, 
 import { fetchDreamReviewMemories } from "./adminBoard/reviewData";
 import { inputFromUrl, noticeUrl, qs, readFormText } from "./adminBoard/utils";
 import { renderPage } from "./adminBoard/view";
+import { listMemoryCandidates } from "../db/memoryCandidates";
+import { approveCandidate, rejectCandidate } from "./adminBoard/candidateActions";
 
 export async function handleAdminBoard(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   if (!isAuthorized(request, env)) return unauthorized();
@@ -67,6 +69,29 @@ export async function handleAdminBoard(request: Request, env: Env, ctx: Executio
     }
   }
 
+  if (request.method === "POST" && url.pathname === "/admin/memories/candidates/approve") {
+    const ref = request.headers.get("referer") || `${url.origin}/admin/memories?tab=review`;
+    try {
+      const target = await approveCandidate(env, await request.formData());
+      if (target) ctx.waitUntil(target.status === "deleted" ? deleteMemoryEmbedding(env, target) : upsertMemoryEmbedding(env, target));
+      return Response.redirect(`${url.origin}${noticeUrl(ref, target ? "approved" : "empty")}`, 303);
+    } catch (error) {
+      console.error("admin candidate approve failed", error);
+      return Response.redirect(`${url.origin}${noticeUrl(ref, "error")}`, 303);
+    }
+  }
+
+  if (request.method === "POST" && url.pathname === "/admin/memories/candidates/reject") {
+    const ref = request.headers.get("referer") || `${url.origin}/admin/memories?tab=review`;
+    try {
+      const rejected = await rejectCandidate(env, await request.formData());
+      return Response.redirect(`${url.origin}${noticeUrl(ref, rejected ? "rejected" : "empty")}`, 303);
+    } catch (error) {
+      console.error("admin candidate reject failed", error);
+      return Response.redirect(`${url.origin}${noticeUrl(ref, "error")}`, 303);
+    }
+  }
+
   if (request.method !== "GET") return new Response("Method not allowed", { status: 405 });
 
   const input = inputFromUrl(url);
@@ -81,7 +106,8 @@ export async function handleAdminBoard(request: Request, env: Env, ctx: Executio
     input.tab === "lmc5" ? fetchLmc5Dashboard(env) : Promise.resolve(null)
   ]);
 
-  return new Response(renderPage(input, { stats, types, quoteCategories, total: memories.total, records: memories.records, heatmap, timelineDates, lmc5 }), {
+  const candidates = input.tab === "review" ? await listMemoryCandidates(env.DB, "default", 100) : [];
+  return new Response(renderPage(input, { stats, types, quoteCategories, total: memories.total, records: memories.records, candidates, heatmap, timelineDates, lmc5 }), {
     headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" }
   });
 }

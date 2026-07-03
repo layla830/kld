@@ -3,6 +3,8 @@ import { ADMIN_BOARD_CSS } from "./styles";
 import type { BoardStats, HeatDay, Lmc5DashboardData, Lmc5MemoryNode, Lmc5NodeLink, Lmc5RelationEdge } from "./data";
 import { renderDreamReviewMemory } from "./reviewView";
 import type { DreamReviewMemoryRecord } from "./reviewData";
+import type { MemoryCandidateRecord } from "../../db/memoryCandidates";
+import { renderMemoryCandidate } from "./candidateView";
 import {
   adminPath,
   attr,
@@ -23,6 +25,7 @@ interface PageData {
   quoteCategories: string[];
   total: number;
   records: MemoryRecord[];
+  candidates: MemoryCandidateRecord[];
   heatmap: HeatDay[];
   timelineDates: Set<string>;
   lmc5: Lmc5DashboardData | null;
@@ -276,7 +279,9 @@ function renderQuoteFilter(input: PageInput, categories: string[]): string {
 export function renderPage(input: PageInput, data: PageData): string {
   const searchPrefix = input.searchMode === "semantic" ? "语义搜索" : "搜索";
   const listTitle = input.tab === "message" ? "历史留言" : input.tab === "diary" ? "我们的日记" : input.tab === "quote" ? "我的语录" : input.tab === "timeline" ? "分段日记" : input.tab === "review" ? "Dream 审核" : input.date ? `${input.date} 的记忆` : input.q ? `${searchPrefix}：${input.q}` : "记忆列表";
-  const list = data.records.length ? data.records.map((record) => renderMemory(record, input.tab)).join("") : '<div class="empty">这里还没有内容</div>';
+  const candidateList = input.tab === "review" ? data.candidates.map(renderMemoryCandidate).join("") : "";
+  const memoryList = data.records.map((record) => renderMemory(record, input.tab)).join("");
+  const list = candidateList || memoryList ? candidateList + memoryList : '<div class="empty">这里还没有内容</div>';
   const dashboard = input.tab === "browse" ? renderDashboard(input, data) : "";
   const lmc5Dashboard = input.tab === "lmc5" ? renderLmc5Dashboard(data.lmc5) : "";
   const calendar = input.tab === "timeline" ? renderCalendar(input, data.timelineDates) : "";
