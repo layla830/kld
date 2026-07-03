@@ -2,6 +2,7 @@ import type { MemoryRecord } from "../../types";
 import { ADMIN_BOARD_CSS } from "./styles";
 import type { BoardStats, HeatDay, Lmc5DashboardData, Lmc5MemoryNode, Lmc5NodeLink, Lmc5RelationEdge } from "./data";
 import { renderDreamReviewMemory } from "./reviewView";
+import type { DreamReviewMemoryRecord } from "./reviewData";
 import {
   adminPath,
   attr,
@@ -245,7 +246,7 @@ function renderEditForm(record: MemoryRecord): string {
 }
 
 function renderMemory(record: MemoryRecord, tab: string): string {
-  if (record.type === "dream_review") return renderDreamReviewMemory(record);
+  if (record.type === "dream_review") return renderDreamReviewMemory(record, (record as DreamReviewMemoryRecord).review_target);
   const tags = parseTags(record.tags);
   const tagHtml = tags.slice(0, 6).map((tag) => `<span class="tag-pill ${moodClass(tag.replace("mood:", ""))}">${htmlEscape(tag)}</span>`).join("");
   const deleteForm = record.status === "active" ? `<form method="POST" action="/admin/memories/delete" class="delete-form" onsubmit="return confirm('确认删除吗？这会软删除，不会立刻物理清空。')"><input type="hidden" name="id" value="${attr(record.id)}"><button class="action-btn delete" type="submit">删除</button></form>` : "";
@@ -285,3 +286,4 @@ export function renderPage(input: PageInput, data: PageData): string {
 
   return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>♡</title><meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate"><link rel="preconnect" href="https://fonts.googleapis.com"><link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@300;400;500&display=swap" rel="stylesheet"><style>${ADMIN_BOARD_CSS}</style></head><body><div class="page"><header><div class="heart">♡</div><h1>我们的记忆小家</h1><div class="subtitle">MEMORY HOME</div></header>${renderTabs(input)}${dashboard}${lmc5Dashboard}${calendar}${composer}${quoteFilter}${listBlock}</div><div class="toast" id="toast"></div><script>const n=${JSON.stringify(input.notice)};const m={created:'已保存 ♡',edited:'修改成功 ♡',deleted:'已删除',approved:'已允许',rejected:'已拒绝',empty:'没有内容',error:'保存失败'};if(n&&m[n]){const t=document.getElementById('toast');t.textContent=m[n];t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2500);history.replaceState(null,'',location.pathname+location.search.replace(/[?&]notice=[^&]*/,''));}</script></body></html>`;
 }
+
