@@ -17,6 +17,9 @@ export interface MemoryCandidateRecord {
   created_at: string;
   updated_at: string;
   resolved_at: string | null;
+  target_content?: string | null;
+  target_type?: string | null;
+  target_status?: string | null;
 }
 
 export interface CandidateInput {
@@ -53,8 +56,11 @@ export async function upsertMemoryCandidate(db: D1Database, namespace: string, i
 
 export async function listMemoryCandidates(db: D1Database, namespace: string, limit = 100): Promise<MemoryCandidateRecord[]> {
   const result = await db.prepare(
-    `SELECT * FROM memory_candidates WHERE namespace = ? AND status IN ('pending','needs_subject_review')
-     ORDER BY dream_date DESC, created_at DESC LIMIT ?`
+    `SELECT c.*, m.content AS target_content, m.type AS target_type, m.status AS target_status
+     FROM memory_candidates c
+     LEFT JOIN memories m ON m.namespace = c.namespace AND m.id = c.target_id
+     WHERE c.namespace = ? AND c.status IN ('pending','needs_subject_review')
+     ORDER BY c.dream_date DESC, c.created_at DESC LIMIT ?`
   ).bind(namespace, limit).all<MemoryCandidateRecord>();
   return result.results ?? [];
 }
