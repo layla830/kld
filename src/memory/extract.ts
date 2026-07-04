@@ -2,6 +2,16 @@ import { callOpenAICompat } from "../proxy/openaiAdapter";
 import type { Env, MessageRecord, OpenAIChatRequest, OpenAIChatResponse } from "../types";
 import { extractJsonObject } from "../utils/jsonHelpers";
 import { sanitizeMemoryContent } from "./contentSanitizer";
+import {
+  normalizeFactKey,
+  normalizeThread,
+  normalizeRiskLevel,
+  normalizeUrgencyLevel,
+  normalizeTensionScore,
+  normalizeResponsePosture,
+  normalizeValence,
+  normalizeArousal
+} from "./coordinates";
 
 export interface ExtractedMemory {
   type: string;
@@ -75,6 +85,14 @@ function parseExtraction(text: string): MemoryExtractionResult {
         confidence?: unknown;
         tags?: unknown;
         source_message_ids?: unknown;
+        fact_key?: unknown;
+        thread?: unknown;
+        risk_level?: unknown;
+        urgency_level?: unknown;
+        tension_score?: unknown;
+        response_posture?: unknown;
+        valence?: unknown;
+        arousal?: unknown;
       };
 
       const content = normalizeMemoryContent(record.content);
@@ -87,7 +105,15 @@ function parseExtraction(text: string): MemoryExtractionResult {
           importance: normalizeNumber(record.importance, 0.5),
           confidence: normalizeNumber(record.confidence, 0.8),
           tags: normalizeStringArray(record.tags),
-          source_message_ids: normalizeStringArray(record.source_message_ids)
+          source_message_ids: normalizeStringArray(record.source_message_ids),
+          fact_key: normalizeFactKey(record.fact_key),
+          thread: normalizeThread(record.thread),
+          risk_level: normalizeRiskLevel(record.risk_level),
+          urgency_level: normalizeUrgencyLevel(record.urgency_level),
+          tension_score: normalizeTensionScore(record.tension_score),
+          response_posture: normalizeResponsePosture(record.response_posture),
+          valence: normalizeValence(record.valence),
+          arousal: normalizeArousal(record.arousal)
         }
       ];
     })
@@ -123,6 +149,16 @@ function buildExtractionPrompt(messages: MessageRecord[]): string {
     "- 关系里程碑",
     "- 反复出现的习惯",
     "",
+    "每条记忆可以附带 LMC-5 坐标（不确定就输出 null）：",
+    "- fact_key: 稳定事实槽，格式如 project:kld_memory 或 relationship.status，不确定就 null",
+    "- thread: 主题线，如 kld、relationship.boundaries、safety，不确定就 null",
+    "- risk_level: low/normal/medium/high，默认 normal",
+    "- urgency_level: low/normal/medium/high，默认 normal",
+    "- tension_score: 0-1，话题有过张力/冲突时 >0.5，不确定就 null",
+    "- valence: -1 到 1，正=愉悦，负=难受，不确定就 null",
+    "- arousal: 0-1，越高越激动，不确定就 null",
+    "- response_posture: 未来回应姿态，如\"直接说真实感受\"或\"comfort first\"，不确定就 null",
+    "",
     "输出格式：",
     JSON.stringify({
       memories: [
@@ -132,6 +168,14 @@ function buildExtractionPrompt(messages: MessageRecord[]): string {
           importance: 0.86,
           confidence: 0.94,
           tags: ["project", "cloudflare"],
+          fact_key: "project:cloudflare_worker",
+          thread: "kld",
+          risk_level: "normal",
+          urgency_level: "normal",
+          tension_score: null,
+          valence: null,
+          arousal: null,
+          response_posture: null,
           source_message_ids: ["msg_x"]
         }
       ],

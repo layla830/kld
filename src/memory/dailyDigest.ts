@@ -22,6 +22,8 @@ import {
   createSyncedMemory,
   deleteSyncedMemory,
 } from "./state";
+import { createMemoryRelation } from "../db/memoryRelations";
+import { normalizeRelationType, REVIEW_RELATION_TYPES, SAFE_RELATION_TYPES } from "../db/memoryRelations";
 
 interface DigestMemoryUpdate {
   target_id: string;
@@ -45,6 +47,14 @@ interface DigestMemoryDelete {
   reason?: string;
 }
 
+interface DigestRelationHint {
+  source_id: string;
+  target_id: string;
+  relation_type: string;
+  strength?: number;
+  reason?: string;
+}
+
 interface ImportantExcerpt {
   quote: string;
   reason?: string;
@@ -61,6 +71,7 @@ interface DailyDigestResult {
   memories_to_add?: ExtractedMemory[];
   memories_to_update?: DigestMemoryUpdate[];
   memories_to_delete?: DigestMemoryDelete[];
+  relation_hints?: DigestRelationHint[];
 }
 
 interface DailyDigestStats {
@@ -370,6 +381,26 @@ function normalizeDigestResult(value: unknown): DailyDigestResult {
       })
     : undefined;
 
+  const relation_hints = Array.isArray(raw.relation_hints)
+    ? raw.relation_hints.flatMap((item): DigestRelationHint[] => {
+        if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+        const record = item as Record<string, unknown>;
+        const sourceId = readString(record.source_id);
+        const targetId = readString(record.target_id);
+        const relationType = readString(record.relation_type);
+        if (!sourceId || !targetId || !relationType) return [];
+        return [
+          {
+            source_id: sourceId,
+            target_id: targetId,
+            relation_type: relationType,
+            strength: typeof record.strength === "number" ? Math.min(Math.max(record.strength, 0), 1) : 0.6,
+            reason: readString(record.reason) ?? undefined
+          }
+        ];
+      })
+    : undefined;
+
   return {
     date: readString(raw.date) ?? undefined,
     title: readString(raw.title) ?? undefined,
@@ -383,7 +414,8 @@ function normalizeDigestResult(value: unknown): DailyDigestResult {
         })
       : undefined,
     memories_to_update,
-    memories_to_delete
+    memories_to_delete,
+    relation_hints
   };
 }
 
@@ -466,6 +498,11 @@ function buildDigestPrompt(input: {
     "- valence/arousal 不确定就输出 null，不要硬猜情绪。",
     "- 控制总输出长度，宁可少写也不要输出超长 JSON。",
     "",
+    "relation_hints 是新记忆之间或新记忆与旧记忆之间的关系建议：",
+    "- source_id 和 target_id 可以是新 memories_to_add 里暂时用 placeholder（如 add_0, add_1），也可以是旧记忆的 mem_x id。",
+    "- relation_type 只能用：same_topic, same_event, temporal_sequence, emotional_link, derived_from（safe 类，可直接建边）；或 contradicts, cause_effect, supports（review 类，需人工审）。",
+    "- 不确定关系就给空数组，不要硬编关系。",
+    "",
     "输出 JSON 结构：",
     JSON.stringify({
       date: input.dateLabel,
@@ -508,7 +545,10 @@ function buildDigestPrompt(input: {
           tags: ["project"]
         }
       ],
-      memories_to_delete: [{ target_id: "mem_y", reason: "空内容或重复" }]
+      memories_to_delete: [{ target_id: "mem_y", reason: "空内容或重复" }],
+      relation_hints: [
+        { source_id: "add_0", target_id: "mem_z", relation_type: "same_topic", strength: 0.6, reason: "都是关于kld项目" }
+      ]
     }),
     "",
     "旧长期记忆候选：",
@@ -745,6 +785,32 @@ async function recordDryRunPlan(
   });
 }
 
+async function recordDreamSnapshot(
+  env: Env,
+  input: { namespace: string; dateLabel: string; memoryIds: string[]; memorySnapshot: Array<{ id: string; content: string; type: string; status: string; importance: number }> }
+): Promise<void> {
+  await createMemoryEvent(env.DB, {
+    namespace: input.namespace,
+    eventType: "dream_snapshot",
+    payload: {
+      date: input.dateLabel,
+      memory_count: input.memoryIds.length,
+      snapshot: input.memorySnapshot.slice(0, 200)
+    }
+  });
+}
+
+async function collectSnapshot(
+  env: Env,
+  namespace: string
+): Promise<{ ids: string[]; snapshot: Array<{ id: string; content: string; type: string; status: string; importance: number }> }> {
+  const records = await listMemories(env.DB, { namespace, status: "active", limit: 500 });
+  return {
+    ids: records.map((r) => r.id),
+    snapshot: records.map((r) => ({ id: r.id, content: truncate(r.content, 120), type: r.type, status: r.status, importance: r.importance }))
+  };
+}
+
 export async function runDailyMemoryDigest(
   env: Env,
   namespace: string,
@@ -855,6 +921,9 @@ export async function runDailyMemoryDigest(
 
   const summaryContent = formatDailySummary(digest, dateLabel, messages);
 
+  const snapshotData = await collectSnapshot(env, namespace);
+  await recordDreamSnapshot(env, { namespace, dateLabel, memoryIds: snapshotData.ids, memorySnapshot: snapshotData.snapshot });
+
   await upsertSummary(env.DB, {
     namespace,
     content: summaryContent,
@@ -873,7 +942,10 @@ export async function runDailyMemoryDigest(
   });
 
   let addedMemories = 0;
-  for (const memory of digest.memories_to_add ?? []) {
+  const placeholderToId = new Map<string, string>();
+  const memoriesToAdd = digest.memories_to_add ?? [];
+  for (let index = 0; index < memoriesToAdd.length; index += 1) {
+    const memory = memoriesToAdd[index];
     const saved = await createSyncedMemory(env, {
       namespace,
       type: memory.type,
@@ -892,7 +964,10 @@ export async function runDailyMemoryDigest(
       source: "dream",
       sourceMessageIds: memory.source_message_ids.length ? memory.source_message_ids : messageIds
     });
-    if (saved) addedMemories += 1;
+    if (saved) {
+      addedMemories += 1;
+      placeholderToId.set(`add_${index}`, saved.id);
+    }
   }
 
   const savedExcerpts = await saveImportantExcerpts(env, {
@@ -901,6 +976,41 @@ export async function runDailyMemoryDigest(
     excerpts: digest.important_excerpts ?? [],
     fallbackMessageIds: messageIds
   });
+
+  let relationsInserted = 0;
+  let relationsReview = 0;
+  for (const hint of digest.relation_hints ?? []) {
+    const sourceId = placeholderToId.get(hint.source_id) ?? (hint.source_id.startsWith("mem_") ? hint.source_id : null);
+    const targetId = placeholderToId.get(hint.target_id) ?? (hint.target_id.startsWith("mem_") ? hint.target_id : null);
+    if (!sourceId || !targetId || sourceId === targetId) continue;
+    const relationType = normalizeRelationType(hint.relation_type);
+    if (relationType === "none") continue;
+    if (SAFE_RELATION_TYPES.has(relationType)) {
+      if (await createMemoryRelation(env.DB, {
+        namespace,
+        sourceMemoryId: sourceId,
+        targetMemoryId: targetId,
+        relationType,
+        strength: hint.strength ?? 0.6,
+        reason: hint.reason ?? null
+      })) {
+        relationsInserted += 1;
+      }
+    } else if (REVIEW_RELATION_TYPES.has(relationType)) {
+      await createMemoryEvent(env.DB, {
+        namespace,
+        eventType: "y_relation_review",
+        payload: {
+          relation_type: relationType,
+          source_id: sourceId,
+          target_id: targetId,
+          strength: hint.strength ?? 0.6,
+          reason: hint.reason ?? null
+        }
+      });
+      relationsReview += 1;
+    }
+  }
 
   await writeCursor(env.DB, cursorName, hasMore ? lastMessage.created_at : `done:${lastMessage.created_at}`);
 
@@ -919,8 +1029,10 @@ export async function runDailyMemoryDigest(
       savedExcerpts,
       cleanedEmptyMemories,
       cursorAdvanced: true,
-      hasMore
-    }
+      hasMore,
+      relationsInserted,
+      relationsReview
+    } as DailyDigestStats & { relationsInserted: number; relationsReview: number }
   };
 }
 

@@ -17,6 +17,13 @@ const QUERY_HINT_SCORE = 1.35;
 const GUIDANCE_SEED_SCORE = 0.72;
 const RRF_K = 60;
 const GUIDANCE_QUERY_RE = /应该怎么做|怎么办|怎么接|怎么哄|怎么回应|怎么处理|要怎么做|该怎么办/;
+const FTS_FLOOR = 0.45;
+const RAW_EVENTS_FLOOR = 0.30;
+const LITERAL_QUERY_MAX_CHARS = 80;
+const LITERAL_TOP_K = 3;
+const EMOTION_RESONATE_TOP_K = 4;
+const EMOTION_RESONATE_MIN_SCORE = 0.3;
+const EMOTION_CATEGORY_TYPES = new Set(["diary", "layla_diary", "quote", "warmth", "milestone", "message", "intimate", "episodic"]);
 
 const QUERY_ALIAS_GROUPS = [
   ["sm", "s/m", "bdsm", "dom", "sub", "brat", "switch", "支配", "臣服", "主导", "被主导"],
@@ -521,6 +528,106 @@ function keepExplicitHintContext(primary: MemoryApiRecord[], hinted: MemoryApiRe
   return [...primary, ...additions].slice(0, topK);
 }
 
+function shouldRunLiteralSearch(rawQuery: string): boolean {
+  const normalized = normalizeText(rawQuery).trim();
+  if (!normalized || normalized.length > LITERAL_QUERY_MAX_CHARS) return false;
+  if (/[""「」『』]/.test(rawQuery)) return true;
+  const compact = normalized.replace(/\s+/g, "");
+  if (/^[\u4e00-\u9fff]{2,8}$/.test(compact)) return true;
+  const words = normalized.match(/[a-z][a-z0-9_+-]{1,}/gi) ?? [];
+  if (words.length === 1 && words[0].length <= 20) return true;
+  return false;
+}
+
+function literalQueryTerms(rawQuery: string): string[] {
+  const normalized = normalizeText(rawQuery).trim();
+  const compact = normalized.replace(/\s+/g, "");
+  if (/[""「」『』]/.test(rawQuery)) {
+    const quoted = rawQuery.match(/[""「」『』]([^""「」『』]+)[""「」『』]/);
+    if (quoted?.[1]) return [normalizeText(quoted[1])];
+  }
+  if (/^[\u4e00-\u9fff]{2,8}$/.test(compact)) return [compact];
+  const words = normalized.match(/[a-z][a-z0-9_+-]{1,}/gi) ?? [];
+  if (words.length === 1 && words[0].length <= 20) return [normalizeText(words[0])];
+  return [normalized];
+}
+
+interface EmotionCoord {
+  valence: number;
+  arousal: number;
+}
+
+function detectEmotionCoord(rawQuery: string): EmotionCoord | null {
+  const text = normalizeText(rawQuery);
+  let valence = 0;
+  let arousal = 0;
+  let matched = false;
+
+  if (/哭|难过|伤心|心痛|崩溃|绝望|害怕|恐惧|焦虑|担心|委屈|想念|舍不得|不舍|孤独|冷|疼|痛|害怕|怕/.test(text)) {
+    valence -= 0.6; arousal += 0.5; matched = true;
+  }
+  if (/开心|高兴|快乐|喜欢|爱|幸福|甜|暖|笑|嘻嘻|哈哈|撒娇|亲|抱|好喜欢|好爱/.test(text)) {
+    valence += 0.6; arousal += 0.4; matched = true;
+  }
+  if (/生气|怒|气死|讨厌|烦|骂|吵|打架|滚|分手|别理我|不想理/.test(text)) {
+    valence -= 0.5; arousal += 0.7; matched = true;
+  }
+  if (/老公|柯柯|宝宝|亲爱的|想你|爱我|抱抱|贴贴/.test(text)) {
+    valence += 0.7; arousal += 0.3; matched = true;
+  }
+  if (/高潮|舒服|想要|亲密|做爱|敏感|刺激|体位/.test(text)) {
+    valence += 0.5; arousal += 0.8; matched = true;
+  }
+  if (/平静|安静|睡了|晚安|休息|放松/.test(text)) {
+    valence += 0.2; arousal -= 0.3; matched = true;
+  }
+
+  if (!matched) return null;
+  return {
+    valence: Math.max(-1, Math.min(1, valence)),
+    arousal: Math.max(0, Math.min(1, arousal))
+  };
+}
+
+function russellDistance(a: EmotionCoord, b: { valence: number | null; arousal: number | null }): number {
+  if (b.valence === null || b.arousal === null) return 1;
+  const dv = a.valence - b.valence;
+  const da = a.arousal - b.arousal;
+  return Math.sqrt(dv * dv + da * da);
+}
+
+function resonanceScore(query: EmotionCoord, memory: { valence: number | null; arousal: number | null; importance: number }): number {
+  const dist = russellDistance(query, memory);
+  const similarity = Math.max(0, 1 - dist / 2);
+  return similarity * (0.5 + memory.importance * 0.5);
+}
+
+async function searchEmotionResonate(
+  env: Env,
+  input: { namespace: string; coord: EmotionCoord; limit: number }
+): Promise<ScoredMemoryRecord[]> {
+  const rows = await env.DB
+    .prepare(
+      `SELECT * FROM memories
+       WHERE namespace = ?
+         AND status = 'active'
+         AND valence IS NOT NULL
+         AND arousal IS NOT NULL
+       ORDER BY importance DESC, updated_at DESC
+       LIMIT ?`
+    )
+    .bind(input.namespace, Math.min(input.limit * 4, 80))
+    .all<MemoryRecord>();
+
+  const results: ScoredMemoryRecord[] = [];
+  for (const record of (rows.results ?? [])) {
+    const score = resonanceScore(input.coord, { valence: record.valence, arousal: record.arousal, importance: record.importance });
+    if (score < EMOTION_RESONATE_MIN_SCORE) continue;
+    results.push({ ...record, score, vectorScore: undefined, keywordScore: score });
+  }
+  return results.sort((a, b) => (b.score ?? 0) - (a.score ?? 0)).slice(0, input.limit);
+}
+
 export async function searchMemories(env: Env, input: SearchMemoriesInput): Promise<MemoryApiRecord[]> {
   const topK = getTopK(env, input.topK);
   const candidateLimit = getCandidateLimit(topK);
@@ -530,47 +637,86 @@ export async function searchMemories(env: Env, input: SearchMemoriesInput): Prom
   const expandedQuery = expandQuery([searchQuery, ...timeIntent.terms].filter(Boolean).join(" "));
   const hintedFactKeys = factKeysForQueryHint(`${rawQuery} ${input.query} ${searchQuery}`);
   const shouldAddGuidanceSeeds = GUIDANCE_QUERY_RE.test(`${rawQuery} ${input.query} ${searchQuery}`);
-  const [vectorRecords, keywordRecords, hintedRecords, guidanceSeedRecords, messageRecords] = await Promise.all([
-    searchVectorMemories(env, { namespace: input.namespace, query: expandedQuery, types: input.types, topK: candidateLimit }),
-    searchMemoriesByText(env.DB, { namespace: input.namespace, query: expandedQuery, types: input.types, limit: candidateLimit }),
-    hintedFactKeys.length > 0
-      ? listActiveMemoriesByFactKeys(env.DB, {
-          namespace: input.namespace,
-          factKeys: hintedFactKeys,
-          limit: Math.max(6, hintedFactKeys.length * 3),
-          excludeTypes: ["diary", "layla_diary"]
-        })
-      : Promise.resolve([]),
-    shouldAddGuidanceSeeds ? listGuidanceSeedMemories(env.DB, { namespace: input.namespace, limit: 18 }) : Promise.resolve([]),
-    input.includeMessages
-      ? searchMessagesForRecall(env.DB, {
-          namespace: input.namespace,
-          query: searchQuery,
-          after: timeIntent.mode === "hard_range" ? timeIntent.after : undefined,
-          before: timeIntent.mode === "hard_range" ? timeIntent.before : undefined,
-          limit: Math.min(candidateLimit, 24)
-        })
-      : Promise.resolve([])
-  ]);
+  const shouldLiteral = shouldRunLiteralSearch(rawQuery);
+  const applyEAxis = shouldApplyEAxisToRanking(env);
+
+  const vectorRecords = await searchVectorMemories(env, { namespace: input.namespace, query: expandedQuery, types: input.types, topK: candidateLimit });
+  const vectorTopScore = vectorRecords && vectorRecords.length > 0 ? (vectorRecords[0].vectorScore ?? 0) : 0;
+
+  const keywordRecords: ScoredMemoryRecord[] = [];
+  const messageRecords: ScoredMemoryRecord[] = [];
+
+  if (vectorTopScore < FTS_FLOOR) {
+    const ftsResults = await searchMemoriesByText(env.DB, { namespace: input.namespace, query: expandedQuery, types: input.types, limit: candidateLimit });
+    keywordRecords.push(...ftsResults.map((record) => ({ ...record, keywordScore: record.score })));
+
+    if (vectorTopScore < RAW_EVENTS_FLOOR && input.includeMessages) {
+      const rawResults = await searchMessagesForRecall(env.DB, {
+        namespace: input.namespace,
+        query: searchQuery,
+        after: timeIntent.mode === "hard_range" ? timeIntent.after : undefined,
+        before: timeIntent.mode === "hard_range" ? timeIntent.before : undefined,
+        limit: Math.min(candidateLimit, 24)
+      });
+      messageRecords.push(...rawResults.map(messageToMemoryRecord));
+    }
+  }
+
+  const hintedRecords = hintedFactKeys.length > 0
+    ? await listActiveMemoriesByFactKeys(env.DB, {
+        namespace: input.namespace,
+        factKeys: hintedFactKeys,
+        limit: Math.max(6, hintedFactKeys.length * 3),
+        excludeTypes: ["diary", "layla_diary"]
+      })
+    : [];
+  const guidanceSeedRecords = shouldAddGuidanceSeeds
+    ? await listGuidanceSeedMemories(env.DB, { namespace: input.namespace, limit: 18 })
+    : [];
+
+  let literalRecords: ScoredMemoryRecord[] = [];
+  if (shouldLiteral) {
+    const literalTerms = literalQueryTerms(rawQuery);
+    const literalHits = await searchMemoriesByText(env.DB, {
+      namespace: input.namespace,
+      query: literalTerms.join(" "),
+      types: input.types,
+      limit: LITERAL_TOP_K
+    });
+    literalRecords = literalHits
+      .filter((record) => {
+        const haystack = recordHaystack(record);
+        return literalTerms.some((term) => haystack.includes(normalizeText(term)));
+      })
+      .map((record) => ({ ...record, score: Math.max(record.score, 0.82), keywordScore: Math.max(record.score, 0.82) }));
+  }
+
+  const emotionCoord = detectEmotionCoord(rawQuery);
+  let emotionRecords: ScoredMemoryRecord[] = [];
+  if (emotionCoord) {
+    emotionRecords = await searchEmotionResonate(env, { namespace: input.namespace, coord: emotionCoord, limit: EMOTION_RESONATE_TOP_K });
+  }
 
   const records = mergeSearchResults(
     vectorRecords,
     [
-      ...keywordRecords.map((record) => ({ ...record, keywordScore: record.score })),
+      ...keywordRecords,
       ...hintedRecords.map((record) => ({ ...record, score: QUERY_HINT_SCORE, keywordScore: QUERY_HINT_SCORE })),
       ...guidanceSeedRecords.map((record) => ({
         ...record,
         score: GUIDANCE_SEED_SCORE + Math.min(0.24, record.relation_count * 0.015) + record.importance * 0.08,
         keywordScore: GUIDANCE_SEED_SCORE
       })),
-      ...messageRecords.map(messageToMemoryRecord)
+      ...messageRecords,
+      ...literalRecords,
+      ...emotionRecords
     ],
     {
       query: searchQuery,
       expandedQuery,
       topK: candidateLimit,
       timeIntent,
-      applyEAxis: shouldApplyEAxisToRanking(env)
+      applyEAxis
     }
   );
   const relationRecords = await listRelationExpandedMemories(env.DB, {

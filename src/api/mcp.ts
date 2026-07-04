@@ -3,6 +3,16 @@ import { createMemory, listMemories, softDeleteMemory, updateMemory } from "../d
 import { deleteMemoryEmbedding, upsertMemoryEmbedding } from "../memory/embedding";
 import { searchMemories, toMemoryApiRecord } from "../memory/search";
 import { buildStartupContext } from "../memory/startupContext";
+import {
+  normalizeFactKey,
+  normalizeThread,
+  normalizeRiskLevel,
+  normalizeUrgencyLevel,
+  normalizeTensionScore,
+  normalizeResponsePosture,
+  normalizeValence,
+  normalizeArousal
+} from "../memory/coordinates";
 import type { Env, KeyProfile, MemoryRecord, Scope } from "../types";
 import { json } from "../utils/json";
 
@@ -165,7 +175,15 @@ function getTools(): Array<Record<string, unknown>> {
       type: { type: "string" },
       tags: { anyOf: [{ type: "array", items: { type: "string" } }, { type: "string" }] },
       importance: { type: "number", minimum: 0, maximum: 1 },
-      pinned: { type: "boolean" }
+      pinned: { type: "boolean" },
+      fact_key: { type: "string" },
+      thread: { type: "string" },
+      risk_level: { type: "string", enum: ["low", "normal", "medium", "high"] },
+      urgency_level: { type: "string", enum: ["low", "normal", "medium", "high"] },
+      tension_score: { type: "number", minimum: 0, maximum: 1 },
+      valence: { type: "number", minimum: -1, maximum: 1 },
+      arousal: { type: "number", minimum: 0, maximum: 1 },
+      response_posture: { type: "string" }
     },
     required: ["content"]
   };
@@ -177,7 +195,15 @@ function getTools(): Array<Record<string, unknown>> {
       type: { type: "string" },
       tags: { type: "array", items: { type: "string" } },
       importance: { type: "number", minimum: 0, maximum: 1 },
-      pinned: { type: "boolean" }
+      pinned: { type: "boolean" },
+      fact_key: { type: "string" },
+      thread: { type: "string" },
+      risk_level: { type: "string", enum: ["low", "normal", "medium", "high"] },
+      urgency_level: { type: "string", enum: ["low", "normal", "medium", "high"] },
+      tension_score: { type: "number", minimum: 0, maximum: 1 },
+      valence: { type: "number", minimum: -1, maximum: 1 },
+      arousal: { type: "number", minimum: 0, maximum: 1 },
+      response_posture: { type: "string" }
     },
     required: ["id"]
   };
@@ -416,6 +442,14 @@ async function callTool(env: Env, ctx: ExecutionContext, profile: KeyProfile, pa
       status: "active",
       pinned: readBoolean(args.pinned),
       tags: readFlexibleStringArray(args.tags),
+      factKey: normalizeFactKey(args.fact_key),
+      thread: normalizeThread(args.thread),
+      riskLevel: normalizeRiskLevel(args.risk_level),
+      urgencyLevel: normalizeUrgencyLevel(args.urgency_level),
+      tensionScore: normalizeTensionScore(args.tension_score),
+      responsePosture: normalizeResponsePosture(args.response_posture),
+      valence: normalizeValence(args.valence),
+      arousal: normalizeArousal(args.arousal),
       source: "mcp",
       sourceMessageIds: [],
       expiresAt: null
@@ -446,6 +480,25 @@ async function callTool(env: Env, ctx: ExecutionContext, profile: KeyProfile, pa
     if (importance !== undefined) patch.importance = Math.max(0, Math.min(1, importance));
     if (confidence !== undefined) patch.confidence = Math.max(0, Math.min(1, confidence));
     if (pinned !== undefined) patch.pinned = pinned;
+
+    const factKey = normalizeFactKey(args.fact_key);
+    const thread = normalizeThread(args.thread);
+    const riskLevel = normalizeRiskLevel(args.risk_level);
+    const urgencyLevel = normalizeUrgencyLevel(args.urgency_level);
+    const tensionScore = normalizeTensionScore(args.tension_score);
+    const responsePosture = normalizeResponsePosture(args.response_posture);
+    const valence = normalizeValence(args.valence);
+    const arousal = normalizeArousal(args.arousal);
+
+    if (args.fact_key !== undefined) patch.factKey = factKey;
+    if (args.thread !== undefined) patch.thread = thread;
+    if (args.risk_level !== undefined) patch.riskLevel = riskLevel;
+    if (args.urgency_level !== undefined) patch.urgencyLevel = urgencyLevel;
+    if (args.tension_score !== undefined) patch.tensionScore = tensionScore;
+    if (args.response_posture !== undefined) patch.responsePosture = responsePosture;
+    if (args.valence !== undefined) patch.valence = valence;
+    if (args.arousal !== undefined) patch.arousal = arousal;
+
     if (Object.keys(patch).length === 0) return toolError("No update fields provided");
 
     const updated = await updateMemory(env.DB, { namespace: resolveNamespace(profile, args.namespace), id, patch });
