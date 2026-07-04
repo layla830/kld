@@ -78,3 +78,11 @@ export async function resolveMemoryCandidate(db: D1Database, namespace: string, 
   ).bind(status, resultMemoryId ?? null, now, now, namespace, id).run();
   return (result.meta.changes ?? 0) > 0;
 }
+
+export async function dismissPendingMemoryCandidateByExternalKey(db: D1Database, namespace: string, externalKey: string): Promise<boolean> {
+  const now = nowIso();
+  const result = await db.prepare(
+    "UPDATE memory_candidates SET status = 'rejected', resolved_at = ?, updated_at = ? WHERE namespace = ? AND external_key = ? AND status IN ('pending','needs_subject_review')"
+  ).bind(now, now, namespace, externalKey).run();
+  return (result.meta.changes ?? 0) > 0;
+}

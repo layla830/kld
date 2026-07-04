@@ -4,7 +4,7 @@ import { runDailyMemoryDigest } from "../memory/dailyDigest";
 import { listFactKeyConflictsForReview, runXyzemNightlyMaintenance, runZAudit } from "../memory/xyzem";
 import { markMemorySupersededSynced } from "../memory/state";
 import { listMemories, updateMemory } from "../db/memories";
-import { upsertMemoryCandidate } from "../db/memoryCandidates";
+import { dismissPendingMemoryCandidateByExternalKey, upsertMemoryCandidate } from "../db/memoryCandidates";
 import { callOpenAICompat } from "../proxy/openaiAdapter";
 import { extractJsonObject } from "../utils/jsonHelpers";
 import {
@@ -492,6 +492,8 @@ export async function handleBackfillCoordinates(request: Request, env: Env): Pro
             status: "pending"
           });
           queued += 1;
+        } else {
+          await dismissPendingMemoryCandidateByExternalKey(env.DB, namespace, `coordinate-backfill:${id}`);
         }
       }
 
