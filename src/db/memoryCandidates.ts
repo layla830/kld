@@ -17,6 +17,7 @@ export interface MemoryCandidateRecord {
   created_at: string;
   updated_at: string;
   resolved_at: string | null;
+  result_memory_id: string | null;
   target_content?: string | null;
   target_type?: string | null;
   target_status?: string | null;
@@ -31,7 +32,7 @@ export interface CandidateInput {
   payload: Record<string, unknown>;
   sourceChunkIds: number[];
   sourceChunks?: Array<Record<string, unknown>>;
-  status: "pending" | "needs_subject_review";
+  status: "pending" | "needs_subject_review" | "deferred_relation";
   validationError?: string | null;
 }
 
@@ -70,10 +71,10 @@ export async function getMemoryCandidate(db: D1Database, namespace: string, id: 
     .bind(namespace, id).first<MemoryCandidateRecord>()) ?? null;
 }
 
-export async function resolveMemoryCandidate(db: D1Database, namespace: string, id: string, status: "approved" | "rejected"): Promise<boolean> {
+export async function resolveMemoryCandidate(db: D1Database, namespace: string, id: string, status: "approved" | "rejected", resultMemoryId?: string | null): Promise<boolean> {
   const now = nowIso();
   const result = await db.prepare(
-    "UPDATE memory_candidates SET status = ?, resolved_at = ?, updated_at = ? WHERE namespace = ? AND id = ? AND status IN ('pending','needs_subject_review')"
-  ).bind(status, now, now, namespace, id).run();
+    "UPDATE memory_candidates SET status = ?, result_memory_id = ?, resolved_at = ?, updated_at = ? WHERE namespace = ? AND id = ? AND status IN ('pending','needs_subject_review')"
+  ).bind(status, resultMemoryId ?? null, now, now, namespace, id).run();
   return (result.meta.changes ?? 0) > 0;
 }

@@ -31,7 +31,7 @@ function candidateInput(value: unknown): CandidateInput | null {
     sourceChunks: Array.isArray(row.source_chunks)
       ? row.source_chunks.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object" && !Array.isArray(item))
       : [],
-    status: status as CandidateInput["status"],
+    status: (action === "relation" ? "deferred_relation" : status) as CandidateInput["status"],
     validationError: typeof row.validation_error === "string" ? row.validation_error.trim() || null : null
   };
 }

@@ -53,6 +53,6 @@ export async function approveCandidate(env: Env, form: FormData): Promise<Memory
     target = await softDeleteMemory(env.DB, { namespace: "default", id: candidate.target_id });
   }
   if (!target) return null;
-  await resolveMemoryCandidate(env.DB, "default", id, "approved");
+  await resolveMemoryCandidate(env.DB, "default", id, "approved", target.id);
   return target;
 }
