@@ -8,7 +8,6 @@ import { upsertMemoryCandidate } from "../db/memoryCandidates";
 import { callOpenAICompat } from "../proxy/openaiAdapter";
 import { extractJsonObject } from "../utils/jsonHelpers";
 import {
-  normalizeFactKey,
   normalizeThread,
   normalizeRiskLevel,
   normalizeUrgencyLevel,
@@ -322,7 +321,6 @@ function splitCoordinatePatch(patch: CoordinatePatch): {
     delete automatic[key];
     if (!reasons.includes(reason)) reasons.push(reason);
   };
-  if (patch.factKey) move("factKey", "fact_key_changes_supersede_semantics");
   if (patch.thread && !THREAD_SLUG.test(patch.thread)) move("thread", "noncanonical_thread");
 
   return { automatic, review, reasons };
@@ -384,7 +382,7 @@ function buildBackfillPrompt(memories: MemoryRecord[]): string {
     "只输出 JSON，不要 markdown，不要解释。",
     "",
     "坐标说明：",
-    "- fact_key: 稳定事实槽，格式如 project:kld 或 relationship.status。不确定就 null。",
+    "- fact_key: 始终输出 null；旧记忆事实槽由独立的 Z 轴归并任务处理。",
     "- thread: 主题线，如 kld、relationship.boundaries、safety。不确定就 null。",
     "- risk_level: low/normal/medium/high",
     "- urgency_level: low/normal/medium/high",
@@ -450,7 +448,6 @@ export async function handleBackfillCoordinates(request: Request, env: Env): Pro
       if (!id || !current) continue;
 
       const patch: CoordinatePatch = {};
-      if (record.fact_key !== undefined) patch.factKey = normalizeFactKey(record.fact_key);
       if (record.thread !== undefined) patch.thread = normalizeThread(record.thread);
       if (record.risk_level !== undefined) patch.riskLevel = normalizeRiskLevel(record.risk_level);
       if (record.urgency_level !== undefined) patch.urgencyLevel = normalizeUrgencyLevel(record.urgency_level);
