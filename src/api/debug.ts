@@ -325,7 +325,7 @@ export async function handleBackfillCoordinates(request: Request, env: Env): Pro
 
   const body = request.method === "POST" ? await readBody(request) : null;
   const namespace = typeof body?.namespace === "string" ? String(body.namespace) : "default";
-  const apply = body?.apply !== true;
+  const apply = body?.apply === true;
   const limit = typeof body?.limit === "number" ? Math.min(Math.max(Math.floor(body.limit), 1), 100) : BACKFILL_BATCH_SIZE;
 
   const model = env.MEMORY_MODEL || env.DREAM_MODEL || env.MEMORY_EXTRACT_MODEL;

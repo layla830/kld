@@ -71,15 +71,17 @@ export async function listFactKeyConflictsForReview(
 
 export async function runZAudit(
   env: Env,
-  namespace: string
+  namespace: string,
+  options: { dryRun?: boolean } = {}
 ): Promise<{ conflicts: number; queued: number; events: number }> {
+  const dryRun = options.dryRun ?? false;
   const reviews = await listFactKeyConflictsForReview(env, namespace, 200);
   let queued = 0;
   let events = 0;
 
   for (const review of reviews) {
     if (review.reason === "pending_supersede_review" && review.best) {
-      await createMemoryEvent(env.DB, {
+      if (!dryRun) await createMemoryEvent(env.DB, {
         namespace,
         eventType: "z_audit",
         payload: {
@@ -93,7 +95,7 @@ export async function runZAudit(
       });
       queued += 1;
     } else {
-      await createMemoryEvent(env.DB, {
+      if (!dryRun) await createMemoryEvent(env.DB, {
         namespace,
         eventType: "z_audit",
         payload: {
@@ -105,15 +107,17 @@ export async function runZAudit(
         }
       });
     }
-    events += 1;
+    if (!dryRun) events += 1;
   }
 
   return { conflicts: reviews.length, queued, events };
 }
 export async function runMetabolismPatrol(
   env: Env,
-  namespace: string
+  namespace: string,
+  options: { dryRun?: boolean } = {}
 ): Promise<{ suggestions: number; events: number }> {
+  const dryRun = options.dryRun ?? false;
   const suggestions: Array<Record<string, unknown>> = [];
 
   const duplicateFacts = await listFactKeyConflicts(env.DB, { namespace, limit: 100 });
@@ -256,7 +260,7 @@ export async function runMetabolismPatrol(
     });
   }
 
-  if (suggestions.length > 0) {
+  if (suggestions.length > 0 && !dryRun) {
     await createMemoryEvent(env.DB, {
       namespace,
       eventType: "m_patrol",
@@ -454,7 +458,7 @@ export async function runRelationBuild(
         inserted += 1;
       }
     } else if (REVIEW_RELATION_TYPES.has(relationType)) {
-      await createMemoryEvent(env.DB, {
+      if (!dryRun) await createMemoryEvent(env.DB, {
         namespace,
         eventType: "y_relation_review",
         payload: {
@@ -476,7 +480,7 @@ export async function runRelationBuild(
   }
   for (const [factKey, ids] of factGroups.entries()) {
     if (ids.length <= 1) continue;
-    await createMemoryEvent(env.DB, {
+    if (!dryRun) await createMemoryEvent(env.DB, {
       namespace,
       eventType: "y_relation_review",
       payload: {
@@ -489,14 +493,6 @@ export async function runRelationBuild(
     review += 1;
   }
 
-  if (dryRun && proposed > 0) {
-    await createMemoryEvent(env.DB, {
-      namespace,
-      eventType: "y_relation_proposed",
-      payload: { proposed, candidates: candidates.length, scanned: memories.length, note: "dry-run; no edges written" }
-    });
-  }
-
   return { scanned: memories.length, inserted, review, proposed, candidates: candidates.length, error };
 }
 
@@ -506,8 +502,8 @@ export async function runXyzemNightlyMaintenance(
   options: { dryRun?: boolean; sinceIso?: string } = {}
 ): Promise<{ zAudit: Awaited<ReturnType<typeof runZAudit>>; patrol: Awaited<ReturnType<typeof runMetabolismPatrol>>; relations: Awaited<ReturnType<typeof runRelationBuild>> }> {
   const relations = await runRelationBuild(env, namespace, { dryRun: options.dryRun, sinceIso: options.sinceIso });
-  const zAudit = await runZAudit(env, namespace);
-  const patrol = await runMetabolismPatrol(env, namespace);
+  const zAudit = await runZAudit(env, namespace, { dryRun: options.dryRun });
+  const patrol = await runMetabolismPatrol(env, namespace, { dryRun: options.dryRun });
   return { zAudit, patrol, relations };
 }
 
