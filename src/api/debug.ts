@@ -287,7 +287,7 @@ export async function handleZAuditApprove(request: Request, env: Env): Promise<R
   }
 }
 
-const BACKFILL_BATCH_SIZE = 20;
+const BACKFILL_BATCH_SIZE = 5;
 const BACKFILL_MODEL_BATCH_SIZE = 5;
 
 type BackfillUpdate = Record<string, unknown> & { id: string };
@@ -426,7 +426,8 @@ export async function handleBackfillCoordinates(request: Request, env: Env): Pro
   const body = request.method === "POST" ? await readBody(request) : null;
   const namespace = typeof body?.namespace === "string" ? String(body.namespace) : "default";
   const apply = body?.apply === true;
-  const limit = typeof body?.limit === "number" ? Math.min(Math.max(Math.floor(body.limit), 1), 100) : BACKFILL_BATCH_SIZE;
+  const limit = typeof body?.limit === "number" ? Math.min(Math.max(Math.floor(body.limit), 1), BACKFILL_BATCH_SIZE) : BACKFILL_BATCH_SIZE;
+  const offset = typeof body?.offset === "number" ? Math.min(Math.max(Math.floor(body.offset), 0), 1000) : 0;
 
   const model = env.MEMORY_MODEL || env.DREAM_MODEL || env.MEMORY_EXTRACT_MODEL;
   if (!model) return json({ error: "missing_model" }, { status: 400 });
@@ -436,10 +437,10 @@ export async function handleBackfillCoordinates(request: Request, env: Env): Pro
     const needBackfill = allMemories.filter(
       (m) => !m.fact_key && !m.thread && m.risk_level === null && m.valence === null
     );
-    const batch = needBackfill.slice(0, limit);
+    const batch = needBackfill.slice(offset, offset + limit);
 
     if (batch.length === 0) {
-      return json({ ok: true, mode: apply ? "auto_apply_with_exception_review" : "dry_run", scanned: allMemories.length, needBackfill: 0, processed: 0, applied: 0, queued: 0, message: "No memories need coordinate backfill" });
+      return json({ ok: true, mode: apply ? "auto_apply_with_exception_review" : "dry_run", scanned: allMemories.length, needBackfill: needBackfill.length, offset, nextOffset: null, processed: 0, applied: 0, queued: 0, message: "No memories in this backfill page" });
     }
 
     const updates: BackfillUpdate[] = [];
@@ -517,6 +518,8 @@ export async function handleBackfillCoordinates(request: Request, env: Env): Pro
       mode: apply ? "auto_apply_with_exception_review" : "dry_run",
       scanned: allMemories.length,
       needBackfill: needBackfill.length,
+      offset,
+      nextOffset: offset + batch.length < needBackfill.length ? offset + batch.length : null,
       processed: batch.length,
       applied,
       queued,
