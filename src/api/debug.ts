@@ -291,6 +291,53 @@ const BACKFILL_BATCH_SIZE = 20;
 const BACKFILL_MODEL_BATCH_SIZE = 5;
 
 type BackfillUpdate = Record<string, unknown> & { id: string };
+type CoordinatePatch = Parameters<typeof updateMemory>[1]["patch"];
+
+const THREAD_SLUG = /^[a-z0-9]+(?:[._-][a-z0-9]+)*$/;
+
+function coordinatePayload(patch: CoordinatePatch): Record<string, unknown> {
+  return Object.fromEntries(Object.entries({
+    fact_key: patch.factKey,
+    thread: patch.thread,
+    risk_level: patch.riskLevel,
+    urgency_level: patch.urgencyLevel,
+    tension_score: patch.tensionScore,
+    response_posture: patch.responsePosture,
+    valence: patch.valence,
+    arousal: patch.arousal
+  }).filter(([, value]) => value !== undefined));
+}
+
+function splitCoordinatePatch(current: MemoryRecord, patch: CoordinatePatch): {
+  automatic: CoordinatePatch;
+  review: CoordinatePatch;
+  reasons: string[];
+} {
+  const reasons: string[] = [];
+  const automatic = { ...patch };
+  const review: CoordinatePatch = {};
+  const move = (key: keyof CoordinatePatch, reason: string) => {
+    if (automatic[key] === undefined) return;
+    (review as Record<string, unknown>)[key] = automatic[key];
+    delete automatic[key];
+    if (!reasons.includes(reason)) reasons.push(reason);
+  };
+  const moveAll = (reason: string) => {
+    for (const key of Object.keys(automatic) as Array<keyof CoordinatePatch>) move(key, reason);
+  };
+
+  if (current.pinned) moveAll("pinned_memory");
+  if (patch.riskLevel === "medium" || patch.riskLevel === "high" || patch.urgencyLevel === "medium" || patch.urgencyLevel === "high") {
+    moveAll("elevated_risk_or_urgency");
+  }
+  if ((patch.tensionScore ?? 0) >= 0.7 || Math.abs(patch.valence ?? 0) >= 0.75 || (patch.arousal ?? 0) >= 0.8) {
+    moveAll("extreme_emotion_coordinate");
+  }
+  if (patch.factKey) move("factKey", "fact_key_changes_supersede_semantics");
+  if (patch.thread && !THREAD_SLUG.test(patch.thread)) move("thread", "noncanonical_thread");
+
+  return { automatic, review, reasons };
+}
 
 function readAssistantText(response: OpenAIChatResponse): string {
   const content = (response.choices?.[0]?.message as { content?: unknown } | undefined)?.content;
@@ -392,7 +439,7 @@ export async function handleBackfillCoordinates(request: Request, env: Env): Pro
     const batch = needBackfill.slice(0, limit);
 
     if (batch.length === 0) {
-      return json({ ok: true, mode: apply ? "queued_for_review" : "dry_run", scanned: allMemories.length, needBackfill: 0, processed: 0, applied: 0, queued: 0, message: "No memories need coordinate backfill" });
+      return json({ ok: true, mode: apply ? "auto_apply_with_exception_review" : "dry_run", scanned: allMemories.length, needBackfill: 0, processed: 0, applied: 0, queued: 0, message: "No memories need coordinate backfill" });
     }
 
     const updates: BackfillUpdate[] = [];
@@ -401,7 +448,8 @@ export async function handleBackfillCoordinates(request: Request, env: Env): Pro
     }
 
     const byId = new Map(batch.map((memory) => [memory.id, memory]));
-    const results: Array<{ id: string; queued: boolean; fields: string[]; before: Record<string, unknown>; proposed: Record<string, unknown> }> = [];
+    const results: Array<{ id: string; outcome: string; automatic_fields: string[]; review_fields: string[]; review_reasons: string[]; before: Record<string, unknown>; proposed: Record<string, unknown> }> = [];
+    let applied = 0;
     let queued = 0;
 
     for (const item of updates) {
@@ -411,7 +459,7 @@ export async function handleBackfillCoordinates(request: Request, env: Env): Pro
       const current = id ? byId.get(id) : null;
       if (!id || !current) continue;
 
-      const patch: Parameters<typeof updateMemory>[1]["patch"] = {};
+      const patch: CoordinatePatch = {};
       if (record.fact_key !== undefined) patch.factKey = normalizeFactKey(record.fact_key);
       if (record.thread !== undefined) patch.thread = normalizeThread(record.thread);
       if (record.risk_level !== undefined) patch.riskLevel = normalizeRiskLevel(record.risk_level);
@@ -434,42 +482,43 @@ export async function handleBackfillCoordinates(request: Request, env: Env): Pro
         valence: current.valence,
         arousal: current.arousal
       };
-      const proposed = Object.fromEntries(Object.entries({
-        fact_key: patch.factKey,
-        thread: patch.thread,
-        risk_level: patch.riskLevel,
-        urgency_level: patch.urgencyLevel,
-        tension_score: patch.tensionScore,
-        response_posture: patch.responsePosture,
-        valence: patch.valence,
-        arousal: patch.arousal
-      }).filter(([, value]) => value !== undefined));
+      const proposed = coordinatePayload(patch);
+      const split = splitCoordinatePatch(current, patch);
+      const automaticFields = Object.keys(split.automatic);
+      const reviewFields = Object.keys(split.review);
 
       if (apply) {
-        await upsertMemoryCandidate(env.DB, namespace, {
-          externalKey: `coordinate-backfill:${id}`,
-          dreamDate: new Date().toISOString().slice(0, 10),
-          action: "update",
-          subject: "memory_coordinates",
-          targetId: id,
-          payload: { _kind: "coordinate_backfill", _before: before, ...proposed },
-          sourceChunkIds: [],
-          sourceChunks: [],
-          status: "pending"
-        });
-        queued += 1;
+        if (automaticFields.length > 0) {
+          const updated = await updateMemory(env.DB, { namespace, id, patch: split.automatic });
+          if (updated) applied += 1;
+        }
+        if (reviewFields.length > 0) {
+          await upsertMemoryCandidate(env.DB, namespace, {
+            externalKey: `coordinate-backfill:${id}`,
+            dreamDate: new Date().toISOString().slice(0, 10),
+            action: "update",
+            subject: "memory_coordinates",
+            targetId: id,
+            payload: { _kind: "coordinate_backfill", _before: before, _review_reasons: split.reasons, ...coordinatePayload(split.review) },
+            sourceChunkIds: [],
+            sourceChunks: [],
+            status: "pending"
+          });
+          queued += 1;
+        }
       }
 
-      results.push({ id, queued: apply, fields, before, proposed });
+      const outcome = !apply ? "dry_run" : automaticFields.length > 0 && reviewFields.length > 0 ? "auto_and_review" : reviewFields.length > 0 ? "review" : "auto_applied";
+      results.push({ id, outcome, automatic_fields: automaticFields, review_fields: reviewFields, review_reasons: split.reasons, before, proposed });
     }
 
     return json({
       ok: true,
-      mode: apply ? "queued_for_review" : "dry_run",
+      mode: apply ? "auto_apply_with_exception_review" : "dry_run",
       scanned: allMemories.length,
       needBackfill: needBackfill.length,
       processed: batch.length,
-      applied: 0,
+      applied,
       queued,
       results
     });
