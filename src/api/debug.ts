@@ -4,6 +4,7 @@ import { runDailyMemoryDigest } from "../memory/dailyDigest";
 import { listFactKeyConflictsForReview, runXyzemNightlyMaintenance, runZAudit } from "../memory/xyzem";
 import { markMemorySupersededSynced } from "../memory/state";
 import { listMemories, updateMemory } from "../db/memories";
+import { upsertMemoryCandidate } from "../db/memoryCandidates";
 import { callOpenAICompat } from "../proxy/openaiAdapter";
 import { extractJsonObject } from "../utils/jsonHelpers";
 import {
@@ -391,7 +392,7 @@ export async function handleBackfillCoordinates(request: Request, env: Env): Pro
     const batch = needBackfill.slice(0, limit);
 
     if (batch.length === 0) {
-      return json({ ok: true, mode: apply ? "apply" : "dry_run", scanned: allMemories.length, needBackfill: 0, processed: 0, message: "No memories need coordinate backfill" });
+      return json({ ok: true, mode: apply ? "queued_for_review" : "dry_run", scanned: allMemories.length, needBackfill: 0, processed: 0, applied: 0, queued: 0, message: "No memories need coordinate backfill" });
     }
 
     const updates: BackfillUpdate[] = [];
@@ -400,8 +401,8 @@ export async function handleBackfillCoordinates(request: Request, env: Env): Pro
     }
 
     const byId = new Map(batch.map((memory) => [memory.id, memory]));
-    const results: Array<{ id: string; updated: boolean; fields: string[]; before: Record<string, unknown>; proposed: Record<string, unknown> }> = [];
-    let applied = 0;
+    const results: Array<{ id: string; queued: boolean; fields: string[]; before: Record<string, unknown>; proposed: Record<string, unknown> }> = [];
+    let queued = 0;
 
     for (const item of updates) {
       if (!item || typeof item !== "object") continue;
@@ -445,20 +446,31 @@ export async function handleBackfillCoordinates(request: Request, env: Env): Pro
       }).filter(([, value]) => value !== undefined));
 
       if (apply) {
-        const updated = await updateMemory(env.DB, { namespace, id, patch });
-        if (updated) applied += 1;
+        await upsertMemoryCandidate(env.DB, namespace, {
+          externalKey: `coordinate-backfill:${id}`,
+          dreamDate: new Date().toISOString().slice(0, 10),
+          action: "update",
+          subject: "memory_coordinates",
+          targetId: id,
+          payload: { _kind: "coordinate_backfill", _before: before, ...proposed },
+          sourceChunkIds: [],
+          sourceChunks: [],
+          status: "pending"
+        });
+        queued += 1;
       }
 
-      results.push({ id, updated: apply, fields, before, proposed });
+      results.push({ id, queued: apply, fields, before, proposed });
     }
 
     return json({
       ok: true,
-      mode: apply ? "apply" : "dry_run",
+      mode: apply ? "queued_for_review" : "dry_run",
       scanned: allMemories.length,
       needBackfill: needBackfill.length,
       processed: batch.length,
-      applied,
+      applied: 0,
+      queued,
       results
     });
   } catch (error) {

@@ -9,6 +9,11 @@ function payloadOf(text: string): Record<string, unknown> {
 
 function text(value: unknown): string | undefined { return typeof value === "string" && value.trim() ? value.trim() : undefined; }
 function number(value: unknown): number | undefined { const n = Number(value); return Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : undefined; }
+function coordinateNumber(value: unknown, min = 0): number | null | undefined {
+  if (value === null) return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? Math.max(min, Math.min(1, n)) : undefined;
+}
 function tags(value: unknown): string[] { return Array.isArray(value) ? value.map(String).map((item) => item.trim()).filter(Boolean) : []; }
 
 function updatePatch(payload: Record<string, unknown>): UpdateMemoryInput {
@@ -16,7 +21,8 @@ function updatePatch(payload: Record<string, unknown>): UpdateMemoryInput {
     content: text(payload.content), type: text(payload.type), factKey: text(payload.fact_key) ?? null,
     thread: text(payload.thread) ?? null, riskLevel: text(payload.risk_level) ?? null,
     urgencyLevel: text(payload.urgency_level) ?? null, responsePosture: text(payload.response_posture) ?? null,
-    importance: number(payload.importance), confidence: number(payload.confidence), tensionScore: number(payload.tension_score),
+    importance: number(payload.importance), confidence: number(payload.confidence), tensionScore: coordinateNumber(payload.tension_score),
+    valence: coordinateNumber(payload.valence, -1), arousal: coordinateNumber(payload.arousal),
     tags: tags(payload.tags)
   };
 }

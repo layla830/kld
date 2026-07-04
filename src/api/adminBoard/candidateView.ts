@@ -33,7 +33,9 @@ export function renderMemoryCandidate(candidate: MemoryCandidateRecord): string 
   const payload = parse(candidate.payload_json) as Record<string, unknown>;
   const chunks = parse(candidate.source_chunks_json);
   const sourceIds = parse(candidate.source_chunk_ids_json);
-  const content = payload?.content ?? payload?.quote ?? payload?.reason ?? "（没有候选正文）";
+  const content = payload?._kind === "coordinate_backfill"
+    ? { before: payload._before, proposed: Object.fromEntries(Object.entries(payload).filter(([key]) => !key.startsWith("_"))) }
+    : payload?.content ?? payload?.quote ?? payload?.reason ?? "（没有候选正文）";
   const action = ACTIONS[candidate.action] || { title: "待审核候选", effect: "请核对内容和来源。", approve: "接受" };
   const blocked = candidate.status !== "pending";
   const canApprove = !blocked && candidate.action !== "relation" && (!(candidate.action === "update" || candidate.action === "delete") || Boolean(candidate.target_content));
