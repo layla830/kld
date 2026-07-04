@@ -18,6 +18,7 @@ const checks = [
   ["E: shadow gate controls ranking", files.search.includes("shouldApplyEAxisToRanking(env)") && files.search.includes("applyEAxis ? eAxisBoost(record) : 0")],
   ["Night: Y runs before Z and M", files.xyzem.indexOf("const relations = await runRelationBuild") < files.xyzem.indexOf("const zAudit = await runZAudit") && files.xyzem.indexOf("const zAudit = await runZAudit") < files.xyzem.indexOf("const patrol = await runMetabolismPatrol")],
   ["Safety: coordinate backfill apply=false is read-only", files.debug.includes("const apply = body?.apply === true")],
+  ["Safety: coordinate proposals are batched and reviewer-visible", files.debug.includes("BACKFILL_MODEL_BATCH_SIZE = 5") && files.debug.includes("before, proposed")],
   ["Safety: XYZEM dry-run does not persist audit events", files.xyzem.includes("runZAudit(env, namespace, { dryRun: options.dryRun })") && files.xyzem.includes("runMetabolismPatrol(env, namespace, { dryRun: options.dryRun })")],
   ["Identity: narratives use explicit third-person subjects", files.narrative.includes("用户（Layla）") && files.narrative.includes("KLD") && !files.narrative.includes("我=助手")]
 ];

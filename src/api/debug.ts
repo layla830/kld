@@ -287,6 +287,58 @@ export async function handleZAuditApprove(request: Request, env: Env): Promise<R
 }
 
 const BACKFILL_BATCH_SIZE = 20;
+const BACKFILL_MODEL_BATCH_SIZE = 5;
+
+type BackfillUpdate = Record<string, unknown> & { id: string };
+
+function readAssistantText(response: OpenAIChatResponse): string {
+  const content = (response.choices?.[0]?.message as { content?: unknown } | undefined)?.content;
+  if (typeof content === "string") return content.trim();
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((part) => part && typeof part === "object" && typeof (part as { text?: unknown }).text === "string"
+      ? String((part as { text: string }).text)
+      : "")
+    .join("")
+    .trim();
+}
+
+async function labelBackfillBatch(env: Env, model: string, memories: MemoryRecord[]): Promise<BackfillUpdate[]> {
+  const basePrompt = buildBackfillPrompt(memories);
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const llmRequest: OpenAIChatRequest = {
+      model,
+      messages: [
+        { role: "system", content: "你是严格的 JSON 生成器。只输出一个完整 JSON 对象，不要 markdown。" },
+        { role: "user", content: attempt === 0 ? basePrompt : `${basePrompt}\n\n上次输出无法解析。请缩短字段内容，并确保 JSON 完整闭合。` }
+      ],
+      temperature: 0,
+      max_tokens: 3000,
+      response_format: { type: "json_object" },
+      stream: false
+    };
+
+    const response = await callOpenAICompat(env, llmRequest);
+    if (!response.ok) {
+      if (attempt === 0 && response.status >= 500) continue;
+      throw new Error(`model_status_${response.status}`);
+    }
+
+    const parsed = (await response.json()) as OpenAIChatResponse;
+    const jsonResult = extractJsonObject(readAssistantText(parsed));
+    const updates = jsonResult && typeof jsonResult === "object"
+      ? (jsonResult as { updates?: unknown }).updates
+      : null;
+    if (!Array.isArray(updates)) continue;
+
+    return updates.filter((item): item is BackfillUpdate => Boolean(
+      item && typeof item === "object" && typeof (item as { id?: unknown }).id === "string"
+    ));
+  }
+
+  throw new Error("invalid_model_json_after_retry");
+}
 
 function buildBackfillPrompt(memories: MemoryRecord[]): string {
   const items = memories.map((m) => ({ id: m.id, type: m.type, content: m.content.slice(0, 300), tags: m.tags }));
@@ -342,41 +394,21 @@ export async function handleBackfillCoordinates(request: Request, env: Env): Pro
       return json({ ok: true, mode: apply ? "apply" : "dry_run", scanned: allMemories.length, needBackfill: 0, processed: 0, message: "No memories need coordinate backfill" });
     }
 
-    const prompt = buildBackfillPrompt(batch);
-    const llmRequest: OpenAIChatRequest = {
-      model,
-      messages: [
-        { role: "system", content: "你是严格的 JSON 生成器。只输出 JSON。" },
-        { role: "user", content: prompt }
-      ],
-      temperature: 0,
-      max_tokens: 2000,
-      response_format: { type: "json_object" },
-      stream: false
-    };
-
-    const response = await callOpenAICompat(env, llmRequest);
-    if (!response.ok) return json({ error: "model_error", status: response.status }, { status: 502 });
-
-    const parsed = (await response.json()) as OpenAIChatResponse;
-    const content = (parsed.choices?.[0]?.message as { content?: unknown })?.content;
-    const jsonResult = extractJsonObject(typeof content === "string" ? content : "");
-
-    if (!jsonResult || typeof jsonResult !== "object") {
-      return json({ error: "invalid_json" }, { status: 502 });
+    const updates: BackfillUpdate[] = [];
+    for (let offset = 0; offset < batch.length; offset += BACKFILL_MODEL_BATCH_SIZE) {
+      updates.push(...await labelBackfillBatch(env, model, batch.slice(offset, offset + BACKFILL_MODEL_BATCH_SIZE)));
     }
 
-    const updates = (jsonResult as { updates?: unknown }).updates;
-    if (!Array.isArray(updates)) return json({ error: "no_updates_array" }, { status: 502 });
-
-    const results: Array<{ id: string; updated: boolean; fields: string[] }> = [];
+    const byId = new Map(batch.map((memory) => [memory.id, memory]));
+    const results: Array<{ id: string; updated: boolean; fields: string[]; before: Record<string, unknown>; proposed: Record<string, unknown> }> = [];
     let applied = 0;
 
     for (const item of updates) {
       if (!item || typeof item !== "object") continue;
       const record = item as Record<string, unknown>;
       const id = typeof record.id === "string" ? record.id : null;
-      if (!id) continue;
+      const current = id ? byId.get(id) : null;
+      if (!id || !current) continue;
 
       const patch: Parameters<typeof updateMemory>[1]["patch"] = {};
       if (record.fact_key !== undefined) patch.factKey = normalizeFactKey(record.fact_key);
@@ -391,12 +423,33 @@ export async function handleBackfillCoordinates(request: Request, env: Env): Pro
       const fields = Object.keys(patch);
       if (fields.length === 0) continue;
 
+      const before = {
+        fact_key: current.fact_key,
+        thread: current.thread,
+        risk_level: current.risk_level,
+        urgency_level: current.urgency_level,
+        tension_score: current.tension_score,
+        response_posture: current.response_posture,
+        valence: current.valence,
+        arousal: current.arousal
+      };
+      const proposed = Object.fromEntries(Object.entries({
+        fact_key: patch.factKey,
+        thread: patch.thread,
+        risk_level: patch.riskLevel,
+        urgency_level: patch.urgencyLevel,
+        tension_score: patch.tensionScore,
+        response_posture: patch.responsePosture,
+        valence: patch.valence,
+        arousal: patch.arousal
+      }).filter(([, value]) => value !== undefined));
+
       if (apply) {
         const updated = await updateMemory(env.DB, { namespace, id, patch });
         if (updated) applied += 1;
       }
 
-      results.push({ id, updated: apply, fields });
+      results.push({ id, updated: apply, fields, before, proposed });
     }
 
     return json({
@@ -410,6 +463,8 @@ export async function handleBackfillCoordinates(request: Request, env: Env): Pro
     });
   } catch (error) {
     console.error("backfill_coordinates failed", error);
-    return json({ error: "backfill_failed", detail: error instanceof Error ? error.message : String(error) }, { status: 500 });
+    const detail = error instanceof Error ? error.message : String(error);
+    const isModelError = detail.startsWith("model_status_") || detail === "invalid_model_json_after_retry";
+    return json({ error: isModelError ? "model_output_error" : "backfill_failed", detail }, { status: isModelError ? 502 : 500 });
   }
 }
