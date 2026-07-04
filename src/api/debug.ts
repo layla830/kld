@@ -308,7 +308,7 @@ function coordinatePayload(patch: CoordinatePatch): Record<string, unknown> {
   }).filter(([, value]) => value !== undefined));
 }
 
-function splitCoordinatePatch(current: MemoryRecord, patch: CoordinatePatch): {
+function splitCoordinatePatch(patch: CoordinatePatch): {
   automatic: CoordinatePatch;
   review: CoordinatePatch;
   reasons: string[];
@@ -322,17 +322,6 @@ function splitCoordinatePatch(current: MemoryRecord, patch: CoordinatePatch): {
     delete automatic[key];
     if (!reasons.includes(reason)) reasons.push(reason);
   };
-  const moveAll = (reason: string) => {
-    for (const key of Object.keys(automatic) as Array<keyof CoordinatePatch>) move(key, reason);
-  };
-
-  if (current.pinned) moveAll("pinned_memory");
-  if (patch.riskLevel === "medium" || patch.riskLevel === "high" || patch.urgencyLevel === "medium" || patch.urgencyLevel === "high") {
-    moveAll("elevated_risk_or_urgency");
-  }
-  if ((patch.tensionScore ?? 0) >= 0.7 || Math.abs(patch.valence ?? 0) >= 0.75 || (patch.arousal ?? 0) >= 0.8) {
-    moveAll("extreme_emotion_coordinate");
-  }
   if (patch.factKey) move("factKey", "fact_key_changes_supersede_semantics");
   if (patch.thread && !THREAD_SLUG.test(patch.thread)) move("thread", "noncanonical_thread");
 
@@ -484,7 +473,7 @@ export async function handleBackfillCoordinates(request: Request, env: Env): Pro
         arousal: current.arousal
       };
       const proposed = coordinatePayload(patch);
-      const split = splitCoordinatePatch(current, patch);
+      const split = splitCoordinatePatch(patch);
       const automaticFields = Object.keys(split.automatic);
       const reviewFields = Object.keys(split.review);
 
