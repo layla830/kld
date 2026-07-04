@@ -233,6 +233,29 @@ export async function runMetabolismPatrol(
     });
   }
 
+  const oversizedThreadRows = await env.DB
+    .prepare(
+      `SELECT thread, COUNT(*) AS cnt
+       FROM memories
+       WHERE namespace = ?
+         AND status = 'active'
+         AND thread IS NOT NULL
+       GROUP BY thread
+       HAVING cnt > 30
+       ORDER BY cnt DESC
+       LIMIT 20`
+    )
+    .bind(namespace)
+    .all<{ thread: string; cnt: number }>();
+  if ((oversizedThreadRows.results ?? []).length > 0) {
+    suggestions.push({
+      action: "split_thread",
+      severity: "info",
+      reason: "thread has more than 30 active memories; consider splitting by sub-topic or time period",
+      threads: (oversizedThreadRows.results ?? []).map((row) => ({ thread: row.thread, count: row.cnt }))
+    });
+  }
+
   if (suggestions.length > 0) {
     await createMemoryEvent(env.DB, {
       namespace,

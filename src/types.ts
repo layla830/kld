@@ -78,6 +78,11 @@
   EMPTY_MEMORY_MIN_CHARS?: string;
   E_AXIS_STARTED_AT?: string;
   E_AXIS_SHADOW_DAYS?: string;
+  ENABLE_QUERY_EXPANSION?: string;
+  QUERY_EXPAND_MODEL?: string;
+  ENABLE_RERANK?: string;
+  RERANK_MODEL?: string;
+  TIMELINE_THREADS?: string;
 }
 
 export interface MemoryMaintenanceQueueMessage {

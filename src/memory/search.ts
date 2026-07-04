@@ -7,6 +7,8 @@ import { toMemoryApiRecord } from "./mapper";
 import { factKeysForQueryHint, queryHintAliasGroups } from "./queryHints";
 import { searchVectorMemories, type ScoredMemoryRecord } from "./vectorStore";
 import { shouldApplyEAxisToRanking } from "./eAxis";
+import { computeDecayedWeight } from "./halfLife";
+import { expandQueryAngles, rerankMemories } from "./queryExpand";
 
 export { toMemoryApiRecord } from "./mapper";
 
@@ -369,15 +371,16 @@ function rankHybridRecord(record: HybridScoredMemoryRecord, applyEAxis: boolean)
   const rankScore = record.rankScore ?? 0;
   const timeScore = record.timeScore ?? 0;
   const pinnedBoost = record.pinned ? 0.08 : 0;
+  const decayedWeight = computeDecayedWeight(record);
   return (
     vectorScore * 0.42 +
     keywordScore * 0.7 +
     lexicalScore * 0.45 +
     timeScore * 1.2 +
     rankScore * 8 +
-    record.importance * 0.08 +
+    decayedWeight * 0.12 +
     pinnedBoost +
-    recencyBoost(record) * 0.04 +
+    recencyBoost(record) * 0.02 +
     (applyEAxis ? eAxisBoost(record) : 0)
   );
 }
@@ -640,7 +643,18 @@ export async function searchMemories(env: Env, input: SearchMemoriesInput): Prom
   const shouldLiteral = shouldRunLiteralSearch(rawQuery);
   const applyEAxis = shouldApplyEAxisToRanking(env);
 
-  const vectorRecords = await searchVectorMemories(env, { namespace: input.namespace, query: expandedQuery, types: input.types, topK: candidateLimit });
+  const queryAngles = await expandQueryAngles(env, rawQuery);
+  const expandedAngles = queryAngles.length > 1 ? queryAngles : [expandedQuery];
+
+  const vectorSearches = await Promise.all(
+    expandedAngles.map((angle) =>
+      searchVectorMemories(env, { namespace: input.namespace, query: angle, types: input.types, topK: candidateLimit })
+    )
+  );
+  const allVectorHits = vectorSearches.flatMap((results) => results ?? []);
+  const vectorRecords = allVectorHits.length > 0
+    ? [...new Map(allVectorHits.map((r) => [r.id, r])).values()].sort((a, b) => (b.vectorScore ?? 0) - (a.vectorScore ?? 0))
+    : null;
   const vectorTopScore = vectorRecords && vectorRecords.length > 0 ? (vectorRecords[0].vectorScore ?? 0) : 0;
 
   const keywordRecords: ScoredMemoryRecord[] = [];
@@ -735,7 +749,11 @@ export async function searchMemories(env: Env, input: SearchMemoriesInput): Prom
   const relatedApiRecords = finalRelationRecords.map((record) => toMemoryApiRecord(record, record.score));
   const hintedApiRecords = hintedRecords.map((record) => toMemoryApiRecord(record, QUERY_HINT_SCORE));
   const outputRecords = applyLead(
-    keepRelatedContext(keepExplicitHintContext(processedRecords, hintedApiRecords, topK), relatedApiRecords, topK),
+    await rerankMemories(env, {
+      query: searchQuery,
+      memories: keepRelatedContext(keepExplicitHintContext(processedRecords, hintedApiRecords, topK), relatedApiRecords, topK),
+      topK
+    }),
     rawQuery
   );
 

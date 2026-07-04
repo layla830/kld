@@ -18,6 +18,7 @@ import { handleRecall } from "./api/recall";
 import { runDailyMemoryDigest } from "./memory/dailyDigest";
 import { runMemoryRetention } from "./memory/retention";
 import { runXyzemNightlyMaintenance } from "./memory/xyzem";
+import { runNarrativeTimeline, runTimelineSweep } from "./memory/narrativeTimeline";
 import { retryStaleVectorSyncs } from "./memory/state";
 import { handleQueueMessage } from "./queue/consumer";
 import type { Env, QueueMessage } from "./types";
@@ -196,6 +197,12 @@ export default {
           digest,
           xyzem: isDreamEnabled(env)
             ? await runXyzemNightlyMaintenance(env, namespace, { dryRun: isDreamDryRun(env) })
+            : { skipped: "dream_disabled" as const },
+          narrative: isDreamEnabled(env)
+            ? await runNarrativeTimeline(env, namespace)
+            : { skipped: "dream_disabled" as const },
+          timelineSweep: isDreamEnabled(env)
+            ? await runTimelineSweep(env, namespace, { threads: env.TIMELINE_THREADS?.split(",").map((t) => t.trim()).filter(Boolean) ?? [] })
             : { skipped: "dream_disabled" as const }
         })),
         runMemoryRetention(env, namespace),
