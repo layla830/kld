@@ -261,7 +261,7 @@ interface RelationHint {
 
 const RELATION_NEIGHBOR_TOP_K = 6;
 const RELATION_NEIGHBOR_MIN_SCORE = 0.5;
-const RELATION_MAX_SCAN = 50;
+const RELATION_MAX_SCAN = 500;
 
 function readRelationModel(env: Env): string | null {
   const value = env.DREAM_MODEL?.trim() || env.MEMORY_MODEL?.trim() || env.MEMORY_EXTRACT_MODEL?.trim();
@@ -480,9 +480,9 @@ export async function runRelationBuild(
 export async function runXyzemNightlyMaintenance(
   env: Env,
   namespace: string,
-  options: { dryRun?: boolean } = {}
+  options: { dryRun?: boolean; sinceIso?: string } = {}
 ): Promise<{ zAudit: Awaited<ReturnType<typeof runZAudit>>; patrol: Awaited<ReturnType<typeof runMetabolismPatrol>>; relations: Awaited<ReturnType<typeof runRelationBuild>> }> {
-  const relations = await runRelationBuild(env, namespace, { dryRun: options.dryRun });
+  const relations = await runRelationBuild(env, namespace, { dryRun: options.dryRun, sinceIso: options.sinceIso });
   const zAudit = await runZAudit(env, namespace);
   const patrol = await runMetabolismPatrol(env, namespace);
   return { zAudit, patrol, relations };

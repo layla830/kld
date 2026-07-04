@@ -1,6 +1,6 @@
 import { handleHealth } from "./api/health";
 import { handleCache } from "./api/cache";
-import { handleCacheHealth, handleDreamDryRun, handleZAuditApprove, handleZAuditPending, handleZAuditScan, handleXyzemMaintenance } from "./api/debug";
+import { handleCacheHealth, handleDreamDryRun, handleZAuditApprove, handleZAuditPending, handleZAuditScan, handleXyzemMaintenance, handleBackfillCoordinates } from "./api/debug";
 import { handleChatCompletions } from "./api/chatCompletions";
 import { handleGuideDogChatCompletions } from "./api/guideDog";
 import { handleAdminBoard } from "./api/adminBoard";
@@ -167,6 +167,10 @@ export default {
 
     if (request.method === "POST" && url.pathname === "/v1/debug/xyzem_maintenance") {
       return handleXyzemMaintenance(request, env);
+    }
+
+    if (request.method === "POST" && url.pathname === "/v1/debug/backfill_coordinates") {
+      return handleBackfillCoordinates(request, env);
     }
 
     return openAiError("Not found", 404);
