@@ -1,6 +1,6 @@
 import { handleHealth } from "./api/health";
 import { handleCache } from "./api/cache";
-import { handleCacheHealth, handleDreamDryRun, handleZAuditApprove, handleZAuditPending, handleZAuditScan, handleXyzemMaintenance, handleBackfillCoordinates, runScheduledCoordinateBackfill } from "./api/debug";
+import { handleCacheHealth, handleDreamDryRun, handleZAuditApprove, handleZAuditPending, handleZAuditScan, handleXyzemMaintenance, handleBackfillCoordinates, handleFactGroupProposals, runScheduledCoordinateBackfill } from "./api/debug";
 import { handleChatCompletions } from "./api/chatCompletions";
 import { handleGuideDogChatCompletions } from "./api/guideDog";
 import { handleAdminBoard } from "./api/adminBoard";
@@ -173,6 +173,10 @@ export default {
 
     if (request.method === "POST" && url.pathname === "/v1/debug/backfill_coordinates") {
       return handleBackfillCoordinates(request, env);
+    }
+
+    if (request.method === "POST" && url.pathname === "/v1/debug/z_fact_groups") {
+      return handleFactGroupProposals(request, env);
     }
 
     return openAiError("Not found", 404);

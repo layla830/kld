@@ -2,6 +2,8 @@ import { getMemoryCandidate, resolveMemoryCandidate } from "../../db/memoryCandi
 import { createMemory, getMemoryById, softDeleteMemory, updateMemory, type UpdateMemoryInput } from "../../db/memories";
 import type { Env, MemoryRecord } from "../../types";
 import { readFormText } from "./utils";
+import { createMemoryRelation } from "../../db/memoryRelations";
+import { upsertMemoryEmbedding } from "../../memory/embedding";
 
 function payloadOf(text: string): Record<string, unknown> {
   try { const value = JSON.parse(text); return value && typeof value === "object" ? value : {}; } catch { return {}; }
@@ -57,6 +59,20 @@ export async function approveCandidate(env: Env, form: FormData): Promise<Memory
     target = await updateMemory(env.DB, { namespace: "default", id: candidate.target_id, patch: updatePatch(payload) });
   } else if (candidate.action === "delete" && candidate.target_id) {
     target = await softDeleteMemory(env.DB, { namespace: "default", id: candidate.target_id });
+  } else if (candidate.action === "fact_group") {
+    const factKey = text(payload.fact_key);
+    const ids = Array.isArray(payload.memory_ids) ? [...new Set(payload.memory_ids.map(String))].slice(0, 8) : [];
+    if (!factKey || ids.length < 2) return null;
+    const updated: MemoryRecord[] = [];
+    for (const memoryId of ids) {
+      if (!(await getMemoryById(env.DB, { namespace: "default", id: memoryId }))) return null;
+      const memory = await updateMemory(env.DB, { namespace: "default", id: memoryId, patch: { factKey } });
+      if (memory) updated.push(memory);
+    }
+    if (updated.length !== ids.length) return null;
+    for (const memory of updated.slice(1)) await createMemoryRelation(env.DB, { namespace:"default", sourceMemoryId:updated[0].id, targetMemoryId:memory.id, relationType:"same_fact_key", strength:0.92, reason:"approved fact group" });
+    await Promise.all(updated.map(memory => upsertMemoryEmbedding(env, memory)));
+    target = updated[0];
   }
   if (!target) return null;
   await resolveMemoryCandidate(env.DB, "default", id, "approved", target.id);

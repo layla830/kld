@@ -19,6 +19,7 @@ import {
 import { json, openAiError } from "../utils/json";
 import { readBody } from "./common";
 import type { Env, MemoryRecord, OpenAIChatRequest, OpenAIChatResponse } from "../types";
+import { proposeFactGroups } from "../memory/factGroups";
 
 interface CacheHealthRow {
   created_at: string;
@@ -536,4 +537,17 @@ export async function runScheduledCoordinateBackfill(env: Env, namespace: string
   const result = await response.json();
   if (!response.ok) throw new Error(`scheduled_coordinate_backfill_failed:${response.status}:${JSON.stringify(result)}`);
   return result;
+}
+
+export async function handleFactGroupProposals(request: Request, env: Env): Promise<Response> {
+  const auth = await authenticate(request, env);
+  if (!auth.ok) return openAiError("Unauthorized", 401, "authentication_error");
+  const scopeError = requireScope(auth.profile, "memory:write");
+  if (scopeError) return scopeError;
+  const body = await readBody(request);
+  try {
+    return json({ ok:true, mode:body?.apply === true ? "queued_for_group_review" : "dry_run", result:await proposeFactGroups(env, typeof body?.namespace === "string" ? body.namespace : "default", body?.apply === true) });
+  } catch (error) {
+    return json({ error:"fact_group_proposal_failed", detail:error instanceof Error ? error.message : String(error) }, { status:500 });
+  }
 }

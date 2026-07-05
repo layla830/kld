@@ -15,6 +15,7 @@ const checks = [
   ["Y: recall expands two hops with strength thresholds", files.relations.includes("for (const depth of [1, 2])") && files.relations.includes("relation.strength < 0.7")],
   ["Y: review-only relations are excluded from safe expansion", files.relations.includes("REVIEW_RELATION_TYPES") && files.relations.includes("SAFE_RELATION_TYPES.has(relation.relation_type)")],
   ["Z/M: dream mutations are review-first", files.digest.includes('eventType: "dream_mutation_review"') && !files.digest.includes("async function applyMemoryUpdates")],
+  ["Z: fact keys are proposed as reviewable groups", fs.readFileSync("src/memory/factGroups.ts", "utf8").includes('action:"fact_group"') && fs.readFileSync("src/api/adminBoard/candidateActions.ts", "utf8").includes('candidate.action === "fact_group"')],
   ["E: shadow gate controls ranking", files.search.includes("shouldApplyEAxisToRanking(env)") && files.search.includes("applyEAxis ? eAxisBoost(record) : 0")],
   ["Night: Y runs before Z and M", files.xyzem.indexOf("const relations = await runRelationBuild") < files.xyzem.indexOf("const zAudit = await runZAudit") && files.xyzem.indexOf("const zAudit = await runZAudit") < files.xyzem.indexOf("const patrol = await runMetabolismPatrol")],
   ["Safety: coordinate backfill apply=false is read-only", files.debug.includes("const apply = body?.apply === true")],

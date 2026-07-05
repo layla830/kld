@@ -5,7 +5,7 @@ import type { Env } from "../types";
 import { json, openAiError } from "../utils/json";
 import { readBody, resolveNamespace } from "./common";
 
-const ACTIONS = new Set(["add", "update", "delete", "excerpt", "relation"]);
+const ACTIONS = new Set(["add", "update", "delete", "excerpt", "relation", "fact_group"]);
 const STATUSES = new Set(["pending", "needs_subject_review"]);
 
 function candidateInput(value: unknown): CandidateInput | null {

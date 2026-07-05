@@ -9,7 +9,8 @@ const ACTIONS: Record<string, { title: string; effect: string; approve: string }
   excerpt: { title: "建议保存关键原话", effect: "接受后：把这段原话保存成一条新的摘录记忆。", approve: "保存为新记忆" },
   update: { title: "建议更新已有记忆", effect: "接受后：用下方新内容修改指定的旧记忆。", approve: "确认更新旧记忆" },
   delete: { title: "建议删除已有记忆", effect: "接受后：软删除指定旧记忆，可以追溯，不会物理清空。", approve: "确认软删除" },
-  relation: { title: "建议建立记忆关联", effect: "它只建议连接两条记忆，不会修改记忆正文；目前暂不支持执行。", approve: "暂不支持执行" }
+  relation: { title: "建议建立记忆关联", effect: "它只建议连接两条记忆，不会修改记忆正文；目前暂不支持执行。", approve: "暂不支持执行" },
+  fact_group: { title: "建议归并为同一事实组", effect: "接受后：组内记忆会共享事实槽，并建立同事实关系；正文不变。", approve: "确认整组归并" }
 };
 
 const ERRORS: Record<string, string> = {
