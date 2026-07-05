@@ -546,7 +546,7 @@ export async function handleFactGroupProposals(request: Request, env: Env): Prom
   if (scopeError) return scopeError;
   const body = await readBody(request);
   try {
-    return json({ ok:true, mode:body?.apply === true ? "queued_for_group_review" : "dry_run", result:await proposeFactGroups(env, typeof body?.namespace === "string" ? body.namespace : "default", body?.apply === true) });
+    return json({ ok:true, mode:body?.apply === true ? "queued_for_group_review" : "dry_run", result:await proposeFactGroups(env, typeof body?.namespace === "string" ? body.namespace : "default", body?.apply === true, typeof body?.threadOffset === "number" ? body.threadOffset : 0) });
   } catch (error) {
     return json({ error:"fact_group_proposal_failed", detail:error instanceof Error ? error.message : String(error) }, { status:500 });
   }
