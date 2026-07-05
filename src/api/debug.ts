@@ -20,6 +20,7 @@ import { json, openAiError } from "../utils/json";
 import { readBody } from "./common";
 import type { Env, MemoryRecord, OpenAIChatRequest, OpenAIChatResponse } from "../types";
 import { proposeFactGroups } from "../memory/factGroups";
+import { runTimelineBackfill } from "../memory/timelineBackfill";
 
 interface CacheHealthRow {
   created_at: string;
@@ -549,5 +550,22 @@ export async function handleFactGroupProposals(request: Request, env: Env): Prom
     return json({ ok:true, mode:body?.apply === true ? "queued_for_group_review" : "dry_run", result:await proposeFactGroups(env, typeof body?.namespace === "string" ? body.namespace : "default", body?.apply === true, typeof body?.threadOffset === "number" ? body.threadOffset : 0) });
   } catch (error) {
     return json({ error:"fact_group_proposal_failed", detail:error instanceof Error ? error.message : String(error) }, { status:500 });
+  }
+}
+
+export async function handleTimelineBackfill(request: Request, env: Env): Promise<Response> {
+  const auth = await authenticate(request, env);
+  if (!auth.ok) return openAiError("Unauthorized", 401, "authentication_error");
+  const scopeError = requireScope(auth.profile, "memory:write");
+  if (scopeError) return scopeError;
+  const body = await readBody(request);
+  if (body?.apply === true) {
+    return json({ error: "timeline_backfill_apply_not_enabled" }, { status: 400 });
+  }
+  try {
+    const namespace = typeof body?.namespace === "string" ? body.namespace : "default";
+    return json({ ok: true, mode: "dry_run", result: await runTimelineBackfill(env, namespace) });
+  } catch (error) {
+    return json({ error: "timeline_backfill_failed", detail: error instanceof Error ? error.message : String(error) }, { status: 500 });
   }
 }

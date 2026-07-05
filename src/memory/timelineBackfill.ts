@@ -1,0 +1,104 @@
+import type { Env, MemoryRecord } from "../types";
+
+export interface TimelineDateProposal {
+  id: string;
+  thread: string | null;
+  date: string;
+  tags: string[];
+}
+
+export interface TimelineEdgeProposal {
+  source_id: string;
+  target_id: string;
+  thread: string;
+  source_date: string;
+  target_date: string;
+}
+
+function parseTags(value: string | null): string[] {
+  try {
+    const parsed = JSON.parse(value || "[]");
+    return Array.isArray(parsed) ? parsed.map(String) : [];
+  } catch {
+    return [];
+  }
+}
+
+function validDate(year: number, month: number, day: number): string | null {
+  const date = new Date(Date.UTC(year, month - 1, day));
+  if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return null;
+  return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+export function extractExplicitDates(text: string): string[] {
+  const dates = new Set<string>();
+  for (const match of text.matchAll(/\b(20\d{2})[-/.](\d{1,2})[-/.](\d{1,2})\b/g)) {
+    const date = validDate(Number(match[1]), Number(match[2]), Number(match[3]));
+    if (date) dates.add(date);
+  }
+  for (const match of text.matchAll(/(20\d{2})年(\d{1,2})月(\d{1,2})日/g)) {
+    const date = validDate(Number(match[1]), Number(match[2]), Number(match[3]));
+    if (date) dates.add(date);
+  }
+  return [...dates].sort();
+}
+
+export async function runTimelineBackfill(env: Env, namespace: string): Promise<{
+  scanned: number;
+  dated: number;
+  ambiguous: number;
+  proposals: TimelineDateProposal[];
+  edges: TimelineEdgeProposal[];
+}> {
+  const rows = await env.DB.prepare(
+    `SELECT * FROM memories
+     WHERE namespace = ? AND status = 'active'
+       AND (tags IS NULL OR tags NOT LIKE '%"date:%')
+     ORDER BY updated_at DESC
+     LIMIT 100`
+  ).bind(namespace).all<MemoryRecord>();
+
+  const proposals: TimelineDateProposal[] = [];
+  let ambiguous = 0;
+  for (const memory of rows.results ?? []) {
+    const dates = extractExplicitDates(memory.content);
+    if (dates.length > 1) {
+      ambiguous += 1;
+      continue;
+    }
+    if (dates.length !== 1) continue;
+    proposals.push({
+      id: memory.id,
+      thread: memory.thread,
+      date: dates[0],
+      tags: [...new Set([...parseTags(memory.tags), `date:${dates[0]}`, "timeline"])]
+    });
+  }
+
+  const byThread = new Map<string, TimelineDateProposal[]>();
+  for (const proposal of proposals) {
+    if (!proposal.thread) continue;
+    const list = byThread.get(proposal.thread) ?? [];
+    list.push(proposal);
+    byThread.set(proposal.thread, list);
+  }
+
+  const edges: TimelineEdgeProposal[] = [];
+  for (const [thread, list] of byThread) {
+    list.sort((a, b) => a.date.localeCompare(b.date) || a.id.localeCompare(b.id));
+    for (let index = 1; index < list.length; index += 1) {
+      const previous = list[index - 1];
+      const current = list[index];
+      if (previous.date === current.date) continue;
+      edges.push({
+        source_id: previous.id,
+        target_id: current.id,
+        thread,
+        source_date: previous.date,
+        target_date: current.date
+      });
+    }
+  }
+
+  return { scanned: (rows.results ?? []).length, dated: proposals.length, ambiguous, proposals, edges };
+}
