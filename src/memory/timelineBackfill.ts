@@ -3,6 +3,7 @@ import type { Env, MemoryRecord } from "../types";
 export interface TimelineDateProposal {
   id: string;
   thread: string | null;
+  fact_key: string | null;
   date: string;
   tags: string[];
 }
@@ -53,6 +54,7 @@ export async function runTimelineBackfill(env: Env, namespace: string): Promise<
   const rows = await env.DB.prepare(
     `SELECT * FROM memories
      WHERE namespace = ? AND status = 'active'
+       AND type != 'dream_review'
        AND (tags IS NULL OR tags NOT LIKE '%"date:%')
      ORDER BY updated_at DESC
      LIMIT 100`
@@ -70,21 +72,23 @@ export async function runTimelineBackfill(env: Env, namespace: string): Promise<
     proposals.push({
       id: memory.id,
       thread: memory.thread,
+      fact_key: memory.fact_key,
       date: dates[0],
       tags: [...new Set([...parseTags(memory.tags), `date:${dates[0]}`, "timeline"])]
     });
   }
 
-  const byThread = new Map<string, TimelineDateProposal[]>();
+  const byFact = new Map<string, TimelineDateProposal[]>();
   for (const proposal of proposals) {
-    if (!proposal.thread) continue;
-    const list = byThread.get(proposal.thread) ?? [];
+    if (!proposal.thread || !proposal.fact_key) continue;
+    const key = `${proposal.thread}\u0000${proposal.fact_key}`;
+    const list = byFact.get(key) ?? [];
     list.push(proposal);
-    byThread.set(proposal.thread, list);
+    byFact.set(key, list);
   }
 
   const edges: TimelineEdgeProposal[] = [];
-  for (const [thread, list] of byThread) {
+  for (const list of byFact.values()) {
     list.sort((a, b) => a.date.localeCompare(b.date) || a.id.localeCompare(b.id));
     for (let index = 1; index < list.length; index += 1) {
       const previous = list[index - 1];
@@ -93,7 +97,7 @@ export async function runTimelineBackfill(env: Env, namespace: string): Promise<
       edges.push({
         source_id: previous.id,
         target_id: current.id,
-        thread,
+        thread: current.thread!,
         source_date: previous.date,
         target_date: current.date
       });

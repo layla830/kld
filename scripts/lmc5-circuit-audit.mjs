@@ -15,7 +15,8 @@ const timelineBackfill = fs.readFileSync("src/memory/timelineBackfill.ts", "utf8
 const checks = [
   ["X: chunks receive a deterministic timeline thread", files.chunk.includes("thread = `timeline:") && files.chunk.includes("thread,")],
   ["X: legacy timeline dry-run requires explicit full dates", timelineBackfill.includes("extractExplicitDates") && timelineBackfill.includes("dates.length > 1") && files.debug.includes("timeline_backfill_apply_not_enabled")],
-  ["X: temporal proposals stay inside the same topic thread", timelineBackfill.includes("byThread") && timelineBackfill.includes("source_date") && timelineBackfill.includes("target_date")],
+  ["X: review records are excluded from timeline proposals", timelineBackfill.includes("type != 'dream_review'")],
+  ["X: temporal proposals require the same thread and fact", timelineBackfill.includes("byFact") && timelineBackfill.includes("proposal.fact_key") && timelineBackfill.includes("source_date") && timelineBackfill.includes("target_date")],
   ["Y: recall expands two hops with strength thresholds", files.relations.includes("for (const depth of [1, 2])") && files.relations.includes("relation.strength < 0.7")],
   ["Y: review-only relations are excluded from safe expansion", files.relations.includes("REVIEW_RELATION_TYPES") && files.relations.includes("SAFE_RELATION_TYPES.has(relation.relation_type)")],
   ["Z/M: dream mutations are review-first", files.digest.includes('eventType: "dream_mutation_review"') && !files.digest.includes("async function applyMemoryUpdates")],
