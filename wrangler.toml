@@ -52,6 +52,9 @@ ANTHROPIC_THINKING_BUDGET = "1024"
 # keep this as "messages". If the base_url is only the root domain, use
 # "v1/messages".
 CUSTOM_ANTHROPIC_MESSAGES_PATH = "messages"
+# Temporary legacy-memory coordinate backfill. The dedicated cron processes at
+# most five records per run and becomes a cheap no-op when the backlog is empty.
+COORDINATE_BACKFILL_ENABLED = "true"
 
 # Private/account-specific variables live in the Cloudflare Dashboard:
 # UPSTREAM_BASE_URL, UPSTREAM_API_KEY, CHATBOX_API_KEY, MEMORY_MCP_API_KEY,
@@ -73,7 +76,7 @@ max_batch_size = 10
 max_batch_timeout = 30
 
 [triggers]
-crons = ["10 20 * * *"]
+crons = ["10 20 * * *", "*/15 * * * *"]
 
 [[d1_databases]]
 binding = "DB"

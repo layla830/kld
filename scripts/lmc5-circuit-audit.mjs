@@ -19,6 +19,7 @@ const checks = [
   ["Night: Y runs before Z and M", files.xyzem.indexOf("const relations = await runRelationBuild") < files.xyzem.indexOf("const zAudit = await runZAudit") && files.xyzem.indexOf("const zAudit = await runZAudit") < files.xyzem.indexOf("const patrol = await runMetabolismPatrol")],
   ["Safety: coordinate backfill apply=false is read-only", files.debug.includes("const apply = body?.apply === true")],
   ["Safety: coordinate proposals are bounded and exceptions are reviewable", files.debug.includes("BACKFILL_BATCH_SIZE = 5") && files.debug.includes("slice(offset, offset + limit)") && files.debug.includes("splitCoordinatePatch") && files.debug.includes('mode: apply ? "auto_apply_with_exception_review" : "dry_run"')],
+  ["Cron: coordinate backfill is isolated from daily maintenance", files.debug.includes("runScheduledCoordinateBackfill") && fs.readFileSync("src/index.ts", "utf8").includes('controller.cron === "*/15 * * * *"')],
   ["Safety: XYZEM dry-run does not persist audit events", files.xyzem.includes("runZAudit(env, namespace, { dryRun: options.dryRun })") && files.xyzem.includes("runMetabolismPatrol(env, namespace, { dryRun: options.dryRun })")],
   ["Identity: narratives use explicit third-person subjects", files.narrative.includes("用户（Layla）") && files.narrative.includes("KLD") && !files.narrative.includes("我=助手")]
 ];

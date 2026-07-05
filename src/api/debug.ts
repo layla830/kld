@@ -403,12 +403,17 @@ function buildBackfillPrompt(memories: MemoryRecord[]): string {
   ].join("\n");
 }
 
-export async function handleBackfillCoordinates(request: Request, env: Env): Promise<Response> {
-  const auth = await authenticate(request, env);
-  if (!auth.ok) return openAiError("Unauthorized", 401, "authentication_error");
-
-  const scopeError = requireScope(auth.profile, "memory:write");
-  if (scopeError) return scopeError;
+export async function handleBackfillCoordinates(
+  request: Request,
+  env: Env,
+  options: { trustedInternal?: boolean } = {}
+): Promise<Response> {
+  if (!options.trustedInternal) {
+    const auth = await authenticate(request, env);
+    if (!auth.ok) return openAiError("Unauthorized", 401, "authentication_error");
+    const scopeError = requireScope(auth.profile, "memory:write");
+    if (scopeError) return scopeError;
+  }
 
   const body = request.method === "POST" ? await readBody(request) : null;
   const namespace = typeof body?.namespace === "string" ? String(body.namespace) : "default";
@@ -519,4 +524,16 @@ export async function handleBackfillCoordinates(request: Request, env: Env): Pro
     const isModelError = detail.startsWith("model_status_") || detail === "invalid_model_json_after_retry";
     return json({ error: isModelError ? "model_output_error" : "backfill_failed", detail }, { status: isModelError ? 502 : 500 });
   }
+}
+
+export async function runScheduledCoordinateBackfill(env: Env, namespace: string): Promise<unknown> {
+  const request = new Request("https://internal.invalid/v1/debug/backfill_coordinates", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ namespace, apply: true, limit: BACKFILL_BATCH_SIZE, offset: 0 })
+  });
+  const response = await handleBackfillCoordinates(request, env, { trustedInternal: true });
+  const result = await response.json();
+  if (!response.ok) throw new Error(`scheduled_coordinate_backfill_failed:${response.status}:${JSON.stringify(result)}`);
+  return result;
 }

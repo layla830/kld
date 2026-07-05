@@ -83,6 +83,7 @@
   ENABLE_RERANK?: string;
   RERANK_MODEL?: string;
   TIMELINE_THREADS?: string;
+  COORDINATE_BACKFILL_ENABLED?: string;
 }
 
 export interface MemoryMaintenanceQueueMessage {

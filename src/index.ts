@@ -1,6 +1,6 @@
 import { handleHealth } from "./api/health";
 import { handleCache } from "./api/cache";
-import { handleCacheHealth, handleDreamDryRun, handleZAuditApprove, handleZAuditPending, handleZAuditScan, handleXyzemMaintenance, handleBackfillCoordinates } from "./api/debug";
+import { handleCacheHealth, handleDreamDryRun, handleZAuditApprove, handleZAuditPending, handleZAuditScan, handleXyzemMaintenance, handleBackfillCoordinates, runScheduledCoordinateBackfill } from "./api/debug";
 import { handleChatCompletions } from "./api/chatCompletions";
 import { handleGuideDogChatCompletions } from "./api/guideDog";
 import { handleAdminBoard } from "./api/adminBoard";
@@ -189,8 +189,20 @@ export default {
     }
   },
 
-  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+  async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
     const namespace = getDreamNamespace(env);
+    if (controller.cron === "*/15 * * * *") {
+      if (env.COORDINATE_BACKFILL_ENABLED !== "true") return;
+      ctx.waitUntil(
+        runScheduledCoordinateBackfill(env, namespace)
+          .then((result) => console.log("scheduled coordinate backfill", { namespace, result }))
+          .catch((error) => {
+            console.error("scheduled coordinate backfill failed", { namespace, error: error instanceof Error ? error.message : String(error) });
+            throw error;
+          })
+      );
+      return;
+    }
     ctx.waitUntil(
       Promise.all([
         runDreamBatches(env, namespace).then(async (digest) => ({
