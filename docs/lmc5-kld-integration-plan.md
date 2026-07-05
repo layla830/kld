@@ -244,4 +244,5 @@ Remaining production boundary: the Worker cannot create a D1 export from inside 
 - Rejected candidates remain resolved and are not re-opened by later scans with the same memory/date key.
 - Live verification produced 32 pending X review cards. No candidate was approved during verification, so no production memory was changed.
 - The legacy scan now uses stable `id` cursor pagination in bounded batches of 100 and persists full-corpus progress in `cache_entries`; changes to `updated_at` can no longer reshuffle or strand the scan window.
+- The first full-corpus paged run scanned all 493 eligible legacy memories, queued 127 explicit-date candidates, skipped 6 multi-date memories, and approved 0 production changes. X review cards are paged eight at a time so every candidate remains reachable.
 
