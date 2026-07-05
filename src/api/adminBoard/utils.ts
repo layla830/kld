@@ -21,6 +21,7 @@ export const TABS = [
   { id: "quote", label: "语录" },
   { id: "timeline", label: "分段日记" },
   { id: "review", label: "Dream审核" },
+  { id: "x-review", label: "X 时间轴" },
   { id: "browse", label: "记忆浏览" },
   { id: "lmc5", label: "LMC-5" }
 ] as const;

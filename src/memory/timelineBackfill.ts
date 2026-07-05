@@ -1,10 +1,12 @@
 import type { Env, MemoryRecord } from "../types";
+import { upsertMemoryCandidate } from "../db/memoryCandidates";
 
 export interface TimelineDateProposal {
   id: string;
   thread: string | null;
   fact_key: string | null;
   date: string;
+  before_tags: string[];
   tags: string[];
 }
 
@@ -69,12 +71,14 @@ export async function runTimelineBackfill(env: Env, namespace: string): Promise<
       continue;
     }
     if (dates.length !== 1) continue;
+    const beforeTags = parseTags(memory.tags);
     proposals.push({
       id: memory.id,
       thread: memory.thread,
       fact_key: memory.fact_key,
       date: dates[0],
-      tags: [...new Set([...parseTags(memory.tags), `date:${dates[0]}`, "timeline"])]
+      before_tags: beforeTags,
+      tags: [...new Set([...beforeTags, `date:${dates[0]}`, "timeline"])]
     });
   }
 
@@ -105,4 +109,35 @@ export async function runTimelineBackfill(env: Env, namespace: string): Promise<
   }
 
   return { scanned: (rows.results ?? []).length, dated: proposals.length, ambiguous, proposals, edges };
+}
+
+export async function queueTimelineBackfill(env: Env, namespace: string): Promise<{
+  scanned: number;
+  dated: number;
+  ambiguous: number;
+  queued: number;
+}> {
+  const result = await runTimelineBackfill(env, namespace);
+  const dreamDate = new Date().toISOString().slice(0, 10);
+  for (const proposal of result.proposals) {
+    await upsertMemoryCandidate(env.DB, namespace, {
+      externalKey: `timeline-date:${proposal.id}:${proposal.date}`,
+      dreamDate,
+      action: "timeline_date",
+      subject: "memory_timeline",
+      targetId: proposal.id,
+      payload: {
+        _kind: "timeline_date",
+        date: proposal.date,
+        thread: proposal.thread,
+        fact_key: proposal.fact_key,
+        before_tags: proposal.before_tags,
+        tags: proposal.tags
+      },
+      sourceChunkIds: [],
+      sourceChunks: [],
+      status: "pending"
+    });
+  }
+  return { scanned: result.scanned, dated: result.dated, ambiguous: result.ambiguous, queued: result.proposals.length };
 }

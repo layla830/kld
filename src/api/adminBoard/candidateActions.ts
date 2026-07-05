@@ -38,7 +38,7 @@ export async function approveCandidate(env: Env, form: FormData): Promise<Memory
   const id = readFormText(form, "id");
   if (!id) return null;
   const candidate = await getMemoryCandidate(env.DB, "default", id);
-  if (!candidate || candidate.status !== "pending" || candidate.action === "relation") return null;
+  if (!candidate || candidate.status !== "pending" || candidate.action === "relation" || candidate.action === "timeline_date") return null;
   const payload = payloadOf(candidate.payload_json);
   let target: MemoryRecord | null = null;
   if (candidate.action === "add" || candidate.action === "excerpt") {

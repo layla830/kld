@@ -6,6 +6,7 @@ import type { DreamReviewMemoryRecord } from "./reviewData";
 import type { MemoryCandidateRecord } from "../../db/memoryCandidates";
 import { renderMemoryCandidate } from "./candidateView";
 import type { CoordinateBackfillStatus } from "../../memory/coordinateBackfillControl";
+import { renderTimelineCandidate } from "./timelineView";
 import {
   adminPath,
   attr,
@@ -291,17 +292,18 @@ function renderQuoteFilter(input: PageInput, categories: string[]): string {
 
 export function renderPage(input: PageInput, data: PageData): string {
   const searchPrefix = input.searchMode === "semantic" ? "语义搜索" : "搜索";
-  const listTitle = input.tab === "message" ? "历史留言" : input.tab === "diary" ? "我们的日记" : input.tab === "quote" ? "我的语录" : input.tab === "timeline" ? "分段日记" : input.tab === "review" ? "Dream 审核" : input.date ? `${input.date} 的记忆` : input.q ? `${searchPrefix}：${input.q}` : "记忆列表";
-  const candidateList = input.tab === "review" ? data.candidates.map(renderMemoryCandidate).join("") : "";
+  const listTitle = input.tab === "message" ? "历史留言" : input.tab === "diary" ? "我们的日记" : input.tab === "quote" ? "我的语录" : input.tab === "timeline" ? "分段日记" : input.tab === "review" ? "Dream 审核" : input.tab === "x-review" ? "X 时间轴审核" : input.date ? `${input.date} 的记忆` : input.q ? `${searchPrefix}：${input.q}` : "记忆列表";
+  const candidateList = input.tab === "review" ? data.candidates.map(renderMemoryCandidate).join("") : input.tab === "x-review" ? data.candidates.map(renderTimelineCandidate).join("") : "";
   const memoryList = data.records.map((record) => renderMemory(record, input.tab)).join("");
   const list = candidateList || memoryList ? candidateList + memoryList : '<div class="empty">这里还没有内容</div>';
   const dashboard = input.tab === "browse" ? renderDashboard(input, data) : "";
   const lmc5Dashboard = input.tab === "lmc5" ? renderCoordinateBackfill(data.coordinateBackfill) + renderLmc5Dashboard(data.lmc5) : "";
   const calendar = input.tab === "timeline" ? renderCalendar(input, data.timelineDates) : "";
-  const composer = input.tab === "lmc5" || input.tab === "review" ? "" : renderComposer(input, renderBrowseTypeOptions(data.types, input.type));
+  const timelineReviewGuide = input.tab === "x-review" ? `<section class="card lmc-panel"><div class="header-row"><span class="section-title">明确日期候选</span><div class="divider"></div><span class="score-pill">${data.candidates.length} 条待审</span></div><div class="lmc-explain"><p>这里只收正文中唯一、完整的年月日。批准只补日期标签；拒绝会永久记住，不会反复出现。</p></div><form method="POST" action="/admin/memories/x-timeline/scan"><button class="btn" type="submit">重新扫描旧记忆</button></form></section>` : "";
+  const composer = input.tab === "lmc5" || input.tab === "review" || input.tab === "x-review" ? "" : renderComposer(input, renderBrowseTypeOptions(data.types, input.type));
   const quoteFilter = renderQuoteFilter(input, data.quoteCategories);
   const listBlock = input.tab === "lmc5" ? "" : `<div class="header-row"><span class="section-title">${htmlEscape(listTitle)}</span><div class="divider"></div><a class="small-btn" href="${adminPath(input, { page: 1, q: "", tag: "", date: "", category: "", mood: "", notice: "", searchMode: "keyword" })}">刷新</a></div>${list}${renderPagination(input, data.total)}`;
 
-  return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>♡</title><meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate"><link rel="preconnect" href="https://fonts.googleapis.com"><link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@300;400;500&display=swap" rel="stylesheet"><style>${ADMIN_BOARD_CSS}</style></head><body><div class="page"><header><div class="heart">♡</div><h1>我们的记忆小家</h1><div class="subtitle">MEMORY HOME</div></header>${renderTabs(input)}${dashboard}${lmc5Dashboard}${calendar}${composer}${quoteFilter}${listBlock}</div><div class="toast" id="toast"></div><script>const n=${JSON.stringify(input.notice)};const m={created:'已保存 ♡',edited:'修改成功 ♡',deleted:'已删除',approved:'已允许',rejected:'已拒绝',empty:'没有内容',error:'保存失败','backfill-paused':'回补已暂停','backfill-resumed':'回补已继续'};if(n&&m[n]){const t=document.getElementById('toast');t.textContent=m[n];t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2500);history.replaceState(null,'',location.pathname+location.search.replace(/[?&]notice=[^&]*/,''));}</script></body></html>`;
+  return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>♡</title><meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate"><link rel="preconnect" href="https://fonts.googleapis.com"><link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@300;400;500&display=swap" rel="stylesheet"><style>${ADMIN_BOARD_CSS}</style></head><body><div class="page"><header><div class="heart">♡</div><h1>我们的记忆小家</h1><div class="subtitle">MEMORY HOME</div></header>${renderTabs(input)}${dashboard}${lmc5Dashboard}${calendar}${timelineReviewGuide}${composer}${quoteFilter}${listBlock}</div><div class="toast" id="toast"></div><script>const n=${JSON.stringify(input.notice)};const m={created:'已保存 ♡',edited:'修改成功 ♡',deleted:'已删除',approved:'已允许',rejected:'已拒绝',empty:'没有内容',error:'保存失败','backfill-paused':'回补已暂停','backfill-resumed':'回补已继续','x-scanned':'X 时间轴候选已刷新','x-approved':'日期标签已更新','x-rejected':'已拒绝，不会再次出现'};if(n&&m[n]){const t=document.getElementById('toast');t.textContent=m[n];t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2500);history.replaceState(null,'',location.pathname+location.search.replace(/[?&]notice=[^&]*/,''));}</script></body></html>`;
 }
 

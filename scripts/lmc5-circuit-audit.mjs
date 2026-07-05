@@ -17,6 +17,8 @@ const checks = [
   ["X: legacy timeline dry-run requires explicit full dates", timelineBackfill.includes("extractExplicitDates") && timelineBackfill.includes("dates.length > 1") && files.debug.includes("timeline_backfill_apply_not_enabled")],
   ["X: review records are excluded from timeline proposals", timelineBackfill.includes("type != 'dream_review'")],
   ["X: temporal proposals require the same thread and fact", timelineBackfill.includes("byFact") && timelineBackfill.includes("proposal.fact_key") && timelineBackfill.includes("source_date") && timelineBackfill.includes("target_date")],
+  ["X: date proposals use an explicit review queue", timelineBackfill.includes('action: "timeline_date"') && fs.readFileSync("src/api/adminBoard/timelineActions.ts", "utf8").includes("extractExplicitDates(target.content)")],
+  ["X: approval preserves text and only appends timeline tags", fs.readFileSync("src/api/adminBoard/timelineActions.ts", "utf8").includes('patch: { tags:') && !fs.readFileSync("src/api/adminBoard/timelineActions.ts", "utf8").includes("patch: { content:")],
   ["Y: recall expands two hops with strength thresholds", files.relations.includes("for (const depth of [1, 2])") && files.relations.includes("relation.strength < 0.7")],
   ["Y: review-only relations are excluded from safe expansion", files.relations.includes("REVIEW_RELATION_TYPES") && files.relations.includes("SAFE_RELATION_TYPES.has(relation.relation_type)")],
   ["Z/M: dream mutations are review-first", files.digest.includes('eventType: "dream_mutation_review"') && !files.digest.includes("async function applyMemoryUpdates")],

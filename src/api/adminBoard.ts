@@ -6,9 +6,11 @@ import { fetchHeatmap, fetchLmc5Dashboard, fetchMemories, fetchQuoteCategories, 
 import { fetchDreamReviewMemories } from "./adminBoard/reviewData";
 import { inputFromUrl, noticeUrl, qs, readFormText } from "./adminBoard/utils";
 import { renderPage } from "./adminBoard/view";
-import { listMemoryCandidates } from "../db/memoryCandidates";
+import { listMemoryCandidates, listMemoryCandidatesByAction } from "../db/memoryCandidates";
 import { approveCandidate, rejectCandidate } from "./adminBoard/candidateActions";
 import { getCoordinateBackfillStatus, setCoordinateBackfillEnabled } from "../memory/coordinateBackfillControl";
+import { approveTimelineCandidate, rejectTimelineCandidate } from "./adminBoard/timelineActions";
+import { queueTimelineBackfill } from "../memory/timelineBackfill";
 
 export async function handleAdminBoard(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   if (!isAuthorized(request, env)) return unauthorized();
@@ -100,6 +102,39 @@ export async function handleAdminBoard(request: Request, env: Env, ctx: Executio
     return Response.redirect(`${url.origin}/admin/memories?tab=lmc5&notice=${enabled ? "backfill-resumed" : "backfill-paused"}`, 303);
   }
 
+  if (request.method === "POST" && url.pathname === "/admin/memories/x-timeline/scan") {
+    try {
+      const result = await queueTimelineBackfill(env, "default");
+      return Response.redirect(`${url.origin}/admin/memories?tab=x-review&notice=x-scanned&count=${result.queued}`, 303);
+    } catch (error) {
+      console.error("admin timeline scan failed", error);
+      return Response.redirect(`${url.origin}/admin/memories?tab=x-review&notice=error`, 303);
+    }
+  }
+
+  if (request.method === "POST" && url.pathname === "/admin/memories/x-timeline/approve") {
+    const ref = request.headers.get("referer") || `${url.origin}/admin/memories?tab=x-review`;
+    try {
+      const updated = await approveTimelineCandidate(env, await request.formData());
+      if (updated) ctx.waitUntil(upsertMemoryEmbedding(env, updated));
+      return Response.redirect(`${url.origin}${noticeUrl(ref, updated ? "x-approved" : "empty")}`, 303);
+    } catch (error) {
+      console.error("admin timeline approve failed", error);
+      return Response.redirect(`${url.origin}${noticeUrl(ref, "error")}`, 303);
+    }
+  }
+
+  if (request.method === "POST" && url.pathname === "/admin/memories/x-timeline/reject") {
+    const ref = request.headers.get("referer") || `${url.origin}/admin/memories?tab=x-review`;
+    try {
+      const rejected = await rejectTimelineCandidate(env, await request.formData());
+      return Response.redirect(`${url.origin}${noticeUrl(ref, rejected ? "x-rejected" : "empty")}`, 303);
+    } catch (error) {
+      console.error("admin timeline reject failed", error);
+      return Response.redirect(`${url.origin}${noticeUrl(ref, "error")}`, 303);
+    }
+  }
+
   if (request.method !== "GET") return new Response("Method not allowed", { status: 405 });
 
   const input = inputFromUrl(url);
@@ -107,14 +142,18 @@ export async function handleAdminBoard(request: Request, env: Env, ctx: Executio
   const [types, quoteCategories, memories, stats, heatmap, timelineDates, lmc5] = await Promise.all([
     fetchTypes(env),
     input.tab === "quote" ? fetchQuoteCategories(env) : Promise.resolve([]),
-    input.tab === "lmc5" ? Promise.resolve({ total: 0, records: [] }) : input.tab === "review" ? fetchDreamReviewMemories(env, input) : fetchMemories(env, input),
+    input.tab === "lmc5" || input.tab === "x-review" ? Promise.resolve({ total: 0, records: [] }) : input.tab === "review" ? fetchDreamReviewMemories(env, input) : fetchMemories(env, input),
     needsDashboard ? fetchStats(env) : Promise.resolve({ active: 0, deleted: 0, total: 0, vectorized: 0 }),
     needsDashboard ? fetchHeatmap(env) : Promise.resolve([]),
     input.tab === "timeline" ? fetchTimelineDates(env) : Promise.resolve(new Set<string>()),
     input.tab === "lmc5" ? fetchLmc5Dashboard(env) : Promise.resolve(null)
   ]);
 
-  const candidates = input.tab === "review" ? await listMemoryCandidates(env.DB, "default", 100) : [];
+  const candidates = input.tab === "review"
+    ? await listMemoryCandidates(env.DB, "default", 100)
+    : input.tab === "x-review"
+      ? await listMemoryCandidatesByAction(env.DB, "default", "timeline_date", 100)
+      : [];
   const coordinateBackfill = input.tab === "lmc5" ? await getCoordinateBackfillStatus(env, "default") : null;
   return new Response(renderPage(input, { stats, types, quoteCategories, total: memories.total, records: memories.records, candidates, heatmap, timelineDates, lmc5, coordinateBackfill }), {
     headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" }

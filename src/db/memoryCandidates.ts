@@ -60,9 +60,20 @@ export async function listMemoryCandidates(db: D1Database, namespace: string, li
     `SELECT c.*, m.content AS target_content, m.type AS target_type, m.status AS target_status
      FROM memory_candidates c
      LEFT JOIN memories m ON m.namespace = c.namespace AND m.id = c.target_id
-     WHERE c.namespace = ? AND c.status IN ('pending','needs_subject_review')
+     WHERE c.namespace = ? AND c.action != 'timeline_date' AND c.status IN ('pending','needs_subject_review')
      ORDER BY c.dream_date DESC, c.created_at DESC LIMIT ?`
   ).bind(namespace, limit).all<MemoryCandidateRecord>();
+  return result.results ?? [];
+}
+
+export async function listMemoryCandidatesByAction(db: D1Database, namespace: string, action: string, limit = 100): Promise<MemoryCandidateRecord[]> {
+  const result = await db.prepare(
+    `SELECT c.*, m.content AS target_content, m.type AS target_type, m.status AS target_status
+     FROM memory_candidates c
+     LEFT JOIN memories m ON m.namespace = c.namespace AND m.id = c.target_id
+     WHERE c.namespace = ? AND c.action = ? AND c.status = 'pending'
+     ORDER BY c.dream_date DESC, c.created_at DESC LIMIT ?`
+  ).bind(namespace, action, limit).all<MemoryCandidateRecord>();
   return result.results ?? [];
 }
 

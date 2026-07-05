@@ -74,7 +74,10 @@ export default {
         "/admin/memories/review/approve",
         "/admin/memories/review/reject",
         "/admin/memories/candidates/approve",
-        "/admin/memories/candidates/reject"
+        "/admin/memories/candidates/reject",
+        "/admin/memories/x-timeline/scan",
+        "/admin/memories/x-timeline/approve",
+        "/admin/memories/x-timeline/reject"
       ].includes(url.pathname)
     ) {
       return handleAdminBoard(request, env, ctx);
