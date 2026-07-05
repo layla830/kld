@@ -20,6 +20,7 @@ import { runMemoryRetention } from "./memory/retention";
 import { runXyzemNightlyMaintenance } from "./memory/xyzem";
 import { runNarrativeTimeline, runTimelineSweep } from "./memory/narrativeTimeline";
 import { retryStaleVectorSyncs } from "./memory/state";
+import { getCoordinateBackfillControl, recordCoordinateBackfillRun } from "./memory/coordinateBackfillControl";
 import { handleQueueMessage } from "./queue/consumer";
 import type { Env, QueueMessage } from "./types";
 import { openAiError } from "./utils/json";
@@ -194,7 +195,13 @@ export default {
     if (controller.cron === "*/5 * * * *") {
       if (env.COORDINATE_BACKFILL_ENABLED !== "true") return;
       ctx.waitUntil(
-        runScheduledCoordinateBackfill(env, namespace)
+        getCoordinateBackfillControl(env, namespace)
+          .then(async (control) => {
+            if (!control.enabled) return { skipped: "paused" as const };
+            const result = await runScheduledCoordinateBackfill(env, namespace);
+            await recordCoordinateBackfillRun(env, namespace, result);
+            return result;
+          })
           .then((result) => console.log("scheduled coordinate backfill", { namespace, result }))
           .catch((error) => {
             console.error("scheduled coordinate backfill failed", { namespace, error: error instanceof Error ? error.message : String(error) });

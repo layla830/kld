@@ -8,6 +8,7 @@ import { inputFromUrl, noticeUrl, qs, readFormText } from "./adminBoard/utils";
 import { renderPage } from "./adminBoard/view";
 import { listMemoryCandidates } from "../db/memoryCandidates";
 import { approveCandidate, rejectCandidate } from "./adminBoard/candidateActions";
+import { getCoordinateBackfillStatus, setCoordinateBackfillEnabled } from "../memory/coordinateBackfillControl";
 
 export async function handleAdminBoard(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   if (!isAuthorized(request, env)) return unauthorized();
@@ -92,6 +93,13 @@ export async function handleAdminBoard(request: Request, env: Env, ctx: Executio
     }
   }
 
+  if (request.method === "POST" && url.pathname === "/admin/memories/coordinate-backfill/toggle") {
+    const form = await request.formData();
+    const enabled = readFormText(form, "enabled") === "true";
+    await setCoordinateBackfillEnabled(env, "default", enabled);
+    return Response.redirect(`${url.origin}/admin/memories?tab=lmc5&notice=${enabled ? "backfill-resumed" : "backfill-paused"}`, 303);
+  }
+
   if (request.method !== "GET") return new Response("Method not allowed", { status: 405 });
 
   const input = inputFromUrl(url);
@@ -107,7 +115,8 @@ export async function handleAdminBoard(request: Request, env: Env, ctx: Executio
   ]);
 
   const candidates = input.tab === "review" ? await listMemoryCandidates(env.DB, "default", 100) : [];
-  return new Response(renderPage(input, { stats, types, quoteCategories, total: memories.total, records: memories.records, candidates, heatmap, timelineDates, lmc5 }), {
+  const coordinateBackfill = input.tab === "lmc5" ? await getCoordinateBackfillStatus(env, "default") : null;
+  return new Response(renderPage(input, { stats, types, quoteCategories, total: memories.total, records: memories.records, candidates, heatmap, timelineDates, lmc5, coordinateBackfill }), {
     headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" }
   });
 }

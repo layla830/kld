@@ -5,6 +5,7 @@ import { renderDreamReviewMemory } from "./reviewView";
 import type { DreamReviewMemoryRecord } from "./reviewData";
 import type { MemoryCandidateRecord } from "../../db/memoryCandidates";
 import { renderMemoryCandidate } from "./candidateView";
+import type { CoordinateBackfillStatus } from "../../memory/coordinateBackfillControl";
 import {
   adminPath,
   attr,
@@ -29,6 +30,7 @@ interface PageData {
   heatmap: HeatDay[];
   timelineDates: Set<string>;
   lmc5: Lmc5DashboardData | null;
+  coordinateBackfill: CoordinateBackfillStatus | null;
 }
 
 function renderTabs(input: PageInput): string {
@@ -229,6 +231,17 @@ function renderLmc5Duplicates(data: Lmc5DashboardData): string {
   return `<section class="card lmc-panel"><div class="header-row"><span class="section-title">重复 fact_key</span><div class="divider"></div><span class="score-pill">${data.duplicateFactKeys.length}</span></div><div class="lmc-duplicates">${data.duplicateFactKeys.map((item) => `<div class="lmc-duplicate"><span>${htmlEscape(shortKey(item.fact_key))}</span><span>${item.count} · ${htmlEscape(item.types)}</span></div>`).join("")}</div></section>`;
 }
 
+function renderCoordinateBackfill(status: CoordinateBackfillStatus | null): string {
+  if (!status) return "";
+  const hours = Math.floor(status.estimatedMinutes / 60);
+  const minutes = status.estimatedMinutes % 60;
+  const eta = status.remaining === 0 ? "已完成" : `约 ${hours ? `${hours}小时` : ""}${minutes ? `${minutes}分钟` : ""}`;
+  const nextEnabled = status.enabled ? "false" : "true";
+  const button = status.enabled ? "暂停回补" : "继续回补";
+  const lastRun = status.lastRunAt ? formatTime(status.lastRunAt) : "尚未运行";
+  return `<section class="card lmc-panel"><div class="header-row"><span class="section-title">旧记忆坐标回补</span><div class="divider"></div><span class="score-pill">${status.enabled ? "运行中" : "已暂停"}</span></div><div class="lmc-stat-grid"><div class="stat-item"><span class="stat-value">${status.completed}</span><span class="stat-label">已有坐标</span></div><div class="stat-item"><span class="stat-value">${status.remaining}</span><span class="stat-label">剩余</span></div><div class="stat-item"><span class="stat-value">${status.progressPercent}%</span><span class="stat-label">完成度</span></div><div class="stat-item"><span class="stat-value">${status.pendingReview}</span><span class="stat-label">异常待审</span></div></div><div style="height:10px;border-radius:999px;background:#f3e5e8;overflow:hidden;margin:14px 0"><div style="height:100%;width:${Math.max(0, Math.min(100, status.progressPercent))}%;background:#cf8e9b"></div></div><div class="lmc-help">每 5 分钟最多处理 5 条 · 预计 ${htmlEscape(eta)} · 上次运行 ${htmlEscape(lastRun)}</div><form method="POST" action="/admin/memories/coordinate-backfill/toggle"><input type="hidden" name="enabled" value="${nextEnabled}"><button class="small-btn" type="submit">${button}</button></form></section>`;
+}
+
 function renderLmc5Dashboard(data: Lmc5DashboardData | null): string {
   if (!data) return '<div class="empty">LMC-5 面板没有加载出来</div>';
   return [
@@ -283,12 +296,12 @@ export function renderPage(input: PageInput, data: PageData): string {
   const memoryList = data.records.map((record) => renderMemory(record, input.tab)).join("");
   const list = candidateList || memoryList ? candidateList + memoryList : '<div class="empty">这里还没有内容</div>';
   const dashboard = input.tab === "browse" ? renderDashboard(input, data) : "";
-  const lmc5Dashboard = input.tab === "lmc5" ? renderLmc5Dashboard(data.lmc5) : "";
+  const lmc5Dashboard = input.tab === "lmc5" ? renderCoordinateBackfill(data.coordinateBackfill) + renderLmc5Dashboard(data.lmc5) : "";
   const calendar = input.tab === "timeline" ? renderCalendar(input, data.timelineDates) : "";
   const composer = input.tab === "lmc5" || input.tab === "review" ? "" : renderComposer(input, renderBrowseTypeOptions(data.types, input.type));
   const quoteFilter = renderQuoteFilter(input, data.quoteCategories);
   const listBlock = input.tab === "lmc5" ? "" : `<div class="header-row"><span class="section-title">${htmlEscape(listTitle)}</span><div class="divider"></div><a class="small-btn" href="${adminPath(input, { page: 1, q: "", tag: "", date: "", category: "", mood: "", notice: "", searchMode: "keyword" })}">刷新</a></div>${list}${renderPagination(input, data.total)}`;
 
-  return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>♡</title><meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate"><link rel="preconnect" href="https://fonts.googleapis.com"><link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@300;400;500&display=swap" rel="stylesheet"><style>${ADMIN_BOARD_CSS}</style></head><body><div class="page"><header><div class="heart">♡</div><h1>我们的记忆小家</h1><div class="subtitle">MEMORY HOME</div></header>${renderTabs(input)}${dashboard}${lmc5Dashboard}${calendar}${composer}${quoteFilter}${listBlock}</div><div class="toast" id="toast"></div><script>const n=${JSON.stringify(input.notice)};const m={created:'已保存 ♡',edited:'修改成功 ♡',deleted:'已删除',approved:'已允许',rejected:'已拒绝',empty:'没有内容',error:'保存失败'};if(n&&m[n]){const t=document.getElementById('toast');t.textContent=m[n];t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2500);history.replaceState(null,'',location.pathname+location.search.replace(/[?&]notice=[^&]*/,''));}</script></body></html>`;
+  return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>♡</title><meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate"><link rel="preconnect" href="https://fonts.googleapis.com"><link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@300;400;500&display=swap" rel="stylesheet"><style>${ADMIN_BOARD_CSS}</style></head><body><div class="page"><header><div class="heart">♡</div><h1>我们的记忆小家</h1><div class="subtitle">MEMORY HOME</div></header>${renderTabs(input)}${dashboard}${lmc5Dashboard}${calendar}${composer}${quoteFilter}${listBlock}</div><div class="toast" id="toast"></div><script>const n=${JSON.stringify(input.notice)};const m={created:'已保存 ♡',edited:'修改成功 ♡',deleted:'已删除',approved:'已允许',rejected:'已拒绝',empty:'没有内容',error:'保存失败','backfill-paused':'回补已暂停','backfill-resumed':'回补已继续'};if(n&&m[n]){const t=document.getElementById('toast');t.textContent=m[n];t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2500);history.replaceState(null,'',location.pathname+location.search.replace(/[?&]notice=[^&]*/,''));}</script></body></html>`;
 }
 
