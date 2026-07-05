@@ -10,7 +10,7 @@ import { listMemoryCandidates, listMemoryCandidatesByAction } from "../db/memory
 import { approveCandidate, rejectCandidate } from "./adminBoard/candidateActions";
 import { getCoordinateBackfillStatus, setCoordinateBackfillEnabled } from "../memory/coordinateBackfillControl";
 import { approveTimelineCandidate, rejectTimelineCandidate } from "./adminBoard/timelineActions";
-import { queueTimelineBackfill } from "../memory/timelineBackfill";
+import { getTimelineBackfillStatus, scanTimelineBackfillPage } from "../memory/timelineBackfill";
 
 export async function handleAdminBoard(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   if (!isAuthorized(request, env)) return unauthorized();
@@ -104,8 +104,9 @@ export async function handleAdminBoard(request: Request, env: Env, ctx: Executio
 
   if (request.method === "POST" && url.pathname === "/admin/memories/x-timeline/scan") {
     try {
-      const result = await queueTimelineBackfill(env, "default");
-      return Response.redirect(`${url.origin}/admin/memories?tab=x-review&notice=x-scanned&count=${result.queued}`, 303);
+      const form = await request.formData();
+      const result = await scanTimelineBackfillPage(env, "default", readFormText(form, "reset") === "true");
+      return Response.redirect(`${url.origin}/admin/memories?tab=x-review&notice=${result.complete ? "x-complete" : "x-scanned"}`, 303);
     } catch (error) {
       console.error("admin timeline scan failed", error);
       return Response.redirect(`${url.origin}/admin/memories?tab=x-review&notice=error`, 303);
@@ -155,7 +156,8 @@ export async function handleAdminBoard(request: Request, env: Env, ctx: Executio
       ? await listMemoryCandidatesByAction(env.DB, "default", "timeline_date", 100)
       : [];
   const coordinateBackfill = input.tab === "lmc5" ? await getCoordinateBackfillStatus(env, "default") : null;
-  return new Response(renderPage(input, { stats, types, quoteCategories, total: memories.total, records: memories.records, candidates, heatmap, timelineDates, lmc5, coordinateBackfill }), {
+  const timelineBackfill = input.tab === "x-review" ? await getTimelineBackfillStatus(env, "default") : null;
+  return new Response(renderPage(input, { stats, types, quoteCategories, total: memories.total, records: memories.records, candidates, heatmap, timelineDates, lmc5, coordinateBackfill, timelineBackfill }), {
     headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" }
   });
 }

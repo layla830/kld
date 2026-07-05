@@ -7,6 +7,7 @@ import type { MemoryCandidateRecord } from "../../db/memoryCandidates";
 import { renderMemoryCandidate } from "./candidateView";
 import type { CoordinateBackfillStatus } from "../../memory/coordinateBackfillControl";
 import { renderTimelineCandidate } from "./timelineView";
+import type { TimelineBackfillStatus } from "../../memory/timelineBackfill";
 import {
   adminPath,
   attr,
@@ -32,6 +33,7 @@ interface PageData {
   timelineDates: Set<string>;
   lmc5: Lmc5DashboardData | null;
   coordinateBackfill: CoordinateBackfillStatus | null;
+  timelineBackfill: TimelineBackfillStatus | null;
 }
 
 function renderTabs(input: PageInput): string {
@@ -299,11 +301,13 @@ export function renderPage(input: PageInput, data: PageData): string {
   const dashboard = input.tab === "browse" ? renderDashboard(input, data) : "";
   const lmc5Dashboard = input.tab === "lmc5" ? renderCoordinateBackfill(data.coordinateBackfill) + renderLmc5Dashboard(data.lmc5) : "";
   const calendar = input.tab === "timeline" ? renderCalendar(input, data.timelineDates) : "";
-  const timelineReviewGuide = input.tab === "x-review" ? `<section class="card lmc-panel"><div class="header-row"><span class="section-title">明确日期候选</span><div class="divider"></div><span class="score-pill">${data.candidates.length} 条待审</span></div><div class="lmc-explain"><p>这里只收正文中唯一、完整的年月日。批准只补日期标签；拒绝会永久记住，不会反复出现。</p></div><form method="POST" action="/admin/memories/x-timeline/scan"><button class="btn" type="submit">重新扫描旧记忆</button></form></section>` : "";
+  const timelineStatus = data.timelineBackfill;
+  const timelineProgress = timelineStatus && timelineStatus.total > 0 ? Math.min(100, Math.round((timelineStatus.scanned / timelineStatus.total) * 1000) / 10) : 0;
+  const timelineReviewGuide = input.tab === "x-review" ? `<section class="card lmc-panel"><div class="header-row"><span class="section-title">明确日期候选</span><div class="divider"></div><span class="score-pill">${data.candidates.length} 条待审</span></div><div class="lmc-explain"><p>这里只收正文中唯一、完整的年月日。批准只补日期标签；拒绝会永久记住，不会反复出现。</p></div><div class="lmc-stat-grid"><div class="stat-item"><span class="stat-value">${timelineStatus?.scanned ?? 0}</span><span class="stat-label">已扫描</span></div><div class="stat-item"><span class="stat-value">${timelineStatus?.total ?? 0}</span><span class="stat-label">待扫描总量</span></div><div class="stat-item"><span class="stat-value">${timelineProgress}%</span><span class="stat-label">扫描进度</span></div><div class="stat-item"><span class="stat-value">${timelineStatus?.dated ?? 0}</span><span class="stat-label">日期候选</span></div><div class="stat-item"><span class="stat-value">${timelineStatus?.ambiguous ?? 0}</span><span class="stat-label">多日期跳过</span></div></div><form method="POST" action="/admin/memories/x-timeline/scan"><input type="hidden" name="reset" value="${timelineStatus?.complete ? "true" : "false"}"><button class="btn" type="submit">${timelineStatus?.complete ? "重新扫描全库" : timelineStatus?.startedAt ? "扫描下一批" : "开始全库扫描"}</button></form></section>` : "";
   const composer = input.tab === "lmc5" || input.tab === "review" || input.tab === "x-review" ? "" : renderComposer(input, renderBrowseTypeOptions(data.types, input.type));
   const quoteFilter = renderQuoteFilter(input, data.quoteCategories);
   const listBlock = input.tab === "lmc5" ? "" : `<div class="header-row"><span class="section-title">${htmlEscape(listTitle)}</span><div class="divider"></div><a class="small-btn" href="${adminPath(input, { page: 1, q: "", tag: "", date: "", category: "", mood: "", notice: "", searchMode: "keyword" })}">刷新</a></div>${list}${renderPagination(input, data.total)}`;
 
-  return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>♡</title><meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate"><link rel="preconnect" href="https://fonts.googleapis.com"><link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@300;400;500&display=swap" rel="stylesheet"><style>${ADMIN_BOARD_CSS}</style></head><body><div class="page"><header><div class="heart">♡</div><h1>我们的记忆小家</h1><div class="subtitle">MEMORY HOME</div></header>${renderTabs(input)}${dashboard}${lmc5Dashboard}${calendar}${timelineReviewGuide}${composer}${quoteFilter}${listBlock}</div><div class="toast" id="toast"></div><script>const n=${JSON.stringify(input.notice)};const m={created:'已保存 ♡',edited:'修改成功 ♡',deleted:'已删除',approved:'已允许',rejected:'已拒绝',empty:'没有内容',error:'保存失败','backfill-paused':'回补已暂停','backfill-resumed':'回补已继续','x-scanned':'X 时间轴候选已刷新','x-approved':'日期标签已更新','x-rejected':'已拒绝，不会再次出现'};if(n&&m[n]){const t=document.getElementById('toast');t.textContent=m[n];t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2500);history.replaceState(null,'',location.pathname+location.search.replace(/[?&]notice=[^&]*/,''));}</script></body></html>`;
+  return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>♡</title><meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate"><link rel="preconnect" href="https://fonts.googleapis.com"><link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@300;400;500&display=swap" rel="stylesheet"><style>${ADMIN_BOARD_CSS}</style></head><body><div class="page"><header><div class="heart">♡</div><h1>我们的记忆小家</h1><div class="subtitle">MEMORY HOME</div></header>${renderTabs(input)}${dashboard}${lmc5Dashboard}${calendar}${timelineReviewGuide}${composer}${quoteFilter}${listBlock}</div><div class="toast" id="toast"></div><script>const n=${JSON.stringify(input.notice)};const m={created:'已保存 ♡',edited:'修改成功 ♡',deleted:'已删除',approved:'已允许',rejected:'已拒绝',empty:'没有内容',error:'保存失败','backfill-paused':'回补已暂停','backfill-resumed':'回补已继续','x-scanned':'已扫描下一批旧记忆','x-complete':'X 时间轴全库扫描完成','x-approved':'日期标签已更新','x-rejected':'已拒绝，不会再次出现'};if(n&&m[n]){const t=document.getElementById('toast');t.textContent=m[n];t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2500);history.replaceState(null,'',location.pathname+location.search.replace(/[?&]notice=[^&]*/,''));}</script></body></html>`;
 }
 

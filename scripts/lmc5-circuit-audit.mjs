@@ -19,6 +19,8 @@ const checks = [
   ["X: temporal proposals require the same thread and fact", timelineBackfill.includes("byFact") && timelineBackfill.includes("proposal.fact_key") && timelineBackfill.includes("source_date") && timelineBackfill.includes("target_date")],
   ["X: date proposals use an explicit review queue", timelineBackfill.includes('action: "timeline_date"') && fs.readFileSync("src/api/adminBoard/timelineActions.ts", "utf8").includes("extractExplicitDates(target.content)")],
   ["X: approval preserves text and only appends timeline tags", fs.readFileSync("src/api/adminBoard/timelineActions.ts", "utf8").includes('patch: { tags:') && !fs.readFileSync("src/api/adminBoard/timelineActions.ts", "utf8").includes("patch: { content:")],
+  ["X: legacy scan uses stable bounded cursor pagination", timelineBackfill.includes("AND id > ?") && timelineBackfill.includes("ORDER BY id") && timelineBackfill.includes("TIMELINE_BATCH_SIZE = 100") && timelineBackfill.includes("nextCursor")],
+  ["X: full-corpus scan progress is persisted", timelineBackfill.includes('maintenance:timeline_backfill') && timelineBackfill.includes("scanTimelineBackfillPage") && fs.readFileSync("src/api/adminBoard/view.ts", "utf8").includes("扫描进度")],
   ["Y: recall expands two hops with strength thresholds", files.relations.includes("for (const depth of [1, 2])") && files.relations.includes("relation.strength < 0.7")],
   ["Y: review-only relations are excluded from safe expansion", files.relations.includes("REVIEW_RELATION_TYPES") && files.relations.includes("SAFE_RELATION_TYPES.has(relation.relation_type)")],
   ["Z/M: dream mutations are review-first", files.digest.includes('eventType: "dream_mutation_review"') && !files.digest.includes("async function applyMemoryUpdates")],
