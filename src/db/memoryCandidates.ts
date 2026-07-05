@@ -66,15 +66,22 @@ export async function listMemoryCandidates(db: D1Database, namespace: string, li
   return result.results ?? [];
 }
 
-export async function listMemoryCandidatesByAction(db: D1Database, namespace: string, action: string, limit = 100): Promise<MemoryCandidateRecord[]> {
+export async function listMemoryCandidatesByAction(db: D1Database, namespace: string, action: string, limit = 100, offset = 0): Promise<MemoryCandidateRecord[]> {
   const result = await db.prepare(
     `SELECT c.*, m.content AS target_content, m.type AS target_type, m.status AS target_status
      FROM memory_candidates c
      LEFT JOIN memories m ON m.namespace = c.namespace AND m.id = c.target_id
      WHERE c.namespace = ? AND c.action = ? AND c.status = 'pending'
-     ORDER BY c.dream_date DESC, c.created_at DESC LIMIT ?`
-  ).bind(namespace, action, limit).all<MemoryCandidateRecord>();
+     ORDER BY c.dream_date DESC, c.created_at DESC LIMIT ? OFFSET ?`
+  ).bind(namespace, action, limit, offset).all<MemoryCandidateRecord>();
   return result.results ?? [];
+}
+
+export async function countMemoryCandidatesByAction(db: D1Database, namespace: string, action: string): Promise<number> {
+  const row = await db.prepare(
+    "SELECT COUNT(*) AS count FROM memory_candidates WHERE namespace = ? AND action = ? AND status = 'pending'"
+  ).bind(namespace, action).first<{ count: number }>();
+  return row?.count ?? 0;
 }
 
 export async function getMemoryCandidate(db: D1Database, namespace: string, id: string): Promise<MemoryCandidateRecord | null> {

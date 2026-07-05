@@ -21,6 +21,7 @@ const checks = [
   ["X: approval preserves text and only appends timeline tags", fs.readFileSync("src/api/adminBoard/timelineActions.ts", "utf8").includes('patch: { tags:') && !fs.readFileSync("src/api/adminBoard/timelineActions.ts", "utf8").includes("patch: { content:")],
   ["X: legacy scan uses stable bounded cursor pagination", timelineBackfill.includes("AND id > ?") && timelineBackfill.includes("ORDER BY id") && timelineBackfill.includes("TIMELINE_BATCH_SIZE = 100") && timelineBackfill.includes("nextCursor")],
   ["X: full-corpus scan progress is persisted", timelineBackfill.includes('maintenance:timeline_backfill') && timelineBackfill.includes("scanTimelineBackfillPage") && fs.readFileSync("src/api/adminBoard/view.ts", "utf8").includes("扫描进度")],
+  ["X: review cards remain reachable beyond the first page", fs.readFileSync("src/db/memoryCandidates.ts", "utf8").includes("LIMIT ? OFFSET ?") && fs.readFileSync("src/db/memoryCandidates.ts", "utf8").includes("countMemoryCandidatesByAction")],
   ["Y: recall expands two hops with strength thresholds", files.relations.includes("for (const depth of [1, 2])") && files.relations.includes("relation.strength < 0.7")],
   ["Y: review-only relations are excluded from safe expansion", files.relations.includes("REVIEW_RELATION_TYPES") && files.relations.includes("SAFE_RELATION_TYPES.has(relation.relation_type)")],
   ["Z/M: dream mutations are review-first", files.digest.includes('eventType: "dream_mutation_review"') && !files.digest.includes("async function applyMemoryUpdates")],

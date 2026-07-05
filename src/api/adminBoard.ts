@@ -4,9 +4,9 @@ import { approveDreamReview, createBoardMemory, deleteBoardMemory, editBoardMemo
 import { forbidden, isAuthorized, isSameOriginAdminPost, unauthorized } from "./adminBoard/auth";
 import { fetchHeatmap, fetchLmc5Dashboard, fetchMemories, fetchQuoteCategories, fetchStats, fetchTimelineDates, fetchTypes } from "./adminBoard/data";
 import { fetchDreamReviewMemories } from "./adminBoard/reviewData";
-import { inputFromUrl, noticeUrl, qs, readFormText } from "./adminBoard/utils";
+import { inputFromUrl, noticeUrl, PAGE_SIZE, qs, readFormText } from "./adminBoard/utils";
 import { renderPage } from "./adminBoard/view";
-import { listMemoryCandidates, listMemoryCandidatesByAction } from "../db/memoryCandidates";
+import { countMemoryCandidatesByAction, listMemoryCandidates, listMemoryCandidatesByAction } from "../db/memoryCandidates";
 import { approveCandidate, rejectCandidate } from "./adminBoard/candidateActions";
 import { getCoordinateBackfillStatus, setCoordinateBackfillEnabled } from "../memory/coordinateBackfillControl";
 import { approveTimelineCandidate, rejectTimelineCandidate } from "./adminBoard/timelineActions";
@@ -150,14 +150,17 @@ export async function handleAdminBoard(request: Request, env: Env, ctx: Executio
     input.tab === "lmc5" ? fetchLmc5Dashboard(env) : Promise.resolve(null)
   ]);
 
-  const candidates = input.tab === "review"
-    ? await listMemoryCandidates(env.DB, "default", 100)
-    : input.tab === "x-review"
-      ? await listMemoryCandidatesByAction(env.DB, "default", "timeline_date", 100)
-      : [];
+  let candidateTotal = 0;
+  let candidates = input.tab === "review" ? await listMemoryCandidates(env.DB, "default", 100) : [];
+  if (input.tab === "x-review") {
+    [candidateTotal, candidates] = await Promise.all([
+      countMemoryCandidatesByAction(env.DB, "default", "timeline_date"),
+      listMemoryCandidatesByAction(env.DB, "default", "timeline_date", PAGE_SIZE, (input.page - 1) * PAGE_SIZE)
+    ]);
+  }
   const coordinateBackfill = input.tab === "lmc5" ? await getCoordinateBackfillStatus(env, "default") : null;
   const timelineBackfill = input.tab === "x-review" ? await getTimelineBackfillStatus(env, "default") : null;
-  return new Response(renderPage(input, { stats, types, quoteCategories, total: memories.total, records: memories.records, candidates, heatmap, timelineDates, lmc5, coordinateBackfill, timelineBackfill }), {
+  return new Response(renderPage(input, { stats, types, quoteCategories, total: input.tab === "x-review" ? candidateTotal : memories.total, records: memories.records, candidates, heatmap, timelineDates, lmc5, coordinateBackfill, timelineBackfill }), {
     headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" }
   });
 }
