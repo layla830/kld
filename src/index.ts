@@ -191,7 +191,7 @@ export default {
 
   async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
     const namespace = getDreamNamespace(env);
-    if (controller.cron === "*/15 * * * *") {
+    if (controller.cron === "*/5 * * * *") {
       if (env.COORDINATE_BACKFILL_ENABLED !== "true") return;
       ctx.waitUntil(
         runScheduledCoordinateBackfill(env, namespace)
