@@ -235,3 +235,12 @@ Run `npm run test:lmc5-circuits` for the invariant audit and `npm run typecheck`
 
 Remaining production boundary: the Worker cannot create a D1 export from inside a scheduled invocation. Keep `DREAM_DRY_RUN=true` until reviewed, and take a D1 export or confirm the available Time Travel restore point before enabling apply mode. Deployment and database rollback remain operator-owned, not model-owned.
 
+## X-axis review closure (2026-07-05)
+
+- Legacy memories are scanned only for one explicit full date in their content; relative or ambiguous dates are skipped.
+- Timeline proposals are stored as `timeline_date` rows in the existing `memory_candidates` review queue and shown on the separate `X 时间轴` admin tab.
+- Each card shows the original memory plus before/after tags. Approval appends only `date:YYYY-MM-DD` and `timeline`; it does not change content or thread and does not create relations.
+- Approval re-reads the current memory and re-validates the explicit date, so stale candidates cannot update changed content.
+- Rejected candidates remain resolved and are not re-opened by later scans with the same memory/date key.
+- Live verification produced 32 pending X review cards. No candidate was approved during verification, so no production memory was changed.
+
