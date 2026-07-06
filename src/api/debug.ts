@@ -21,7 +21,7 @@ import { readBody } from "./common";
 import type { Env, MemoryRecord, OpenAIChatRequest, OpenAIChatResponse } from "../types";
 import { proposeFactGroups } from "../memory/factGroups";
 import { runTimelineBackfill } from "../memory/timelineBackfill";
-import { runLegacyRelationBackfill } from "../memory/legacyRelations";
+import { runLegacyRelationBackfill, parseLegacyRelationRequest, isLegacyRelationRequestError } from "../memory/legacyRelations";
 
 interface CacheHealthRow {
   created_at: string;
@@ -578,9 +578,12 @@ export async function handleLegacyRelationBackfill(request: Request, env: Env): 
   if (scopeError) return scopeError;
   const body = await readBody(request);
   try {
-    const namespace = typeof body?.namespace === "string" ? body.namespace : "default";
-    const apply = body?.apply === true;
-    return json({ ok: true, mode: apply ? "apply_safe_edges" : "dry_run", result: await runLegacyRelationBackfill(env, namespace, apply) });
+    const parsed = parseLegacyRelationRequest(body);
+    if (isLegacyRelationRequestError(parsed)) {
+      return json({ error: parsed.code, detail: parsed.detail, allowed: parsed.allowed }, { status: parsed.status });
+    }
+    const result = await runLegacyRelationBackfill(env, parsed.namespace, parsed.apply, parsed.selectedTypes);
+    return json({ ok: true, mode: parsed.apply ? "apply_safe_edges" : "dry_run", result });
   } catch (error) {
     return json({ error: "legacy_relation_backfill_failed", detail: error instanceof Error ? error.message : String(error) }, { status: 500 });
   }

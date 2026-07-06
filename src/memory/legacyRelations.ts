@@ -1,10 +1,71 @@
 import { createMemoryRelation } from "../db/memoryRelations";
 import type { Env, MemoryRecord } from "../types";
 
+export type LegacyRelationType = "same_fact_key" | "origin_split" | "temporal_sequence" | "in_thread";
+
+export const LEGACY_RELATION_TYPES: readonly LegacyRelationType[] = [
+  "same_fact_key",
+  "origin_split",
+  "temporal_sequence",
+  "in_thread"
+];
+
+const LEGACY_ALLOWED = new Set<string>(LEGACY_RELATION_TYPES);
+
+export interface LegacyRelationRequest {
+  namespace: string;
+  apply: boolean;
+  selectedTypes: LegacyRelationType[];
+}
+
+export type LegacyRelationRequestError =
+  | { status: 400; code: "invalid_relation_types"; detail: string; allowed: string[] }
+  | { status: 400; code: "unknown_relation_type"; detail: string; allowed: string[] }
+  | { status: 400; code: "apply_requires_relation_types"; detail: string; allowed: string[] };
+
+export function parseLegacyRelationRequest(body: unknown): LegacyRelationRequest | LegacyRelationRequestError {
+  const allowed = [...LEGACY_RELATION_TYPES];
+  const namespace = typeof (body as { namespace?: unknown })?.namespace === "string"
+    ? (body as { namespace: string }).namespace
+    : "default";
+  const apply = (body as { apply?: unknown })?.apply === true;
+
+  const rawTypes = (body as { relation_types?: unknown })?.relation_types;
+  let selectedTypes: string[] = [];
+  if (rawTypes !== undefined && rawTypes !== null) {
+    if (!Array.isArray(rawTypes)) {
+      return { status: 400, code: "invalid_relation_types", detail: "relation_types must be an array", allowed };
+    }
+    const seen = new Set<string>();
+    for (const item of rawTypes) {
+      if (typeof item !== "string") {
+        return { status: 400, code: "invalid_relation_types", detail: "each relation type must be a string", allowed };
+      }
+      const clean = item.trim();
+      if (!clean) continue;
+      if (!LEGACY_ALLOWED.has(clean)) {
+        return { status: 400, code: "unknown_relation_type", detail: `unknown relation type: ${clean}`, allowed };
+      }
+      seen.add(clean);
+    }
+    selectedTypes = [...seen];
+  }
+
+  if (apply && selectedTypes.length === 0) {
+    return { status: 400, code: "apply_requires_relation_types", detail: "apply=true requires a non-empty relation_types array", allowed };
+  }
+
+  return { namespace, apply, selectedTypes: selectedTypes as LegacyRelationType[] };
+}
+
+export function isLegacyRelationRequestError(value: LegacyRelationRequest | LegacyRelationRequestError): value is LegacyRelationRequestError {
+  return typeof (value as LegacyRelationRequestError).status === "number";
+}
+
 interface LegacyRelationProposal {
   source_id: string;
   target_id: string;
-  relation_type: "same_fact_key" | "in_thread" | "origin_split" | "temporal_sequence";
+  relation_type: LegacyRelationType;
   strength: number;
   reason: string;
 }
@@ -46,16 +107,38 @@ function addChain(
   }
 }
 
+export function filterLegacyProposals(
+  all: LegacyRelationProposal[],
+  selectedTypes: LegacyRelationType[]
+): {
+  filtered: LegacyRelationProposal[];
+  byType: Record<string, number>;
+  selectedRelationTypes: LegacyRelationType[];
+} {
+  if (selectedTypes.length === 0) {
+    const byTypeAll: Record<string, number> = {};
+    for (const proposal of all) byTypeAll[proposal.relation_type] = (byTypeAll[proposal.relation_type] ?? 0) + 1;
+    return { filtered: all, byType: byTypeAll, selectedRelationTypes: [...LEGACY_RELATION_TYPES] };
+  }
+  const selectedSet = new Set(selectedTypes);
+  const filtered = all.filter((proposal) => selectedSet.has(proposal.relation_type));
+  const byType: Record<string, number> = {};
+  for (const proposal of filtered) byType[proposal.relation_type] = (byType[proposal.relation_type] ?? 0) + 1;
+  return { filtered, byType, selectedRelationTypes: [...selectedSet] };
+}
+
 export async function runLegacyRelationBackfill(
   env: Env,
   namespace: string,
-  apply = false
+  apply = false,
+  selectedTypes: LegacyRelationType[] = []
 ): Promise<{
   scanned: number;
   proposed: number;
   inserted: number;
   by_type: Record<string, number>;
   sample: LegacyRelationProposal[];
+  selected_relation_types: LegacyRelationType[];
 }> {
   const rows = await env.DB.prepare(
     `SELECT * FROM memories
@@ -109,11 +192,13 @@ export async function runLegacyRelationBackfill(
   }
 
   const all = [...proposals.values()];
-  const byType: Record<string, number> = {};
-  for (const proposal of all) byType[proposal.relation_type] = (byType[proposal.relation_type] ?? 0) + 1;
+  if (apply && selectedTypes.length === 0) {
+    throw new Error("apply_requires_relation_types");
+  }
+  const { filtered, byType, selectedRelationTypes } = filterLegacyProposals(all, selectedTypes);
   let inserted = 0;
   if (apply) {
-    for (const proposal of all) {
+    for (const proposal of filtered) {
       if (await createMemoryRelation(env.DB, {
         namespace,
         sourceMemoryId: proposal.source_id,
@@ -125,5 +210,12 @@ export async function runLegacyRelationBackfill(
     }
   }
 
-  return { scanned: memories.length, proposed: all.length, inserted, by_type: byType, sample: all.slice(0, 30) };
+  return {
+    scanned: memories.length,
+    proposed: filtered.length,
+    inserted,
+    by_type: byType,
+    sample: filtered.slice(0, 30),
+    selected_relation_types: selectedRelationTypes
+  };
 }

@@ -11,6 +11,7 @@
     "memory:relations-audit": "node scripts/memory-relations-audit.mjs",
     "memory:lmc5-coordinates": "node scripts/lmc5-coordinate-audit.mjs",
     "test:lmc5-circuits": "node scripts/lmc5-circuit-audit.mjs",
+    "test:legacy-relations": "node scripts/run-legacy-relations-audit.mjs",
     "test:recall-regression": "node scripts/recall-regression.mjs",
     "deploy:cloudflare": "npm run setup:cloudflare && wrangler deploy --keep-vars",
     "typecheck": "tsc --noEmit",
