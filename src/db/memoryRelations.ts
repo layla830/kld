@@ -183,7 +183,7 @@ export async function listRelationExpandedMemories(
   if (ids.length === 0) return [];
 
   return (await fetchMemoriesByIds(db, { namespace: input.namespace, ids }))
-    .filter((record) => record.status === "active")
+    .filter((record) => record.status === "active" && record.active_fact !== 0)
     .map((record) => {
       const relationScore = scores.get(record.id) ?? 0;
       return { ...record, score: relationScore, relationScore };

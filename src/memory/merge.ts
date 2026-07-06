@@ -1,8 +1,9 @@
 import { createMemory, getMemoryById, updateMemory } from "../db/memories";
+import { createMemoryEvent } from "../db/memoryEvents";
 import { callOpenAICompat } from "../proxy/openaiAdapter";
 import type { Env, MemoryApiRecord, MemoryRecord, OpenAIChatRequest, OpenAIChatResponse } from "../types";
 import { extractJsonObject, parseJsonStringArray } from "../utils/jsonHelpers";
-import { deleteMemoryEmbedding, upsertMemoryEmbedding } from "./embedding";
+import { upsertMemoryEmbedding } from "./embedding";
 import type { ExtractedMemory } from "./extract";
 import { searchMemories } from "./search";
 
@@ -274,23 +275,26 @@ export async function persistMemoryWithMerge(
   }
 
   if (decision.action === "supersede") {
-    const superseded = await updateMemory(env.DB, {
-      namespace: input.namespace,
-      id: existing.id,
-      expectedStatus: "active",
-      requireUnpinned: true,
-      patch: { status: "superseded", activeFact: false }
-    });
-    if (!superseded) return createNewMemory(env, input);
-
+    const supersedeTarget = await getMemoryById(env.DB, { namespace: input.namespace, id: existing.id });
     try {
-      await deleteMemoryEmbedding(env, superseded);
+      await createMemoryEvent(env.DB, {
+        namespace: input.namespace,
+        eventType: "z_supersede_review",
+        payload: {
+          action: "supersede",
+          target_id: existing.id,
+          target_content: existing.content,
+          incoming_content: input.memory.content,
+          incoming_fact_key: input.memory.fact_key ?? null,
+          target_fact_key: existing.fact_key ?? null,
+          reason: decision.content ? "LLM proposed supersede with merged content" : "LLM proposed supersede",
+          decision
+        }
+      });
     } catch (error) {
-      // D1 status is already superseded, and search filters inactive D1 records.
-      // A stale vector is annoying but should not block writing the corrected memory.
-      console.error("failed to delete superseded memory embedding", error);
+      console.error("failed to record supersede review event", error);
     }
-
+    void supersedeTarget;
     return createNewMemory(env, {
       ...input,
       memory: {

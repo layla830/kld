@@ -183,7 +183,8 @@ function getTools(): Array<Record<string, unknown>> {
       tension_score: { type: "number", minimum: 0, maximum: 1 },
       valence: { type: "number", minimum: -1, maximum: 1 },
       arousal: { type: "number", minimum: 0, maximum: 1 },
-      response_posture: { type: "string" }
+      response_posture: { type: "string" },
+      source_message_ids: { type: "array", items: { type: "string" } }
     },
     required: ["content"]
   };
@@ -451,7 +452,7 @@ async function callTool(env: Env, ctx: ExecutionContext, profile: KeyProfile, pa
       valence: normalizeValence(args.valence),
       arousal: normalizeArousal(args.arousal),
       source: "mcp",
-      sourceMessageIds: [],
+      sourceMessageIds: readStringArray(args.source_message_ids),
       expiresAt: null
     });
     waitForBackground(ctx, upsertMemoryEmbedding(env, memory));

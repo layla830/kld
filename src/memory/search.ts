@@ -609,18 +609,24 @@ async function searchEmotionResonate(
   env: Env,
   input: { namespace: string; coord: EmotionCoord; limit: number }
 ): Promise<ScoredMemoryRecord[]> {
-  const rows = await env.DB
-    .prepare(
-      `SELECT * FROM memories
-       WHERE namespace = ?
-         AND status = 'active'
-         AND valence IS NOT NULL
-         AND arousal IS NOT NULL
-       ORDER BY importance DESC, updated_at DESC
-       LIMIT ?`
-    )
-    .bind(input.namespace, Math.min(input.limit * 4, 80))
-    .all<MemoryRecord>();
+  let rows: { results?: MemoryRecord[] };
+  try {
+    rows = await env.DB
+      .prepare(
+        `SELECT * FROM memories
+         WHERE namespace = ?
+           AND status = 'active'
+           AND valence IS NOT NULL
+           AND arousal IS NOT NULL
+         ORDER BY importance DESC, updated_at DESC
+         LIMIT ?`
+      )
+      .bind(input.namespace, Math.min(input.limit * 4, 80))
+      .all<MemoryRecord>();
+  } catch (error) {
+    console.error("emotion resonance query failed", error);
+    return [];
+  }
 
   const results: ScoredMemoryRecord[] = [];
   for (const record of (rows.results ?? [])) {
