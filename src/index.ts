@@ -1,6 +1,6 @@
 import { handleHealth } from "./api/health";
 import { handleCache } from "./api/cache";
-import { handleCacheHealth, handleDreamDryRun, handleZAuditApprove, handleZAuditPending, handleZAuditScan, handleXyzemMaintenance, handleBackfillCoordinates, handleFactGroupProposals, handleTimelineBackfill, runScheduledCoordinateBackfill } from "./api/debug";
+import { handleCacheHealth, handleDreamDryRun, handleZAuditApprove, handleZAuditPending, handleZAuditScan, handleXyzemMaintenance, handleBackfillCoordinates, handleFactGroupProposals, handleTimelineBackfill, handleLegacyRelationBackfill, runScheduledCoordinateBackfill } from "./api/debug";
 import { handleChatCompletions } from "./api/chatCompletions";
 import { handleGuideDogChatCompletions } from "./api/guideDog";
 import { handleAdminBoard } from "./api/adminBoard";
@@ -184,6 +184,10 @@ export default {
 
     if (request.method === "POST" && url.pathname === "/v1/debug/x_timeline_backfill") {
       return handleTimelineBackfill(request, env);
+    }
+
+    if (request.method === "POST" && url.pathname === "/v1/debug/legacy_relation_backfill") {
+      return handleLegacyRelationBackfill(request, env);
     }
 
     return openAiError("Not found", 404);

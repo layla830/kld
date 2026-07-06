@@ -24,6 +24,7 @@ const checks = [
   ["X: review cards remain reachable beyond the first page", fs.readFileSync("src/db/memoryCandidates.ts", "utf8").includes("LIMIT ? OFFSET ?") && fs.readFileSync("src/db/memoryCandidates.ts", "utf8").includes("countMemoryCandidatesByAction")],
   ["Y: recall expands two hops with strength thresholds", files.relations.includes("for (const depth of [1, 2])") && files.relations.includes("relation.strength < 0.7")],
   ["Y: review-only relations are excluded from safe expansion", files.relations.includes("REVIEW_RELATION_TYPES") && files.relations.includes("SAFE_RELATION_TYPES.has(relation.relation_type)")],
+  ["Y: existing memories have deterministic additive backfill", fs.readFileSync("src/memory/legacyRelations.ts", "utf8").includes("same_fact_key") && fs.readFileSync("src/memory/legacyRelations.ts", "utf8").includes("origin_split") && fs.readFileSync("src/memory/legacyRelations.ts", "utf8").includes("legacy-backfill:")],
   ["Z/M: dream mutations are review-first", files.digest.includes('eventType: "dream_mutation_review"') && !files.digest.includes("async function applyMemoryUpdates")],
   ["Z: fact keys are proposed as reviewable groups", fs.readFileSync("src/memory/factGroups.ts", "utf8").includes('action:"fact_group"') && fs.readFileSync("src/api/adminBoard/candidateActions.ts", "utf8").includes('candidate.action === "fact_group"')],
   ["E: shadow gate controls ranking", files.search.includes("shouldApplyEAxisToRanking(env)") && files.search.includes("applyEAxis ? eAxisBoost(record) : 0")],

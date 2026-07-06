@@ -21,6 +21,7 @@ import { readBody } from "./common";
 import type { Env, MemoryRecord, OpenAIChatRequest, OpenAIChatResponse } from "../types";
 import { proposeFactGroups } from "../memory/factGroups";
 import { runTimelineBackfill } from "../memory/timelineBackfill";
+import { runLegacyRelationBackfill } from "../memory/legacyRelations";
 
 interface CacheHealthRow {
   created_at: string;
@@ -567,5 +568,20 @@ export async function handleTimelineBackfill(request: Request, env: Env): Promis
     return json({ ok: true, mode: "dry_run", result: await runTimelineBackfill(env, namespace) });
   } catch (error) {
     return json({ error: "timeline_backfill_failed", detail: error instanceof Error ? error.message : String(error) }, { status: 500 });
+  }
+}
+
+export async function handleLegacyRelationBackfill(request: Request, env: Env): Promise<Response> {
+  const auth = await authenticate(request, env);
+  if (!auth.ok) return openAiError("Unauthorized", 401, "authentication_error");
+  const scopeError = requireScope(auth.profile, "memory:write");
+  if (scopeError) return scopeError;
+  const body = await readBody(request);
+  try {
+    const namespace = typeof body?.namespace === "string" ? body.namespace : "default";
+    const apply = body?.apply === true;
+    return json({ ok: true, mode: apply ? "apply_safe_edges" : "dry_run", result: await runLegacyRelationBackfill(env, namespace, apply) });
+  } catch (error) {
+    return json({ error: "legacy_relation_backfill_failed", detail: error instanceof Error ? error.message : String(error) }, { status: 500 });
   }
 }
