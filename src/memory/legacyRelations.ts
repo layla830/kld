@@ -107,6 +107,38 @@ function addChain(
   }
 }
 
+function threadAnchor(source: MemoryRecord, target: MemoryRecord): "same_fact_key" | "shared_source" | "direct_source_ref" | null {
+  if (source.fact_key && source.fact_key === target.fact_key) return "same_fact_key";
+  const sourceIds = new Set(parseList(source.source_message_ids));
+  const targetIds = new Set(parseList(target.source_message_ids));
+  if ([...sourceIds].some((id) => targetIds.has(id))) return "shared_source";
+  if (sourceIds.has(target.id) || targetIds.has(source.id)) return "direct_source_ref";
+  return null;
+}
+
+function addAnchoredThreadChain(
+  proposals: Map<string, LegacyRelationProposal>,
+  memories: MemoryRecord[],
+  thread: string
+): void {
+  const sorted = [...memories].sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id));
+  for (let index = 1; index < sorted.length; index += 1) {
+    const source = sorted[index - 1];
+    const target = sorted[index];
+    const anchor = threadAnchor(source, target);
+    if (!anchor) continue;
+    const pair = source.id < target.id ? `${source.id}|${target.id}` : `${target.id}|${source.id}`;
+    const key = `in_thread|${pair}`;
+    if (!proposals.has(key)) proposals.set(key, {
+      source_id: source.id,
+      target_id: target.id,
+      relation_type: "in_thread",
+      strength: 0.75,
+      reason: `legacy-backfill:thread ${thread}; anchor=${anchor}`
+    });
+  }
+}
+
 export function filterLegacyProposals(
   all: LegacyRelationProposal[],
   selectedTypes: LegacyRelationType[]
@@ -142,7 +174,7 @@ export async function runLegacyRelationBackfill(
 }> {
   const rows = await env.DB.prepare(
     `SELECT * FROM memories
-     WHERE namespace = ? AND status = 'active' AND type != 'dream_review'
+     WHERE namespace = ? AND status = 'active' AND active_fact != 0 AND type != 'dream_review'
      ORDER BY id LIMIT 1000`
   ).bind(namespace).all<MemoryRecord>();
   const memories = rows.results ?? [];
@@ -183,7 +215,7 @@ export async function runLegacyRelationBackfill(
 
   for (const [thread, group] of byThread) {
     if (group.length < 2) continue;
-    addChain(proposals, group, "in_thread", 0.75, `legacy-backfill:thread ${thread}`);
+    addAnchoredThreadChain(proposals, group, thread);
   }
 
   for (const [sourceId, group] of bySourceMessage) {
