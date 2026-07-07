@@ -52,6 +52,7 @@ export async function handleAdminBoard(request: Request, env: Env, ctx: Executio
       if (result?.target) {
         ctx.waitUntil(result.action === "delete" ? deleteMemoryEmbedding(env, result.target) : upsertMemoryEmbedding(env, result.target));
       }
+      if (result?.previousTarget) ctx.waitUntil(deleteMemoryEmbedding(env, result.previousTarget));
       if (result?.proposal) ctx.waitUntil(deleteMemoryEmbedding(env, result.proposal));
       return Response.redirect(`${url.origin}${noticeUrl(ref, result ? "approved" : "empty")}`, 303);
     } catch (error) {

@@ -1,5 +1,4 @@
 import { createMemory, getMemoryById, updateMemory } from "../db/memories";
-import { createMemoryEvent } from "../db/memoryEvents";
 import { callOpenAICompat } from "../proxy/openaiAdapter";
 import type { Env, MemoryApiRecord, MemoryRecord, OpenAIChatRequest, OpenAIChatResponse } from "../types";
 import { extractJsonObject, parseJsonStringArray } from "../utils/jsonHelpers";
@@ -275,36 +274,43 @@ export async function persistMemoryWithMerge(
   }
 
   if (decision.action === "supersede") {
-    const supersedeTarget = await getMemoryById(env.DB, { namespace: input.namespace, id: existing.id });
-    try {
-      await createMemoryEvent(env.DB, {
-        namespace: input.namespace,
-        eventType: "z_supersede_review",
-        payload: {
-          action: "supersede",
-          target_id: existing.id,
-          target_content: existing.content,
-          incoming_content: input.memory.content,
-          incoming_fact_key: input.memory.fact_key ?? null,
-          target_fact_key: existing.fact_key ?? null,
-          reason: decision.content ? "LLM proposed supersede with merged content" : "LLM proposed supersede",
-          decision
-        }
-      });
-    } catch (error) {
-      console.error("failed to record supersede review event", error);
-    }
-    void supersedeTarget;
-    return createNewMemory(env, {
-      ...input,
-      memory: {
-        ...input.memory,
-        type: decision.type ?? input.memory.type,
-        content: decision.content ?? input.memory.content,
-        importance: clampScore(decision.importance, input.memory.importance),
-        confidence: clampScore(decision.confidence, input.memory.confidence),
-        tags: uniqueStrings([...input.memory.tags, ...(decision.tags ?? [])])
-      }
+    const replacement = {
+      type: decision.type ?? input.memory.type ?? existing.type,
+      content: decision.content ?? input.memory.content,
+      importance: clampScore(decision.importance, input.memory.importance),
+      confidence: clampScore(decision.confidence, input.memory.confidence),
+      tags: uniqueStrings([...input.memory.tags, ...(decision.tags ?? [])]),
+      fact_key: input.memory.fact_key ?? existing.fact_key ?? null,
+      source: input.source,
+      source_message_ids: input.sourceMessageIds
+    };
+    return createMemory(env.DB, {
+      namespace: input.namespace,
+      type: "dream_review",
+      content: `发现一条可能需要替换的旧记忆，请核对新旧内容后决定。`,
+      summary: JSON.stringify({
+        kind: "dream_review",
+        action: "supersede",
+        target_id: existing.id,
+        target: {
+          id: existing.id,
+          type: existing.type,
+          content: existing.content,
+          fact_key: existing.fact_key,
+          status: existing.status
+        },
+        replacement,
+        reason: "写入时发现新内容可能替代旧事实。批准前不会修改旧记忆，也不会把新内容写成 active 记忆。",
+        decision
+      }),
+      importance: Math.max(existing.importance, replacement.importance),
+      confidence: replacement.confidence,
+      status: "active",
+      pinned: false,
+      tags: ["pending-review", "supersede-review", "merge-review"],
+      source: "merge-review",
+      sourceMessageIds: input.sourceMessageIds,
+      expiresAt: null
     });
   }
 

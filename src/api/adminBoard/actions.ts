@@ -4,16 +4,18 @@ import { clampNumber, parseTagInput, parseTags, readFormText } from "./utils";
 
 interface DreamReviewPayload {
   kind?: string;
-  action?: "update" | "delete";
+  action?: "update" | "delete" | "supersede";
   target_id?: string;
   patch?: Record<string, unknown>;
+  replacement?: Record<string, unknown>;
   reason?: string;
 }
 
 export interface DreamReviewResult {
-  action: "update" | "delete" | "reject";
+  action: "update" | "delete" | "supersede" | "reject";
   proposal: MemoryRecord;
   target: MemoryRecord | null;
+  previousTarget?: MemoryRecord | null;
 }
 
 function cleanPinTags(tags: string[]): string[] {
@@ -28,7 +30,7 @@ function parseDreamReview(record: MemoryRecord): DreamReviewPayload | null {
   try {
     const parsed = JSON.parse(record.summary) as DreamReviewPayload;
     if (parsed.kind !== "dream_review") return null;
-    if (parsed.action !== "update" && parsed.action !== "delete") return null;
+    if (parsed.action !== "update" && parsed.action !== "delete" && parsed.action !== "supersede") return null;
     if (!parsed.target_id) return null;
     return parsed;
   } catch {
@@ -193,7 +195,7 @@ export async function approveDreamReview(env: Env, form: FormData): Promise<Drea
   const target = await getMemoryById(env.DB, { namespace: "default", id: review.target_id! });
   if (!target) return null;
 
-  const action = review.action === "delete" ? "delete" : "update";
+  const action = review.action === "delete" ? "delete" : review.action === "supersede" ? "supersede" : "update";
   let updatedTarget: MemoryRecord | null = null;
   if (action === "delete") {
     updatedTarget = await updateMemory(env.DB, {
@@ -205,10 +207,53 @@ export async function approveDreamReview(env: Env, form: FormData): Promise<Drea
         tags: cleanPinTags(parseTags(target.tags))
       }
     });
-  } else {
+  } else if (action === "update") {
     const patch = reviewPatchToMemoryPatch(review.patch);
     if (Object.keys(patch).length === 0) return null;
     updatedTarget = await updateMemory(env.DB, { namespace: "default", id: target.id, patch });
+  } else {
+    if (target.status !== "active" || target.pinned) return null;
+    const replacement = review.replacement;
+    const content = stringValue(replacement?.content);
+    if (!content) return null;
+    const replacementTags = Array.isArray(replacement?.tags)
+      ? cleanPinTags(replacement.tags.map((item) => String(item).trim()).filter(Boolean))
+      : [];
+    const created = await createMemory(env.DB, {
+      namespace: "default",
+      type: stringValue(replacement?.type) ?? target.type,
+      content,
+      summary: nullableStringValue(replacement?.summary) ?? null,
+      importance: numberValue(replacement?.importance) ?? target.importance,
+      confidence: numberValue(replacement?.confidence) ?? target.confidence,
+      status: "active",
+      pinned: false,
+      tags: replacementTags,
+      source: stringValue(replacement?.source) ?? "merge-review-approved",
+      sourceMessageIds: Array.isArray(replacement?.source_message_ids)
+        ? replacement.source_message_ids.map(String).map((item) => item.trim()).filter(Boolean)
+        : [],
+      factKey: nullableStringValue(replacement?.fact_key),
+      expiresAt: null
+    });
+    const superseded = await updateMemory(env.DB, {
+      namespace: "default",
+      id: target.id,
+      expectedStatus: "active",
+      requireUnpinned: true,
+      patch: { status: "superseded", activeFact: false }
+    });
+    if (!superseded) {
+      await updateMemory(env.DB, {
+        namespace: "default",
+        id: created.id,
+        patch: { status: "deleted", activeFact: false }
+      });
+      return null;
+    }
+    updatedTarget = created;
+    const resolvedProposal = await markReviewResolved(env, proposal, "approved");
+    return { action, proposal: resolvedProposal ?? proposal, target: updatedTarget, previousTarget: superseded };
   }
 
   const resolvedProposal = await markReviewResolved(env, proposal, "approved");

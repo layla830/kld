@@ -9,6 +9,9 @@ const files = {
   debug: fs.readFileSync("src/api/debug.ts", "utf8"),
   narrative: fs.readFileSync("src/memory/narrativeTimeline.ts", "utf8")
 };
+const merge = fs.readFileSync("src/memory/merge.ts", "utf8");
+const reviewActions = fs.readFileSync("src/api/adminBoard/actions.ts", "utf8");
+const reviewView = fs.readFileSync("src/api/adminBoard/reviewView.ts", "utf8");
 
 const timelineBackfill = fs.readFileSync("src/memory/timelineBackfill.ts", "utf8");
 
@@ -27,6 +30,9 @@ const checks = [
   ["Y: existing memories have deterministic additive backfill", fs.readFileSync("src/memory/legacyRelations.ts", "utf8").includes("same_fact_key") && fs.readFileSync("src/memory/legacyRelations.ts", "utf8").includes("origin_split") && fs.readFileSync("src/memory/legacyRelations.ts", "utf8").includes("legacy-backfill:")],
   ["Z/M: dream mutations are review-first", files.digest.includes('eventType: "dream_mutation_review"') && !files.digest.includes("async function applyMemoryUpdates")],
   ["Z: fact keys are proposed as reviewable groups", fs.readFileSync("src/memory/factGroups.ts", "utf8").includes('action:"fact_group"') && fs.readFileSync("src/api/adminBoard/candidateActions.ts", "utf8").includes('candidate.action === "fact_group"')],
+  ["Z: merge supersede creates a visible review instead of mutating facts", merge.includes('type: "dream_review"') && merge.includes('"supersede-review"') && !merge.includes('eventType: "z_supersede_review"')],
+  ["Z: supersede review has approve and reject closure", reviewActions.includes('parsed.action !== "supersede"') && reviewActions.includes('previousTarget: superseded') && reviewActions.includes('status: "superseded", activeFact: false')],
+  ["Z: supersede review displays before and after content", reviewView.includes('review?.action === "supersede"') && reviewView.includes('review.replacement') && reviewView.includes('批准替换')],
   ["E: shadow gate controls ranking", files.search.includes("shouldApplyEAxisToRanking(env)") && files.search.includes("applyEAxis ? eAxisBoost(record) : 0")],
   ["Night: Y runs before Z and M", files.xyzem.indexOf("const relations = await runRelationBuild") < files.xyzem.indexOf("const zAudit = await runZAudit") && files.xyzem.indexOf("const zAudit = await runZAudit") < files.xyzem.indexOf("const patrol = await runMetabolismPatrol")],
   ["Safety: coordinate backfill apply=false is read-only", files.debug.includes("const apply = body?.apply === true")],
