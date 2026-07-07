@@ -19,7 +19,6 @@ const QUERY_HINT_SCORE = 1.35;
 const GUIDANCE_SEED_SCORE = 0.72;
 const RRF_K = 60;
 const GUIDANCE_QUERY_RE = /应该怎么做|怎么办|怎么接|怎么哄|怎么回应|怎么处理|要怎么做|该怎么办/;
-const FTS_FLOOR = 0.45;
 const RAW_EVENTS_FLOOR = 0.30;
 const LITERAL_QUERY_MAX_CHARS = 80;
 const LITERAL_TOP_K = 3;
@@ -82,6 +81,11 @@ const LEADING_PRONOUN_PATTERN = /^(你们|我们|他们|她们|它们|你|我|�
 
 const RULE_LIKE_TYPES = new Set(["rule", "lesson", "core", "preference", "identity"]);
 const CONTEXT_TYPES = new Set(["diary", "layla_diary", "quote", "message", "timeline_day", "conversation_message"]);
+const RECALL_EXCLUDED_TYPES = new Set(["diary", "layla_diary", "auto_diary"]);
+
+function isRecallEligible<T extends { type: string }>(record: T): boolean {
+  return !RECALL_EXCLUDED_TYPES.has(record.type.toLowerCase());
+}
 
 function eAxisBoost(record: HybridScoredMemoryRecord): number {
   const type = record.type;
@@ -511,14 +515,16 @@ function mergeRelatedRecords(records: ScoredMemoryRecord[], relationRecords: Sco
 }
 
 function keepRelatedContext(primary: MemoryApiRecord[], related: MemoryApiRecord[], topK: number): MemoryApiRecord[] {
-  if (related.length === 0 || primary.length >= topK) return primary.slice(0, topK);
+  if (related.length === 0 || topK <= 1) return primary.slice(0, topK);
   const keptIds = new Set(primary.map((memory) => memory.id));
   const additions = related
+    .filter(isRecallEligible)
     .filter((memory) => !keptIds.has(memory.id))
     .filter((memory) => typeof memory.score !== "number" || memory.score >= 0.16)
     .sort((a, b) => (b.score ?? 0) + b.importance * 0.05 - ((a.score ?? 0) + a.importance * 0.05))
-    .slice(0, Math.min(3, topK - primary.length));
-  return [...primary, ...additions].slice(0, topK);
+    .slice(0, Math.min(2, topK - 1));
+  if (additions.length === 0) return primary.slice(0, topK);
+  return [...primary.slice(0, topK - additions.length), ...additions].slice(0, topK);
 }
 
 function keepExplicitHintContext(primary: MemoryApiRecord[], hinted: MemoryApiRecord[], topK: number): MemoryApiRecord[] {
@@ -659,27 +665,27 @@ export async function searchMemories(env: Env, input: SearchMemoriesInput): Prom
   );
   const allVectorHits = vectorSearches.flatMap((results) => results ?? []);
   const vectorRecords = allVectorHits.length > 0
-    ? [...new Map(allVectorHits.map((r) => [r.id, r])).values()].sort((a, b) => (b.vectorScore ?? 0) - (a.vectorScore ?? 0))
+    ? [...new Map(allVectorHits.filter(isRecallEligible).map((r) => [r.id, r])).values()].sort((a, b) => (b.vectorScore ?? 0) - (a.vectorScore ?? 0))
     : null;
   const vectorTopScore = vectorRecords && vectorRecords.length > 0 ? (vectorRecords[0].vectorScore ?? 0) : 0;
 
   const keywordRecords: ScoredMemoryRecord[] = [];
   const messageRecords: ScoredMemoryRecord[] = [];
 
-  if (vectorTopScore < FTS_FLOOR) {
-    const ftsResults = await searchMemoriesByText(env.DB, { namespace: input.namespace, query: expandedQuery, types: input.types, limit: candidateLimit });
-    keywordRecords.push(...ftsResults.map((record) => ({ ...record, keywordScore: record.score })));
+  // Lexical recall is deterministic evidence. A merely plausible vector hit must
+  // never suppress it, otherwise names and exact phrases disappear from recall.
+  const ftsResults = await searchMemoriesByText(env.DB, { namespace: input.namespace, query: expandedQuery, types: input.types, limit: candidateLimit });
+  keywordRecords.push(...ftsResults.filter(isRecallEligible).map((record) => ({ ...record, keywordScore: record.score })));
 
-    if (vectorTopScore < RAW_EVENTS_FLOOR && input.includeMessages) {
-      const rawResults = await searchMessagesForRecall(env.DB, {
-        namespace: input.namespace,
-        query: searchQuery,
-        after: timeIntent.mode === "hard_range" ? timeIntent.after : undefined,
-        before: timeIntent.mode === "hard_range" ? timeIntent.before : undefined,
-        limit: Math.min(candidateLimit, 24)
-      });
-      messageRecords.push(...rawResults.map(messageToMemoryRecord));
-    }
+  if (vectorTopScore < RAW_EVENTS_FLOOR && input.includeMessages) {
+    const rawResults = await searchMessagesForRecall(env.DB, {
+      namespace: input.namespace,
+      query: searchQuery,
+      after: timeIntent.mode === "hard_range" ? timeIntent.after : undefined,
+      before: timeIntent.mode === "hard_range" ? timeIntent.before : undefined,
+      limit: Math.min(candidateLimit, 24)
+    });
+    messageRecords.push(...rawResults.map(messageToMemoryRecord));
   }
 
   const hintedRecords = hintedFactKeys.length > 0
@@ -687,7 +693,7 @@ export async function searchMemories(env: Env, input: SearchMemoriesInput): Prom
         namespace: input.namespace,
         factKeys: hintedFactKeys,
         limit: Math.max(6, hintedFactKeys.length * 3),
-        excludeTypes: ["diary", "layla_diary"]
+        excludeTypes: [...RECALL_EXCLUDED_TYPES]
       })
     : [];
   const guidanceSeedRecords = shouldAddGuidanceSeeds
@@ -704,6 +710,7 @@ export async function searchMemories(env: Env, input: SearchMemoriesInput): Prom
       limit: LITERAL_TOP_K
     });
     literalRecords = literalHits
+      .filter(isRecallEligible)
       .filter((record) => {
         const haystack = recordHaystack(record);
         return literalTerms.some((term) => haystack.includes(normalizeText(term)));
@@ -714,7 +721,8 @@ export async function searchMemories(env: Env, input: SearchMemoriesInput): Prom
   const emotionCoord = detectEmotionCoord(rawQuery);
   let emotionRecords: ScoredMemoryRecord[] = [];
   if (emotionCoord) {
-    emotionRecords = await searchEmotionResonate(env, { namespace: input.namespace, coord: emotionCoord, limit: EMOTION_RESONATE_TOP_K });
+    emotionRecords = (await searchEmotionResonate(env, { namespace: input.namespace, coord: emotionCoord, limit: EMOTION_RESONATE_TOP_K }))
+      .filter(isRecallEligible);
   }
 
   const records = mergeSearchResults(
@@ -739,19 +747,29 @@ export async function searchMemories(env: Env, input: SearchMemoriesInput): Prom
       applyEAxis
     }
   );
-  const relationRecords = await listRelationExpandedMemories(env.DB, {
+  const relationRecords = (await listRelationExpandedMemories(env.DB, {
     namespace: input.namespace,
     baseIds: records.map((record) => record.id),
     limit: Math.max(topK, Math.ceil(candidateLimit / 3))
-  });
+  })).filter(isRecallEligible);
   const recordsWithRelations = mergeRelatedRecords(records, relationRecords, candidateLimit);
   const apiRecords = recordsWithRelations.map((record) => toMemoryApiRecord(record, record.score));
-  const processedRecords = await postProcessMemorySearchResults(env, { query: searchQuery, rawQuery, memories: apiRecords, topK });
-  const finalRelationRecords = await listRelationExpandedMemories(env.DB, {
+  const protectedIds = [
+    ...literalRecords.map((record) => record.id),
+    ...keywordRecords.filter((record) => (record.keywordScore ?? 0) >= STRONG_KEYWORD_SCORE).map((record) => record.id)
+  ];
+  const processedRecords = await postProcessMemorySearchResults(env, {
+    query: searchQuery,
+    rawQuery,
+    memories: apiRecords.filter(isRecallEligible),
+    topK,
+    protectedIds
+  });
+  const finalRelationRecords = (await listRelationExpandedMemories(env.DB, {
     namespace: input.namespace,
     baseIds: processedRecords.map((record) => record.id),
     limit: Math.max(topK, 8)
-  });
+  })).filter(isRecallEligible);
   const relatedApiRecords = finalRelationRecords.map((record) => toMemoryApiRecord(record, record.score));
   const hintedApiRecords = hintedRecords.map((record) => toMemoryApiRecord(record, QUERY_HINT_SCORE));
   const outputRecords = applyLead(

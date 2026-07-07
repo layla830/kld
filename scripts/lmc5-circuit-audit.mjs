@@ -12,6 +12,7 @@ const files = {
 const merge = fs.readFileSync("src/memory/merge.ts", "utf8");
 const reviewActions = fs.readFileSync("src/api/adminBoard/actions.ts", "utf8");
 const reviewView = fs.readFileSync("src/api/adminBoard/reviewView.ts", "utf8");
+const postProcess = fs.readFileSync("src/memory/postProcess.ts", "utf8");
 
 const timelineBackfill = fs.readFileSync("src/memory/timelineBackfill.ts", "utf8");
 
@@ -27,6 +28,10 @@ const checks = [
   ["X: review cards remain reachable beyond the first page", fs.readFileSync("src/db/memoryCandidates.ts", "utf8").includes("LIMIT ? OFFSET ?") && fs.readFileSync("src/db/memoryCandidates.ts", "utf8").includes("countMemoryCandidatesByAction")],
   ["Y: recall expands two hops with strength thresholds", files.relations.includes("for (const depth of [1, 2])") && files.relations.includes("relation.strength < 0.7")],
   ["Y: review-only relations are excluded from safe expansion", files.relations.includes("REVIEW_RELATION_TYPES") && files.relations.includes("SAFE_RELATION_TYPES.has(relation.relation_type)")],
+  ["Recall: lexical evidence is never vector-gated", files.search.includes("const ftsResults = await searchMemoriesByText") && !files.search.includes("vectorTopScore < FTS_FLOOR")],
+  ["Recall: strong lexical hits survive the model filter", files.search.includes("protectedIds") && postProcess.includes("protectedCandidates")],
+  ["Recall: relation context receives reserved output slots", files.search.includes("topK - additions.length") && files.search.includes("Math.min(2, topK - 1)")],
+  ["Recall: long diary records are excluded from every route", files.search.includes('new Set(["diary", "layla_diary", "auto_diary"])') && files.search.includes("filter(isRecallEligible)")],
   ["Y: existing memories have deterministic additive backfill", fs.readFileSync("src/memory/legacyRelations.ts", "utf8").includes("same_fact_key") && fs.readFileSync("src/memory/legacyRelations.ts", "utf8").includes("origin_split") && fs.readFileSync("src/memory/legacyRelations.ts", "utf8").includes("legacy-backfill:")],
   ["Y: in-thread backfill requires a precise fact or provenance anchor", fs.readFileSync("src/memory/legacyRelations.ts", "utf8").includes("addAnchoredThreadChain") && fs.readFileSync("src/memory/legacyRelations.ts", "utf8").includes("direct_source_ref") && fs.readFileSync("src/memory/legacyRelations.ts", "utf8").includes("active_fact != 0")],
   ["Z/M: dream mutations are review-first", files.digest.includes('eventType: "dream_mutation_review"') && !files.digest.includes("async function applyMemoryUpdates")],

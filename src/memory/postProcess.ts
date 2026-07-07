@@ -169,7 +169,7 @@ export function applyLead(memories: MemoryApiRecord[], rawQuery: string): Memory
 
 export async function postProcessMemorySearchResults(
   env: Env,
-  input: { query: string; rawQuery?: string; memories: MemoryApiRecord[]; topK: number }
+  input: { query: string; rawQuery?: string; memories: MemoryApiRecord[]; topK: number; protectedIds?: string[] }
 ): Promise<MemoryApiRecord[]> {
   const maxOutput = getMaxOutput(env, input.topK);
   const query = input.query.trim();
@@ -180,5 +180,8 @@ export async function postProcessMemorySearchResults(
   const candidates = withoutIncidentalHandoff(rawQuery, memories);
   if (kind === "guidance") return candidates.slice(0, maxOutput);
   const filtered = await filterWithTimeout(env, rawQuery, candidates);
-  return filtered.slice(0, maxOutput);
+  const protectedSet = new Set(input.protectedIds ?? []);
+  const protectedCandidates = candidates.filter((memory) => protectedSet.has(memory.id));
+  const keptIds = new Set(protectedCandidates.map((memory) => memory.id));
+  return [...protectedCandidates, ...filtered.filter((memory) => !keptIds.has(memory.id))].slice(0, maxOutput);
 }
