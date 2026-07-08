@@ -84,6 +84,28 @@ export async function countMemoryCandidatesByAction(db: D1Database, namespace: s
   return row?.count ?? 0;
 }
 
+export async function listMetabolismCandidates(db: D1Database, namespace: string, limit = 100): Promise<MemoryCandidateRecord[]> {
+  const result = await db.prepare(
+    `SELECT c.*, m.content AS target_content, m.type AS target_type, m.status AS target_status
+     FROM memory_candidates c
+     LEFT JOIN memories m ON m.namespace = c.namespace AND m.id = c.target_id
+     WHERE c.namespace = ?
+       AND c.action IN ('m_archive','m_relation_cleanup')
+       AND c.status IN ('pending','approved')
+     ORDER BY CASE c.status WHEN 'pending' THEN 0 ELSE 1 END, c.created_at DESC
+     LIMIT ?`
+  ).bind(namespace, limit).all<MemoryCandidateRecord>();
+  return result.results ?? [];
+}
+
+export async function countPendingMetabolismCandidates(db: D1Database, namespace: string): Promise<number> {
+  const row = await db.prepare(
+    `SELECT COUNT(*) AS count FROM memory_candidates
+     WHERE namespace = ? AND action IN ('m_archive','m_relation_cleanup') AND status = 'pending'`
+  ).bind(namespace).first<{ count: number }>();
+  return row?.count ?? 0;
+}
+
 export async function getMemoryCandidate(db: D1Database, namespace: string, id: string): Promise<MemoryCandidateRecord | null> {
   return (await db.prepare("SELECT * FROM memory_candidates WHERE namespace = ? AND id = ?")
     .bind(namespace, id).first<MemoryCandidateRecord>()) ?? null;

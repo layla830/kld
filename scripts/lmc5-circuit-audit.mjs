@@ -13,6 +13,9 @@ const merge = fs.readFileSync("src/memory/merge.ts", "utf8");
 const reviewActions = fs.readFileSync("src/api/adminBoard/actions.ts", "utf8");
 const reviewView = fs.readFileSync("src/api/adminBoard/reviewView.ts", "utf8");
 const postProcess = fs.readFileSync("src/memory/postProcess.ts", "utf8");
+const metabolismReview = fs.readFileSync("src/memory/metabolismReview.ts", "utf8");
+const metabolismActions = fs.readFileSync("src/api/adminBoard/metabolismActions.ts", "utf8");
+const metabolismView = fs.readFileSync("src/api/adminBoard/metabolismView.ts", "utf8");
 
 const timelineBackfill = fs.readFileSync("src/memory/timelineBackfill.ts", "utf8");
 
@@ -46,6 +49,11 @@ const checks = [
   ["Cron: coordinate backfill is isolated from daily maintenance", files.debug.includes("runScheduledCoordinateBackfill") && fs.readFileSync("src/index.ts", "utf8").includes('controller.cron === "*/5 * * * *"')],
   ["Cron: coordinate backfill has persisted pause control", fs.readFileSync("src/index.ts", "utf8").includes("getCoordinateBackfillControl") && fs.readFileSync("src/api/adminBoard.ts", "utf8").includes("coordinate-backfill/toggle")],
   ["Safety: XYZEM dry-run does not persist audit events", files.xyzem.includes("runZAudit(env, namespace, { dryRun: options.dryRun })") && files.xyzem.includes("runMetabolismPatrol(env, namespace, { dryRun: options.dryRun })")],
+  ["M: patrol findings become explicit review candidates", metabolismReview.includes('action: "m_archive"') && metabolismReview.includes('action: "m_relation_cleanup"')],
+  ["M: protected memories never enter archive review", metabolismReview.includes("PROTECTED_MEMORY_TYPES") && metabolismReview.includes("type = 'project_state'") && metabolismActions.includes("PROTECTED_MEMORY_TYPES.has")],
+  ["M: only symmetric relation types are deduplicated", metabolismReview.includes("SYMMETRIC_RELATION_TYPES") && metabolismReview.includes("symmetricPlaceholders")],
+  ["M: approval snapshots state and revalidates targets", metabolismActions.includes('eventType: "m_snapshot"') && metabolismActions.includes("metabolism_candidate_is_stale") && metabolismActions.includes("metabolism_relation_candidate_changed")],
+  ["M: approved operations expose rollback closure", metabolismActions.includes('eventType: "m_rollback"') && metabolismActions.includes("rolled_back") && metabolismView.includes("回滚这次操作")],
   ["Identity: narratives use explicit third-person subjects", files.narrative.includes("用户（Layla）") && files.narrative.includes("KLD") && !files.narrative.includes("我=助手")]
 ];
 

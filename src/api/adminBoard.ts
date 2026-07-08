@@ -6,11 +6,13 @@ import { fetchHeatmap, fetchLmc5Dashboard, fetchMemories, fetchQuoteCategories, 
 import { fetchDreamReviewMemories } from "./adminBoard/reviewData";
 import { inputFromUrl, noticeUrl, PAGE_SIZE, qs, readFormText } from "./adminBoard/utils";
 import { renderPage } from "./adminBoard/view";
-import { countMemoryCandidatesByAction, listMemoryCandidates, listMemoryCandidatesByAction } from "../db/memoryCandidates";
+import { countMemoryCandidatesByAction, countPendingMetabolismCandidates, listMemoryCandidates, listMemoryCandidatesByAction, listMetabolismCandidates } from "../db/memoryCandidates";
 import { approveCandidate, rejectCandidate } from "./adminBoard/candidateActions";
 import { getCoordinateBackfillStatus, setCoordinateBackfillEnabled } from "../memory/coordinateBackfillControl";
 import { approveTimelineCandidate, rejectTimelineCandidate } from "./adminBoard/timelineActions";
 import { getTimelineBackfillStatus, scanTimelineBackfillPage } from "../memory/timelineBackfill";
+import { scanMetabolismReviewCandidates } from "../memory/metabolismReview";
+import { approveMetabolismCandidate, rejectMetabolismCandidate, rollbackMetabolismCandidate } from "./adminBoard/metabolismActions";
 
 export async function handleAdminBoard(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   if (!isAuthorized(request, env)) return unauthorized();
@@ -137,6 +139,51 @@ export async function handleAdminBoard(request: Request, env: Env, ctx: Executio
     }
   }
 
+  if (request.method === "POST" && url.pathname === "/admin/memories/m-review/scan") {
+    try {
+      await scanMetabolismReviewCandidates(env, "default");
+      return Response.redirect(`${url.origin}/admin/memories?tab=m-review&notice=m-scanned`, 303);
+    } catch (error) {
+      console.error("admin metabolism scan failed", error);
+      return Response.redirect(`${url.origin}/admin/memories?tab=m-review&notice=error`, 303);
+    }
+  }
+
+  if (request.method === "POST" && url.pathname === "/admin/memories/m-review/approve") {
+    const ref = request.headers.get("referer") || `${url.origin}/admin/memories?tab=m-review`;
+    try {
+      const result = await approveMetabolismCandidate(env, await request.formData());
+      if (result?.memory) ctx.waitUntil(result.memory.status === "active" ? upsertMemoryEmbedding(env, result.memory) : deleteMemoryEmbedding(env, result.memory));
+      return Response.redirect(`${url.origin}${noticeUrl(ref, result ? "m-approved" : "empty")}`, 303);
+    } catch (error) {
+      console.error("admin metabolism approve failed", error);
+      return Response.redirect(`${url.origin}${noticeUrl(ref, "error")}`, 303);
+    }
+  }
+
+  if (request.method === "POST" && url.pathname === "/admin/memories/m-review/reject") {
+    const ref = request.headers.get("referer") || `${url.origin}/admin/memories?tab=m-review`;
+    try {
+      const rejected = await rejectMetabolismCandidate(env, await request.formData());
+      return Response.redirect(`${url.origin}${noticeUrl(ref, rejected ? "m-rejected" : "empty")}`, 303);
+    } catch (error) {
+      console.error("admin metabolism reject failed", error);
+      return Response.redirect(`${url.origin}${noticeUrl(ref, "error")}`, 303);
+    }
+  }
+
+  if (request.method === "POST" && url.pathname === "/admin/memories/m-review/rollback") {
+    const ref = request.headers.get("referer") || `${url.origin}/admin/memories?tab=m-review`;
+    try {
+      const result = await rollbackMetabolismCandidate(env, await request.formData());
+      if (result?.memory) ctx.waitUntil(upsertMemoryEmbedding(env, result.memory));
+      return Response.redirect(`${url.origin}${noticeUrl(ref, result ? "m-rolled-back" : "empty")}`, 303);
+    } catch (error) {
+      console.error("admin metabolism rollback failed", error);
+      return Response.redirect(`${url.origin}${noticeUrl(ref, "error")}`, 303);
+    }
+  }
+
   if (request.method !== "GET") return new Response("Method not allowed", { status: 405 });
 
   const input = inputFromUrl(url);
@@ -144,7 +191,7 @@ export async function handleAdminBoard(request: Request, env: Env, ctx: Executio
   const [types, quoteCategories, memories, stats, heatmap, timelineDates, lmc5] = await Promise.all([
     fetchTypes(env),
     input.tab === "quote" ? fetchQuoteCategories(env) : Promise.resolve([]),
-    input.tab === "lmc5" || input.tab === "x-review" ? Promise.resolve({ total: 0, records: [] }) : input.tab === "review" ? fetchDreamReviewMemories(env, input) : fetchMemories(env, input),
+    input.tab === "lmc5" || input.tab === "x-review" || input.tab === "m-review" ? Promise.resolve({ total: 0, records: [] }) : input.tab === "review" ? fetchDreamReviewMemories(env, input) : fetchMemories(env, input),
     needsDashboard ? fetchStats(env) : Promise.resolve({ active: 0, deleted: 0, total: 0, vectorized: 0 }),
     needsDashboard ? fetchHeatmap(env) : Promise.resolve([]),
     input.tab === "timeline" ? fetchTimelineDates(env) : Promise.resolve(new Set<string>()),
@@ -152,6 +199,7 @@ export async function handleAdminBoard(request: Request, env: Env, ctx: Executio
   ]);
 
   let candidateTotal = 0;
+  let metabolismPending = 0;
   let candidates = input.tab === "review" ? await listMemoryCandidates(env.DB, "default", 100) : [];
   if (input.tab === "x-review") {
     [candidateTotal, candidates] = await Promise.all([
@@ -159,9 +207,16 @@ export async function handleAdminBoard(request: Request, env: Env, ctx: Executio
       listMemoryCandidatesByAction(env.DB, "default", "timeline_date", PAGE_SIZE, (input.page - 1) * PAGE_SIZE)
     ]);
   }
+  if (input.tab === "m-review") {
+    [metabolismPending, candidates] = await Promise.all([
+      countPendingMetabolismCandidates(env.DB, "default"),
+      listMetabolismCandidates(env.DB, "default", 30)
+    ]);
+    candidateTotal = candidates.length;
+  }
   const coordinateBackfill = input.tab === "lmc5" ? await getCoordinateBackfillStatus(env, "default") : null;
   const timelineBackfill = input.tab === "x-review" ? await getTimelineBackfillStatus(env, "default") : null;
-  return new Response(renderPage(input, { stats, types, quoteCategories, total: input.tab === "x-review" ? candidateTotal : memories.total, records: memories.records, candidates, heatmap, timelineDates, lmc5, coordinateBackfill, timelineBackfill }), {
+  return new Response(renderPage(input, { stats, types, quoteCategories, total: input.tab === "x-review" || input.tab === "m-review" ? candidateTotal : memories.total, records: memories.records, candidates, heatmap, timelineDates, lmc5, coordinateBackfill, timelineBackfill, metabolismPending }), {
     headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" }
   });
 }
