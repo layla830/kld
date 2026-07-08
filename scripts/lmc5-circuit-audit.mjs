@@ -54,6 +54,7 @@ const checks = [
   ["M: only symmetric relation types are deduplicated", metabolismReview.includes("SYMMETRIC_RELATION_TYPES") && metabolismReview.includes("symmetricPlaceholders")],
   ["M: approval snapshots state and revalidates targets", metabolismActions.includes('eventType: "m_snapshot"') && metabolismActions.includes("metabolism_candidate_is_stale") && metabolismActions.includes("metabolism_relation_candidate_changed")],
   ["M: approved operations expose rollback closure", metabolismActions.includes('eventType: "m_rollback"') && metabolismActions.includes("rolled_back") && metabolismView.includes("回滚这次操作")],
+  ["M: every review action is reachable through the Worker router", ["scan", "approve", "reject", "rollback"].every((action) => fs.readFileSync("src/index.ts", "utf8").includes(`/admin/memories/m-review/${action}`))],
   ["Identity: narratives use explicit third-person subjects", files.narrative.includes("用户（Layla）") && files.narrative.includes("KLD") && !files.narrative.includes("我=助手")]
 ];
 
