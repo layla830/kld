@@ -4,16 +4,22 @@ import { filterAndCompressMemories } from "./filter";
 const FILTER_TIMEOUT_MS = 8000;
 
 const UTTERANCE_RE = /原话|怎么说|说什么|说过什么|表达|口头禅|称呼|叫/;
-const FACT_RE = /是什么|哪个|哪种|喜欢什么|讨厌什么|设定|偏好|雷点|底线|怎么来的|由来/;
-const TIME_RE = /什么时候|哪天|多久|第几次|上次|昨天|前天|那天|那次|当时|日期|时间|发生了什么|发生什么|怎么聊|聊了什么/;
-const GUIDANCE_RE = /应该怎么做|怎么办|怎么接|怎么哄|怎么回应|怎么处理|要怎么做|该怎么办/;
-const SHORT_UTTERANCE_NOISE_RE = /待会|现在|公司|回消息|自己玩|洗澡|回来|找你|睡觉|睡前|醒的时候|摸鱼/;
+const FACT_RE =
+  /是什么|哪个|哪种|喜欢什么|讨厌什么|设定|偏好|雷点|底线|怎么来的|由来/;
+const TIME_RE =
+  /什么时候|哪天|多久|第几次|上次|昨天|前天|那天|那次|当时|日期|时间|发生了什么|发生什么|怎么聊|聊了什么/;
+const GUIDANCE_RE =
+  /应该怎么做|怎么办|怎么接|怎么哄|怎么回应|怎么处理|要怎么做|该怎么办/;
+const SHORT_UTTERANCE_NOISE_RE =
+  /待会|现在|公司|回消息|自己玩|洗澡|回来|找你|睡觉|睡前|醒的时候|摸鱼/;
 
 type IntentKind = "utterance" | "fact" | "time" | "guidance" | "general";
 
 function getMaxOutput(env: Env, requestedTopK: number): number {
   const value = Number(env.MEMORY_SEARCH_MAX_OUTPUT || 8);
-  const maxOutput = Number.isFinite(value) ? Math.min(Math.max(Math.floor(value), 1), 20) : 8;
+  const maxOutput = Number.isFinite(value)
+    ? Math.min(Math.max(Math.floor(value), 1), 20)
+    : 8;
   return Math.min(requestedTopK, maxOutput);
 }
 
@@ -35,7 +41,10 @@ function haystack(memory: MemoryApiRecord): string {
 }
 
 function compact(text: string): string {
-  return text.toLowerCase().replace(/\s+/g, "").replace(/[?？！。.,，、:：;；"“”'‘’]/g, "");
+  return text
+    .toLowerCase()
+    .replace(/\s+/g, "")
+    .replace(/[?？！。.,，、:：;；"“”'‘’]/g, "");
 }
 
 function asksForHandoff(query: string): boolean {
@@ -63,11 +72,17 @@ function isMilestone(memory: MemoryApiRecord): boolean {
 }
 
 function isLongNarrative(memory: MemoryApiRecord): boolean {
-  return memory.content.length > 180 || /diary|summary|日记|总结|legacy:vps/i.test(meta(memory));
+  return (
+    memory.content.length > 180 ||
+    /diary|summary|日记|总结|legacy:vps/i.test(meta(memory))
+  );
 }
 
 function isGuidanceRecord(memory: MemoryApiRecord): boolean {
-  return Boolean(memory.fact_key) && /^(rule|lesson|core|preference)$/i.test(memory.type);
+  return (
+    Boolean(memory.fact_key) &&
+    /^(rule|lesson|core|preference)$/i.test(memory.type)
+  );
 }
 
 function directHit(memory: MemoryApiRecord, query: string): boolean {
@@ -79,7 +94,16 @@ function directHitAny(memory: MemoryApiRecord, queries: string[]): boolean {
   return queries.some((query) => directHit(memory, query));
 }
 
-function scoreMemory(memory: MemoryApiRecord, input: { kind: IntentKind; query: string; rawQuery: string; index: number }): number {
+function scoreMemory(
+  memory: MemoryApiRecord,
+  input: {
+    kind: IntentKind;
+    query: string;
+    rawQuery: string;
+    index: number;
+    hasGuidanceCandidate: boolean;
+  },
+): number {
   let score = typeof memory.score === "number" ? memory.score : 0;
   const query = `${input.rawQuery} ${input.query}`;
 
@@ -93,9 +117,12 @@ function scoreMemory(memory: MemoryApiRecord, input: { kind: IntentKind; query: 
   }
 
   if (input.kind === "fact") {
-    if (isQuote(memory) && directHitAny(memory, [input.query, input.rawQuery])) score += 1.8;
-    if (isMilestone(memory)) score += 1.5;
-    if (isLongNarrative(memory)) score -= 0.8;
+    const directHit = directHitAny(memory, [input.query, input.rawQuery]);
+    if (isGuidanceRecord(memory) && directHit) score += 1.9;
+    if (isQuote(memory) && directHit) score += 1.8;
+    if (isMilestone(memory))
+      score += directHit || input.hasGuidanceCandidate ? 0.6 : 1.5;
+    if (isLongNarrative(memory) && !isGuidanceRecord(memory)) score -= 0.8;
   }
 
   if (input.kind === "utterance") {
@@ -108,8 +135,10 @@ function scoreMemory(memory: MemoryApiRecord, input: { kind: IntentKind; query: 
   if (input.kind === "guidance") {
     if (isGuidanceRecord(memory)) score += 1.05;
     if (memory.response_posture && isGuidanceRecord(memory)) score += 0.25;
-    if (isQuote(memory) || isMilestone(memory) || isTimeline(memory)) score -= 0.85;
-    if (/^(diary|layla_diary|quarrel|message|identity)$/i.test(memory.type)) score -= 0.75;
+    if (isQuote(memory) || isMilestone(memory) || isTimeline(memory))
+      score -= 0.85;
+    if (/^(diary|layla_diary|quarrel|message|identity)$/i.test(memory.type))
+      score -= 0.75;
     if (isLongNarrative(memory) && !isGuidanceRecord(memory)) score -= 0.9;
   }
 
@@ -117,48 +146,93 @@ function scoreMemory(memory: MemoryApiRecord, input: { kind: IntentKind; query: 
     if (isGuidanceRecord(memory)) score += 0.3;
     if (memory.response_posture) score += 0.15;
     if (/^(diary|layla_diary|timeline_day)$/i.test(memory.type)) score -= 0.6;
-    if (isLongNarrative(memory) && !isGuidanceRecord(memory) && !isQuote(memory)) score -= 0.4;
+    if (
+      isLongNarrative(memory) &&
+      !isGuidanceRecord(memory) &&
+      !isQuote(memory)
+    )
+      score -= 0.4;
   }
 
   return score - input.index * 0.001;
 }
 
-function rerank(query: string, rawQuery: string, memories: MemoryApiRecord[]): { kind: IntentKind; memories: MemoryApiRecord[] } {
+function rerank(
+  query: string,
+  rawQuery: string,
+  memories: MemoryApiRecord[],
+): { kind: IntentKind; memories: MemoryApiRecord[] } {
   const kind = intentKind(rawQuery, query);
+  const hasGuidanceCandidate = memories.some(isGuidanceRecord);
 
   return {
     kind,
     memories: memories
       .map((memory, index) => {
-        const rerankScore = scoreMemory(memory, { kind, query, rawQuery, index });
+        const rerankScore = scoreMemory(memory, {
+          kind,
+          query,
+          rawQuery,
+          index,
+          hasGuidanceCandidate,
+        });
         return { memory, rerankScore, index };
       })
       .sort((a, b) => b.rerankScore - a.rerankScore || a.index - b.index)
-      .map((entry) => ({ ...entry.memory, score: entry.rerankScore }))
+      .map((entry) => ({ ...entry.memory, score: entry.rerankScore })),
   };
 }
 
-function withoutIncidentalHandoff(query: string, memories: MemoryApiRecord[]): MemoryApiRecord[] {
+function withoutIncidentalHandoff(
+  query: string,
+  memories: MemoryApiRecord[],
+): MemoryApiRecord[] {
   if (asksForHandoff(query)) return memories;
   const kept = memories.filter((memory) => !isHandoff(memory));
   return kept.length > 0 ? kept : memories;
 }
 
-async function filterWithTimeout(env: Env, query: string, memories: MemoryApiRecord[]): Promise<MemoryApiRecord[]> {
+async function filterWithTimeout(
+  env: Env,
+  query: string,
+  memories: MemoryApiRecord[],
+): Promise<MemoryApiRecord[]> {
   return Promise.race([
     filterAndCompressMemories(env, { query, memories }),
-    new Promise<MemoryApiRecord[]>((resolve) => setTimeout(() => resolve(memories), FILTER_TIMEOUT_MS))
+    new Promise<MemoryApiRecord[]>((resolve) =>
+      setTimeout(() => resolve(memories), FILTER_TIMEOUT_MS),
+    ),
   ]);
 }
 
-function leadFor(kind: IntentKind, query: string, rawQuery: string, memories: MemoryApiRecord[]): MemoryApiRecord | undefined {
-  if (kind === "time") return memories.find(isTimelineDay) || memories.find(isQuote);
-  if (kind === "fact") return memories.find((memory) => isQuote(memory) && directHitAny(memory, [query, rawQuery])) || memories.find(isMilestone);
+function leadFor(
+  kind: IntentKind,
+  query: string,
+  rawQuery: string,
+  memories: MemoryApiRecord[],
+): MemoryApiRecord | undefined {
+  if (kind === "time")
+    return memories.find(isTimelineDay) || memories.find(isQuote);
+  if (kind === "fact") {
+    const guidanceHit = memories.find(
+      (memory) =>
+        isGuidanceRecord(memory) && directHitAny(memory, [query, rawQuery]),
+    );
+    if (guidanceHit) return guidanceHit;
+    return (
+      memories.find(
+        (memory) => isQuote(memory) && directHitAny(memory, [query, rawQuery]),
+      ) || memories.find(isMilestone)
+    );
+  }
   if (kind === "utterance") return memories.find(isQuote);
   return undefined;
 }
 
-export function applyLead(memories: MemoryApiRecord[], rawQuery: string): MemoryApiRecord[] {
+export function applyLead(
+  memories: MemoryApiRecord[],
+  rawQuery: string,
+): MemoryApiRecord[] {
   const kind = intentKind(rawQuery, rawQuery);
   if (kind === "general" || kind === "guidance") return memories;
   const lead = leadFor(kind, rawQuery, rawQuery, memories);
@@ -169,11 +243,18 @@ export function applyLead(memories: MemoryApiRecord[], rawQuery: string): Memory
 
 export async function postProcessMemorySearchResults(
   env: Env,
-  input: { query: string; rawQuery?: string; memories: MemoryApiRecord[]; topK: number; protectedIds?: string[] }
+  input: {
+    query: string;
+    rawQuery?: string;
+    memories: MemoryApiRecord[];
+    topK: number;
+    protectedIds?: string[];
+  },
 ): Promise<MemoryApiRecord[]> {
   const maxOutput = getMaxOutput(env, input.topK);
   const query = input.query.trim();
-  if (!query || input.memories.length === 0) return input.memories.slice(0, maxOutput);
+  if (!query || input.memories.length === 0)
+    return input.memories.slice(0, maxOutput);
 
   const rawQuery = input.rawQuery || query;
   const { kind, memories } = rerank(query, rawQuery, input.memories);
@@ -181,7 +262,12 @@ export async function postProcessMemorySearchResults(
   if (kind === "guidance") return candidates.slice(0, maxOutput);
   const filtered = await filterWithTimeout(env, rawQuery, candidates);
   const protectedSet = new Set(input.protectedIds ?? []);
-  const protectedCandidates = candidates.filter((memory) => protectedSet.has(memory.id));
+  const protectedCandidates = candidates.filter((memory) =>
+    protectedSet.has(memory.id),
+  );
   const keptIds = new Set(protectedCandidates.map((memory) => memory.id));
-  return [...protectedCandidates, ...filtered.filter((memory) => !keptIds.has(memory.id))].slice(0, maxOutput);
+  return [
+    ...protectedCandidates,
+    ...filtered.filter((memory) => !keptIds.has(memory.id)),
+  ].slice(0, maxOutput);
 }
