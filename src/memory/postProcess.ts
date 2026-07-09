@@ -214,10 +214,11 @@ function leadFor(
   if (kind === "time")
     return memories.find(isTimelineDay) || memories.find(isQuote);
   if (kind === "fact") {
-    const guidanceHit = memories.find(
-      (memory) =>
-        isGuidanceRecord(memory) && directHitAny(memory, [query, rawQuery]),
-    );
+    const guidanceHit =
+      memories.find(
+        (memory) =>
+          isGuidanceRecord(memory) && directHitAny(memory, [query, rawQuery]),
+      ) || memories.find(isGuidanceRecord);
     if (guidanceHit) return guidanceHit;
     return (
       memories.find(
