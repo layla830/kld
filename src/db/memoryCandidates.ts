@@ -21,6 +21,14 @@ export interface MemoryCandidateRecord {
   target_content?: string | null;
   target_type?: string | null;
   target_status?: string | null;
+  source_memory_content?: string | null;
+  source_memory_type?: string | null;
+  source_memory_status?: string | null;
+  source_memory_active_fact?: number | null;
+  target_memory_content?: string | null;
+  target_memory_type?: string | null;
+  target_memory_status?: string | null;
+  target_memory_active_fact?: number | null;
 }
 
 export interface CandidateInput {
@@ -95,7 +103,65 @@ export async function listMetabolismCandidates(db: D1Database, namespace: string
      ORDER BY CASE c.status WHEN 'pending' THEN 0 ELSE 1 END, c.created_at DESC
      LIMIT ?`
   ).bind(namespace, limit).all<MemoryCandidateRecord>();
-  return result.results ?? [];
+  return enrichMetabolismRelationEndpoints(db, namespace, result.results ?? []);
+}
+
+function readRelationEndpointIds(candidate: MemoryCandidateRecord): { sourceId: string | null; targetId: string | null } {
+  try {
+    const payload = JSON.parse(candidate.payload_json) as unknown;
+    if (!payload || typeof payload !== "object") return { sourceId: null, targetId: null };
+    const before = (payload as { before?: unknown }).before;
+    if (!before || typeof before !== "object") return { sourceId: null, targetId: null };
+    const sourceId = (before as { source_memory_id?: unknown }).source_memory_id;
+    const targetId = (before as { target_memory_id?: unknown }).target_memory_id;
+    return {
+      sourceId: typeof sourceId === "string" ? sourceId : null,
+      targetId: typeof targetId === "string" ? targetId : null
+    };
+  } catch {
+    return { sourceId: null, targetId: null };
+  }
+}
+
+async function enrichMetabolismRelationEndpoints(db: D1Database, namespace: string, rows: MemoryCandidateRecord[]): Promise<MemoryCandidateRecord[]> {
+  const endpointByCandidate = new Map<string, { sourceId: string | null; targetId: string | null }>();
+  const ids = new Set<string>();
+
+  for (const row of rows) {
+    if (row.action !== "m_relation_cleanup") continue;
+    const endpoints = readRelationEndpointIds(row);
+    endpointByCandidate.set(row.id, endpoints);
+    if (endpoints.sourceId) ids.add(endpoints.sourceId);
+    if (endpoints.targetId) ids.add(endpoints.targetId);
+  }
+
+  if (ids.size === 0) return rows;
+
+  const placeholders = [...ids].map(() => "?").join(", ");
+  const result = await db.prepare(
+    `SELECT id, content, type, status, active_fact
+     FROM memories
+     WHERE namespace = ? AND id IN (${placeholders})`
+  ).bind(namespace, ...ids).all<{ id: string; content: string; type: string; status: string; active_fact: number }>();
+  const memories = new Map((result.results ?? []).map((memory) => [memory.id, memory]));
+
+  return rows.map((row) => {
+    const endpoints = endpointByCandidate.get(row.id);
+    if (!endpoints) return row;
+    const source = endpoints.sourceId ? memories.get(endpoints.sourceId) : null;
+    const target = endpoints.targetId ? memories.get(endpoints.targetId) : null;
+    return {
+      ...row,
+      source_memory_content: source?.content ?? null,
+      source_memory_type: source?.type ?? null,
+      source_memory_status: source?.status ?? null,
+      source_memory_active_fact: source?.active_fact ?? null,
+      target_memory_content: target?.content ?? null,
+      target_memory_type: target?.type ?? null,
+      target_memory_status: target?.status ?? null,
+      target_memory_active_fact: target?.active_fact ?? null
+    };
+  });
 }
 
 export async function countPendingMetabolismCandidates(db: D1Database, namespace: string): Promise<number> {
