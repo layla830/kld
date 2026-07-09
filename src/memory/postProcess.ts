@@ -232,10 +232,12 @@ function leadFor(
 export function applyLead(
   memories: MemoryApiRecord[],
   rawQuery: string,
+  query?: string,
 ): MemoryApiRecord[] {
   const kind = intentKind(rawQuery, rawQuery);
   if (kind === "general" || kind === "guidance") return memories;
-  const lead = leadFor(kind, rawQuery, rawQuery, memories);
+  const leadQuery = query && query.trim() ? query : rawQuery;
+  const lead = leadFor(kind, leadQuery, rawQuery, memories);
   if (!lead) return memories;
   const rest = memories.filter((memory) => memory.id !== lead.id);
   return [lead, ...rest];

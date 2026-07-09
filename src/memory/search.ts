@@ -778,7 +778,8 @@ export async function searchMemories(env: Env, input: SearchMemoriesInput): Prom
       memories: keepRelatedContext(keepExplicitHintContext(processedRecords, hintedApiRecords, topK), relatedApiRecords, topK),
       topK
     }),
-    rawQuery
+    rawQuery,
+    searchQuery
   );
 
   if (shouldRecordRecall(input)) {

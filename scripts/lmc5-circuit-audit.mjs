@@ -132,7 +132,11 @@ const checks = [
       postProcess.includes(
         "directHit || input.hasGuidanceCandidate ? 0.6 : 1.5",
       ) &&
-      postProcess.includes("const guidanceHit = memories.find"),
+      postProcess.includes("const guidanceHit = memories.find") &&
+      postProcess.includes(
+        "leadQuery = query && query.trim() ? query : rawQuery",
+      ) &&
+      files.search.includes("rawQuery,") && /rawQuery,\r?\n    searchQuery/.test(files.search),
   ],
   [
     "Y: existing memories have deterministic additive backfill",
