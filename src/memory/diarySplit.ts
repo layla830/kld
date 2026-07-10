@@ -9,7 +9,7 @@ import { upsertMemoryEmbedding } from "./embedding";
 const TIMELINE_SOURCE = "timeline_split";
 const DEFAULT_SPLIT_MODEL = "deepseek/deepseek-v4-flash";
 const MAX_DIARY_CHARS = 18000;
-const MAX_ITEMS_PER_DIARY = 12;
+const MAX_ITEMS_PER_DIARY = 6;
 const FACT_TYPES = new Set(["rule", "preference", "project_state", "lesson"]);
 const REVIEW_TYPES = new Set(["rule", "preference", "project_state", "lesson"]);
 const SPLIT_VERSION_TAG = "split_version:v2";
@@ -332,24 +332,30 @@ function buildSplitPrompt(record: MemoryRecord, date: string): string {
     "Split this Chinese diary into searchable long-term memory records.",
     "Return JSON only. Do not use markdown.",
     "It is valid to return {\"items\":[]} when the diary has no durable or searchable memory.",
-    "Prefer 3-8 useful items. Never exceed 12. Do not create one item for every allowed type.",
+    "Return 2-6 high-signal items. Fewer is better than padding. Do not create one item for every allowed type.",
+    "The goal is one compact day overview plus only the few atomic memories that would be useful in a future search.",
+    "Do not repeat the same scene or conclusion across timeline_day, quote, lesson, insight, and rule records.",
+    "Reject generic quotes, routine details, literary restatements, and interpretations that merely repeat the day overview.",
+    "Each non-timeline item must still be useful when read alone without the source diary.",
+    "Identity is fixed: the diary narrator '我' is KLD; '她', '老婆', and the addressed user are Layla/the user.",
+    "Never store KLD's own behavior, preference, lesson, or project state under a user.* fact_key.",
     "",
     "Allowed item types:",
     "- timeline_day: at most one compact day-level summary.",
     "- quote: an exact memorable line copied from the diary. Never paraphrase a quote.",
-    "- lesson: a durable lesson learned from this day.",
+    "- lesson: a durable lesson explicitly stated by the narrator, not a model interpretation.",
     "- milestone: a relationship/project milestone.",
     "- insight: a stable interpretation worth recalling.",
-    "- rule/preference/project_state: only when the diary explicitly states a durable current fact.",
+    "- rule/preference/project_state: only when the diary explicitly states a durable current fact; these will require human review.",
     "- warmth/event: warm memory or concrete event.",
     "",
     "fact_key rules:",
     "- fact_key is optional.",
     "- Only set fact_like=true and fact_key for rule, preference, project_state, or lesson records with temporal_scope=current.",
     "- Never set fact_key for diary, timeline_day, quote, milestone, warmth, or one-off event records.",
-    "- A one-day event, temporary mood, role-play statement, or inference is not a durable current fact.",
+    "- A one-day event, temporary mood, role-play statement, apology, argument, or inference is not a durable current fact.",
     "- Do not infer a rule, preference, project state, or lesson merely because the diary describes one occurrence.",
-    "- Use lowercase dotted keys, for example user.preference.debugging_style or project.kld.memory_schema.",
+    "- Use lowercase dotted keys with the correct subject, for example kld.preference.response_style, user.preference.food, relationship.rule.honesty, or project.kld.memory_schema.",
     "",
     "evidence rules:",
     "- Every item must include evidence: an exact verbatim substring from the diary, at most 80 Chinese characters.",
@@ -393,7 +399,7 @@ async function callSplitModel(env: Env, record: MemoryRecord, date: string, incl
       { role: "user", content: buildSplitPrompt(record, date) }
     ],
     temperature: 0.1,
-    max_tokens: 2600,
+    max_tokens: 4200,
     response_format: { type: "json_object" },
     stream: false
   };

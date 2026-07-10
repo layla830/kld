@@ -177,10 +177,13 @@ const checks = [
   [
     "Diary split: v2 requires verbatim evidence and bounded sparse output",
     diarySplit.includes("It is valid to return") &&
-      diarySplit.includes("Prefer 3-8 useful items. Never exceed 12") &&
+      diarySplit.includes("Return 2-6 high-signal items") &&
+      diarySplit.includes("the diary narrator '我' is KLD") &&
+      diarySplit.includes("Never store KLD's own behavior") &&
       diarySplit.includes("!diary.includes(evidence)") &&
       diarySplit.includes('type === "quote" && !diary.includes(content)') &&
-      diarySplit.includes("MAX_ITEMS_PER_DIARY = 12"),
+      diarySplit.includes("MAX_ITEMS_PER_DIARY = 6") &&
+      diarySplit.includes("max_tokens: 4200"),
   ],
   [
     "Diary split: fact-like items are review-first with approval evidence revalidation",
