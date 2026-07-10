@@ -81,6 +81,7 @@ export default {
         "/admin/memories/m-review/scan",
         "/admin/memories/m-review/approve",
         "/admin/memories/m-review/reject",
+        "/admin/memories/m-review/batch",
         "/admin/memories/m-review/rollback"
       ].includes(url.pathname)
     ) {

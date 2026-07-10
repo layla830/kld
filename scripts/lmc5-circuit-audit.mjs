@@ -326,11 +326,19 @@ const checks = [
   ],
   [
     "M: every review action is reachable through the Worker router",
-    ["scan", "approve", "reject", "rollback"].every((action) =>
+    ["scan", "approve", "reject", "batch", "rollback"].every((action) =>
       fs
         .readFileSync("src/index.ts", "utf8")
         .includes(`/admin/memories/m-review/${action}`),
     ),
+  ],
+  [
+    "Y/M: batch review is relation-only, bounded, and explicitly selected",
+    metabolismActions.includes("MAX_METABOLISM_BATCH_SIZE = 30") &&
+      metabolismActions.includes("relationOnly: true") &&
+      metabolismView.includes('form="m-batch-form"') &&
+      fs.readFileSync("src/api/adminBoard/view.ts", "utf8").includes("只删选中的边") &&
+      fs.readFileSync("src/api/adminBoard/view.ts", "utf8").includes("保留选中的边"),
   ],
   [
     "M: relation cleanup cards show both endpoint memories",

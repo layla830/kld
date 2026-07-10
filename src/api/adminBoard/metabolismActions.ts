@@ -8,6 +8,16 @@ import { readFormText } from "./utils";
 
 type MetabolismAction = "m_archive" | "m_relation_cleanup";
 type MetabolismResult = { memory: MemoryRecord | null; action: MetabolismAction | "rollback" };
+type MetabolismBatchDecision = "approve" | "reject";
+
+export interface MetabolismBatchResult {
+  decision: MetabolismBatchDecision;
+  selected: number;
+  processed: number;
+  skipped: number;
+}
+
+const MAX_METABOLISM_BATCH_SIZE = 30;
 
 function payloadOf(value: string): Record<string, unknown> {
   try {
@@ -30,11 +40,16 @@ async function snapshot(env: Env, candidateId: string, action: MetabolismAction,
   });
 }
 
-export async function approveMetabolismCandidate(env: Env, form: FormData): Promise<MetabolismResult | null> {
+export async function approveMetabolismCandidate(
+  env: Env,
+  form: FormData,
+  options: { relationOnly?: boolean } = {}
+): Promise<MetabolismResult | null> {
   const id = readFormText(form, "id");
   if (!id) return null;
   const candidate = await getMemoryCandidate(env.DB, "default", id);
   if (!candidate || candidate.status !== "pending" || !["m_archive", "m_relation_cleanup"].includes(candidate.action)) return null;
+  if (options.relationOnly && candidate.action !== "m_relation_cleanup") return null;
   const action = candidate.action as MetabolismAction;
   const before = beforeOf(payloadOf(candidate.payload_json));
 
@@ -72,12 +87,51 @@ export async function approveMetabolismCandidate(env: Env, form: FormData): Prom
   return { memory: null, action };
 }
 
-export async function rejectMetabolismCandidate(env: Env, form: FormData): Promise<boolean> {
+export async function rejectMetabolismCandidate(
+  env: Env,
+  form: FormData,
+  options: { relationOnly?: boolean } = {}
+): Promise<boolean> {
   const id = readFormText(form, "id");
   if (!id) return false;
   const candidate = await getMemoryCandidate(env.DB, "default", id);
   if (!candidate || candidate.status !== "pending" || !candidate.action.startsWith("m_")) return false;
+  if (options.relationOnly && candidate.action !== "m_relation_cleanup") return false;
   return resolveMemoryCandidate(env.DB, "default", id, "rejected");
+}
+
+export async function batchReviewMetabolismCandidates(env: Env, form: FormData): Promise<MetabolismBatchResult | null> {
+  const decision = readFormText(form, "decision");
+  if (decision !== "approve" && decision !== "reject") return null;
+  const ids = Array.from(new Set(
+    form.getAll("id")
+      .filter((value): value is string => typeof value === "string")
+      .map((value) => value.trim())
+      .filter(Boolean)
+  )).slice(0, MAX_METABOLISM_BATCH_SIZE);
+  if (ids.length === 0) return { decision, selected: 0, processed: 0, skipped: 0 };
+
+  let processed = 0;
+  let skipped = 0;
+  for (const id of ids) {
+    const item = new FormData();
+    item.set("id", id);
+    try {
+      const result = decision === "approve"
+        ? await approveMetabolismCandidate(env, item, { relationOnly: true })
+        : await rejectMetabolismCandidate(env, item, { relationOnly: true });
+      if (result) processed += 1;
+      else skipped += 1;
+    } catch (error) {
+      skipped += 1;
+      console.error("admin metabolism batch item skipped", {
+        candidateId: id,
+        decision,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+  }
+  return { decision, selected: ids.length, processed, skipped };
 }
 
 export async function rollbackMetabolismCandidate(env: Env, form: FormData): Promise<MetabolismResult | null> {

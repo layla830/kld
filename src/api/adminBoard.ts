@@ -12,7 +12,7 @@ import { getCoordinateBackfillStatus, setCoordinateBackfillEnabled } from "../me
 import { approveTimelineCandidate, rejectTimelineCandidate } from "./adminBoard/timelineActions";
 import { getTimelineBackfillStatus, scanTimelineBackfillPage } from "../memory/timelineBackfill";
 import { scanMetabolismReviewCandidates } from "../memory/metabolismReview";
-import { approveMetabolismCandidate, rejectMetabolismCandidate, rollbackMetabolismCandidate } from "./adminBoard/metabolismActions";
+import { approveMetabolismCandidate, batchReviewMetabolismCandidates, rejectMetabolismCandidate, rollbackMetabolismCandidate } from "./adminBoard/metabolismActions";
 
 export async function handleAdminBoard(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   if (!isAuthorized(request, env)) return unauthorized();
@@ -168,6 +168,22 @@ export async function handleAdminBoard(request: Request, env: Env, ctx: Executio
       return Response.redirect(`${url.origin}${noticeUrl(ref, rejected ? "m-rejected" : "empty")}`, 303);
     } catch (error) {
       console.error("admin metabolism reject failed", error);
+      return Response.redirect(`${url.origin}${noticeUrl(ref, "error")}`, 303);
+    }
+  }
+
+  if (request.method === "POST" && url.pathname === "/admin/memories/m-review/batch") {
+    const ref = request.headers.get("referer") || `${url.origin}/admin/memories?tab=m-review`;
+    try {
+      const result = await batchReviewMetabolismCandidates(env, await request.formData());
+      const notice = !result || result.processed === 0
+        ? "empty"
+        : result.skipped > 0
+          ? "m-batch-partial"
+          : result.decision === "approve" ? "m-batch-approved" : "m-batch-rejected";
+      return Response.redirect(`${url.origin}${noticeUrl(ref, notice)}`, 303);
+    } catch (error) {
+      console.error("admin metabolism batch review failed", error);
       return Response.redirect(`${url.origin}${noticeUrl(ref, "error")}`, 303);
     }
   }
