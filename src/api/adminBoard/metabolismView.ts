@@ -1,6 +1,36 @@
 import type { MemoryCandidateRecord } from "../../db/memoryCandidates";
 import { attr, htmlEscape } from "./utils";
 
+interface RelationTypeInfo {
+  label: string;
+  meaning: string;
+  direction: "对称关系" | "有向关系";
+}
+
+interface RelationIssue {
+  label: string;
+  explanation: string;
+  recommendation: string;
+  code: "self_loop" | "missing_endpoint" | "inactive_endpoint" | "symmetric_duplicate" | "unknown";
+}
+
+const RELATION_TYPES: Record<string, RelationTypeInfo> = {
+  same_issue: { label: "同一问题", meaning: "两条记忆在处理同一个问题", direction: "对称关系" },
+  same_project: { label: "同一项目", meaning: "两条记忆属于同一个项目", direction: "对称关系" },
+  same_tool: { label: "同一工具", meaning: "两条记忆涉及同一个工具", direction: "对称关系" },
+  same_event: { label: "同一事件", meaning: "两条记忆描述同一件具体事件", direction: "对称关系" },
+  same_topic: { label: "同一话题", meaning: "两条记忆主题相同，但不一定是同一事件", direction: "对称关系" },
+  temporal_sequence: { label: "时间先后", meaning: "起点记忆发生在前，终点记忆是后续", direction: "有向关系" },
+  emotional_link: { label: "情绪关联", meaning: "两条记忆共享相近的情绪体验", direction: "对称关系" },
+  in_thread: { label: "同一主题线", meaning: "两条记忆属于同一条长期主题线", direction: "对称关系" },
+  same_person: { label: "同一人物", meaning: "两条记忆涉及同一个人", direction: "对称关系" },
+  in_episode: { label: "同一经历", meaning: "两条记忆属于同一段经历", direction: "对称关系" },
+  instance_of: { label: "实例归属", meaning: "起点记忆是终点概念的一个具体实例", direction: "有向关系" },
+  derived_from: { label: "由此提炼", meaning: "终点记忆由起点记忆提炼或演化而来", direction: "有向关系" },
+  same_fact_key: { label: "同一事实槽", meaning: "两条记忆是同一事实的不同记录", direction: "对称关系" },
+  origin_split: { label: "同源拆分", meaning: "两条记忆来自同一条原始记录的拆分", direction: "对称关系" }
+};
+
 function payloadOf(value: string): Record<string, unknown> {
   try {
     const parsed = JSON.parse(value);
@@ -21,44 +51,137 @@ function short(value: unknown, length = 500): string {
 
 function readString(record: Record<string, unknown>, key: string): string | null {
   const value = record[key];
-  return typeof value === "string" && value.trim() ? value : null;
+  return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
-function relationEndpointCard(label: string, id: string | null, content: string | null | undefined, type: string | null | undefined, status: string | null | undefined, activeFact: number | null | undefined): string {
-  const state = status
-    ? `${status}${activeFact === 0 ? " / 非 active_fact" : ""}`
-    : "不存在或已被物理清理";
+function readNumber(record: Record<string, unknown>, key: string): number | null {
+  const value = record[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function isLiveStatus(status: string | null | undefined): boolean {
+  return status === "active" || status === "review";
+}
+
+function relationTypeInfo(type: string | null): RelationTypeInfo {
+  if (type && RELATION_TYPES[type]) return RELATION_TYPES[type];
+  return {
+    label: type || "未知关系",
+    meaning: "页面没有这类关系的中文说明，请先保留并查看完整快照",
+    direction: "有向关系"
+  };
+}
+
+function relationIssue(candidate: MemoryCandidateRecord, before: Record<string, unknown>, rawReason: string | null): RelationIssue {
+  const sourceId = readString(before, "source_memory_id");
+  const targetId = readString(before, "target_memory_id");
+  const reason = rawReason?.toLowerCase() || "";
+  if ((sourceId && targetId && sourceId === targetId) || reason.includes("self-loop")) {
+    return {
+      code: "self_loop",
+      label: "自环关系",
+      explanation: "这条边把一条记忆连回了它自己，没有提供额外信息。",
+      recommendation: "建议批准清理。只删这条自环边，记忆正文不变。"
+    };
+  }
+
+  const missing: string[] = [];
+  if (!candidate.source_memory_content || !candidate.source_memory_status) missing.push("起点记忆");
+  if (!candidate.target_memory_content || !candidate.target_memory_status) missing.push("终点记忆");
+  if (missing.length > 0) {
+    return {
+      code: "missing_endpoint",
+      label: "悬空关系",
+      explanation: `${missing.join("和")}已经不存在，关系边失去了可连接的对象。`,
+      recommendation: "建议批准清理。不存在的记忆不会因这次操作发生任何变化。"
+    };
+  }
+
+  const inactive: string[] = [];
+  if (!isLiveStatus(candidate.source_memory_status)) inactive.push(`起点是 ${candidate.source_memory_status}`);
+  if (!isLiveStatus(candidate.target_memory_status)) inactive.push(`终点是 ${candidate.target_memory_status}`);
+  if (inactive.length > 0) {
+    return {
+      code: "inactive_endpoint",
+      label: "失效端点",
+      explanation: `${inactive.join("，")}；该端点已经退出正常召回，旧关系不再参与 Y 轴检索。`,
+      recommendation: "通常可以批准清理。批准只删边，不会删除或改写两端记忆。"
+    };
+  }
+
+  if (reason.includes("对称") || reason.includes("symmetric") || reason.includes("a→b")) {
+    return {
+      code: "symmetric_duplicate",
+      label: "对称重复",
+      explanation: "同一种对称关系同时保存了 A→B 和 B→A；Y 轴只需要保留其中一条。",
+      recommendation: "建议批准清理重复方向。两条记忆仍会通过保留的那条边互相关联。"
+    };
+  }
+
+  return {
+    code: "unknown",
+    label: "原因待确认",
+    explanation: "当前快照不足以自动判断它属于哪种异常关系。",
+    recommendation: "建议先保留，不要批准；展开完整快照后再判断。"
+  };
+}
+
+function endpointState(status: string | null | undefined, activeFact: number | null | undefined): string {
+  if (!status) return "不存在";
+  if (status === "review") return "审核中，仍视为可连接";
+  if (status !== "active") return `${status}，已退出正常召回`;
+  if (activeFact === 0) return "active，但不是当前事实";
+  return "active，正常参与召回";
+}
+
+function relationEndpointCard(
+  label: string,
+  id: string | null,
+  content: string | null | undefined,
+  type: string | null | undefined,
+  status: string | null | undefined,
+  activeFact: number | null | undefined
+): string {
   const body = content
-    ? htmlEscape(short(content, 260))
-    : `<span class="tag-pill">找不到这条记忆正文</span>`;
-  return `<div class="review-before"><strong>${htmlEscape(label)}</strong><div class="char-count">${htmlEscape(id || "未知 ID")} · ${htmlEscape(type || "unknown")} · ${htmlEscape(state)}</div><p>${body}</p></div>`;
+    ? htmlEscape(short(content, 320))
+    : '<span class="review-warning">找不到这条记忆正文</span>';
+  return `<div class="review-before"><strong>${htmlEscape(label)}</strong><div class="memory-meta"><span class="score-pill">${htmlEscape(type || "unknown")}</span><span class="tag-pill">${htmlEscape(endpointState(status, activeFact))}</span></div><p>${body}</p><div class="char-count">ID：${htmlEscape(id || "未知")}</div></div>`;
 }
 
 function renderRelationEndpoints(candidate: MemoryCandidateRecord, before: Record<string, unknown>): string {
   const sourceId = readString(before, "source_memory_id");
   const targetId = readString(before, "target_memory_id");
-  return `<section class="review-diff"><div class="review-section-title">这条关系连着哪两条记忆</div><div class="review-diff-row">${relationEndpointCard("起点记忆 source", sourceId, candidate.source_memory_content, candidate.source_memory_type, candidate.source_memory_status, candidate.source_memory_active_fact)}<div class="review-arrow">→</div>${relationEndpointCard("终点记忆 target", targetId, candidate.target_memory_content, candidate.target_memory_type, candidate.target_memory_status, candidate.target_memory_active_fact)}</div></section>`;
+  return `<section class="review-diff"><div class="review-section-title">这条边连接的两条记忆</div><div class="review-diff-row">${relationEndpointCard("A · 起点记忆", sourceId, candidate.source_memory_content, candidate.source_memory_type, candidate.source_memory_status, candidate.source_memory_active_fact)}<div class="review-arrow">→</div>${relationEndpointCard("B · 终点记忆", targetId, candidate.target_memory_content, candidate.target_memory_type, candidate.target_memory_status, candidate.target_memory_active_fact)}</div></section>`;
+}
+
+function renderArchiveCandidate(candidate: MemoryCandidateRecord, payload: Record<string, unknown>, before: Record<string, unknown>, approved: boolean): string {
+  const effect = "状态从 active 变为 archived，退出默认召回；正文不改、不会物理删除，并且可以回滚。";
+  const beforeText = candidate.target_content || before.content || "（原记忆不存在，请不要批准）";
+  const actionButtons = approved
+    ? `<form method="POST" action="/admin/memories/m-review/rollback" onsubmit="return confirm('按快照恢复这次 M 轴操作？')"><input type="hidden" name="id" value="${attr(candidate.id)}"><button class="action-btn approve-review">回滚这次操作</button></form>`
+    : `<form method="POST" action="/admin/memories/m-review/approve" onsubmit="return confirm('${attr(effect)}')"><input type="hidden" name="id" value="${attr(candidate.id)}"><button class="action-btn approve-review">确认归档</button></form><form method="POST" action="/admin/memories/m-review/reject" onsubmit="return confirm('保留这条记忆，不做归档？')"><input type="hidden" name="id" value="${attr(candidate.id)}"><button class="action-btn delete">保留，不归档</button></form>`;
+  return `<article class="memory-card review-card"><div class="message-header"><strong>M 代谢 · 过期项目状态</strong><span class="tag-pill">${approved ? "已执行，可回滚" : "等待审核"}</span></div><div class="lmc-explain"><p><strong>为什么出现：</strong>${htmlEscape(readString(payload, "reason") || "项目状态已经超过 expires_at")}</p><p><strong>批准影响：</strong>${htmlEscape(effect)}</p></div><div class="review-section-title">原记忆正文</div><div class="review-target-content">${htmlEscape(short(beforeText))}</div><div class="actions review-actions">${actionButtons}</div><div class="char-count">candidate：${htmlEscape(candidate.id)}</div></article>`;
+}
+
+function renderRelationCandidate(candidate: MemoryCandidateRecord, payload: Record<string, unknown>, before: Record<string, unknown>, approved: boolean): string {
+  const relationType = readString(before, "relation_type");
+  const typeInfo = relationTypeInfo(relationType);
+  const rawReason = readString(payload, "reason");
+  const issue = relationIssue(candidate, before, rawReason);
+  const strength = readNumber(before, "strength");
+  const effect = `只删除这条${relationType ? ` ${relationType} ` : ""}关系边；A、B 两端记忆正文都不会改变。`;
+  const actionButtons = approved
+    ? `<form method="POST" action="/admin/memories/m-review/rollback" onsubmit="return confirm('按快照恢复这条关系边？')"><input type="hidden" name="id" value="${attr(candidate.id)}"><button class="action-btn approve-review">恢复这条边</button></form>`
+    : `<form method="POST" action="/admin/memories/m-review/approve" onsubmit="return confirm('${attr(effect)}')"><input type="hidden" name="id" value="${attr(candidate.id)}"><button class="action-btn approve-review">只删这条边</button></form><form method="POST" action="/admin/memories/m-review/reject" onsubmit="return confirm('保留这条关系边？不会修改两端记忆。')"><input type="hidden" name="id" value="${attr(candidate.id)}"><button class="action-btn delete">保留这条边</button></form>`;
+
+  return `<article class="memory-card review-card ${issue.code === "unknown" ? "muted" : ""}"><div class="message-header"><strong>Y 关系清理 · M 巡检</strong><span class="tag-pill">${approved ? "已执行，可回滚" : "等待审核"}</span></div><div class="memory-meta"><span class="score-pill">问题类型：${htmlEscape(issue.label)}</span><span class="score-pill">关系：${htmlEscape(typeInfo.label)}</span><span class="tag-pill">${htmlEscape(typeInfo.direction)}</span>${strength === null ? "" : `<span class="tag-pill">强度 ${strength.toFixed(2)}</span>`}</div><div class="lmc-explain"><p><strong>这条线表示：</strong>${htmlEscape(typeInfo.meaning)}</p><p><strong>为什么建议删：</strong>${htmlEscape(issue.explanation)}</p><p><strong>审核建议：</strong>${htmlEscape(issue.recommendation)}</p><p><strong>批准影响：</strong>${htmlEscape(effect)}</p></div>${renderRelationEndpoints(candidate, before)}<section class="review-diff"><div class="review-section-title">批准前后</div><div class="review-diff-row"><div class="review-before"><strong>批准前</strong><p>A 和 B 之间保存着这条关系边。</p></div><div class="review-arrow">→</div><div class="review-after"><strong>批准后</strong><p>只移除这条边；A、B 两条记忆仍原样保留。</p></div></div></section><details class="memory-detail"><summary>查看技术快照与巡检原始原因</summary><p class="char-count">${htmlEscape(rawReason || "没有原始原因")}</p><pre style="white-space:pre-wrap;overflow-wrap:anywhere">${htmlEscape(JSON.stringify(before, null, 2))}</pre></details><div class="actions review-actions">${actionButtons}</div><div class="char-count">relation：${htmlEscape(readString(before, "id") || "未知")} · candidate：${htmlEscape(candidate.id)}</div></article>`;
 }
 
 export function renderMetabolismCandidate(candidate: MemoryCandidateRecord): string {
   const payload = payloadOf(candidate.payload_json);
   const before = beforeOf(payload);
   const approved = candidate.status === "approved";
-  const isArchive = candidate.action === "m_archive";
-  const relationType = readString(before, "relation_type");
-  const title = isArchive ? "M 代谢：建议归档过期项目状态" : "M 代谢：建议清理异常关系边";
-  const effect = isArchive
-    ? "批准后：状态从 active 变为 archived，退出召回；正文不改、不会物理删除，可以回滚。"
-    : `批准后：只删除这一条${relationType ? ` ${relationType} ` : ""}关系边；两端记忆正文不变，可以按快照原样回滚。`;
-  const beforeText = isArchive
-    ? candidate.target_content || before.content || "（原记忆不存在，请不要批准）"
-    : before;
-  const afterText = isArchive
-    ? { status: "archived", active_fact: false, content: "保持不变" }
-    : { relation: "删除", memories: "保持不变" };
-  const relationPreview = isArchive ? "" : renderRelationEndpoints(candidate, before);
-  const actionButtons = approved
-    ? `<form method="POST" action="/admin/memories/m-review/rollback" onsubmit="return confirm('按快照恢复这次 M 轴操作？')"><input type="hidden" name="id" value="${attr(candidate.id)}"><button class="action-btn approve-review">回滚这次操作</button></form>`
-    : `<form method="POST" action="/admin/memories/m-review/approve" onsubmit="return confirm('${attr(effect)}')"><input type="hidden" name="id" value="${attr(candidate.id)}"><button class="action-btn approve-review">${isArchive ? "确认归档" : "确认清理关系"}</button></form><form method="POST" action="/admin/memories/m-review/reject" onsubmit="return confirm('忽略这条建议？不会修改任何记忆。')"><input type="hidden" name="id" value="${attr(candidate.id)}"><button class="action-btn delete">忽略，不处理</button></form>`;
-  return `<article class="memory-card review-card"><div class="message-header"><strong>${title}</strong><span class="tag-pill">${approved ? "已执行，可回滚" : "等待审核"}</span></div><div class="lmc-explain"><p><strong>为什么出现：</strong>${htmlEscape(payload.reason || "巡检发现可代谢对象")}</p><p><strong>批准后：</strong>${htmlEscape(effect)}</p></div>${relationPreview}<section class="review-diff"><div class="review-section-title">操作前后对照</div><div class="review-diff-row"><div class="review-before"><strong>操作前</strong><p>${htmlEscape(short(beforeText))}</p></div><div class="review-arrow">→</div><div class="review-after"><strong>操作后</strong><p>${htmlEscape(short(afterText))}</p></div></div></section><details class="memory-detail"><summary>查看完整快照</summary><pre style="white-space:pre-wrap;overflow-wrap:anywhere">${htmlEscape(JSON.stringify(before, null, 2))}</pre></details><div class="actions review-actions">${actionButtons}</div><div class="char-count">${htmlEscape(candidate.id)}</div></article>`;
+  return candidate.action === "m_archive"
+    ? renderArchiveCandidate(candidate, payload, before, approved)
+    : renderRelationCandidate(candidate, payload, before, approved);
 }

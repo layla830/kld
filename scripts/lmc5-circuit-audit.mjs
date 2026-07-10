@@ -289,6 +289,14 @@ const checks = [
       ),
   ],
   [
+    "Y: nightly relation build auto-creates safe edges and queues risky edges",
+    files.xyzem.includes("const relations = await runRelationBuild") &&
+      files.xyzem.includes("SAFE_RELATION_TYPES.has(relationType)") &&
+      files.xyzem.includes("await createMemoryRelation") &&
+      files.xyzem.includes("REVIEW_RELATION_TYPES.has(relationType)") &&
+      files.xyzem.includes('eventType: "y_relation_review"'),
+  ],
+  [
     "M: patrol findings become explicit review candidates",
     metabolismReview.includes('action: "m_archive"') &&
       metabolismReview.includes('action: "m_relation_cleanup"'),
@@ -329,9 +337,18 @@ const checks = [
     fs
       .readFileSync("src/db/memoryCandidates.ts", "utf8")
       .includes("enrichMetabolismRelationEndpoints") &&
-      metabolismView.includes("这条关系连着哪两条记忆") &&
+      metabolismView.includes("这条边连接的两条记忆") &&
       metabolismView.includes("source_memory_content") &&
       metabolismView.includes("target_memory_content"),
+  ],
+  [
+    "Y/M: cleanup cards explain issue, meaning, recommendation, and edge-only impact",
+    metabolismView.includes("问题类型：") &&
+      metabolismView.includes("这条线表示：") &&
+      metabolismView.includes("为什么建议删：") &&
+      metabolismView.includes("审核建议：") &&
+      metabolismView.includes("只删这条边") &&
+      metabolismView.includes("A、B 两端记忆正文都不会改变"),
   ],
   [
     "Dream: Worker memory_maintenance uses explicit fallback only, no LLM extraction",
