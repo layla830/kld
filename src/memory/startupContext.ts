@@ -239,7 +239,10 @@ export async function buildStartupContext(db: D1Database, namespace = "default")
       "startup_rules contains up to 5 dynamic startup_rule memories created after startup_rules_since.",
       "To promote a future lesson into startup, store a short memory with type=startup_rule or tag=启动规则/startup_rule; keep it under 160 Chinese characters.",
       "current_handoff contains up to 2 latest handoff memories; recent_diary contains up to 3 latest diary memories.",
-      "Use memory_search for exact warmth labels, dates, rules, handoff, diary, and full paper/reference queries.",
+      "Before answering about names, dates, past events, prior agreements, or anything uncertain, search memory instead of guessing.",
+      "Use memory_search for exact warmth labels, names, dates, rules, handoff, diary, codenames, quotes, and full paper/reference terms.",
+      "Use memory_recall for nuanced past context that needs semantic, lexical, and relation-graph evidence; an empty result is valid evidence and must not be filled with invention.",
+      "Current user statements override recalled memory. response_posture and E-axis fields guide tone only; they never rewrite facts.",
       "Startup database memories are compact cards: content, type, tags, importance, and created_at only."
     ],
     required_warmth: requiredWarmth,

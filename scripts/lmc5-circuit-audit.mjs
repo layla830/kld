@@ -30,8 +30,50 @@ const timelineBackfill = fs.readFileSync(
   "src/memory/timelineBackfill.ts",
   "utf8",
 );
+const candidateResultMigration = fs.readFileSync(
+  "migrations/20260704_candidate_result_link.sql",
+  "utf8",
+);
+const memoriesApi = fs.readFileSync("src/api/memories.ts", "utf8");
+const mcpApi = fs.readFileSync("src/api/mcp.ts", "utf8");
+const startupContext = fs.readFileSync("src/memory/startupContext.ts", "utf8");
+const recallFormat = fs.readFileSync("src/memory/recallFormat.ts", "utf8");
 
 const checks = [
+  [
+    "Safety: fresh migrations bootstrap memory_candidates before result link",
+    candidateResultMigration.indexOf(
+      "CREATE TABLE IF NOT EXISTS memory_candidates",
+    ) < candidateResultMigration.indexOf("ALTER TABLE memory_candidates"),
+  ],
+  [
+    "Safety: memory API failures are observable JSON instead of Worker 1101",
+    memoriesApi.includes('event: "memory_api_unhandled_error"') &&
+      memoriesApi.includes('code: "memory_operation_failed"') &&
+      memoriesApi.includes("return memoryRouteFailure(request, error)"),
+  ],
+  [
+    "Recall: MCP exposes exact search and deep active-recall tools",
+    mcpApi.includes('{ name: "memory_search"') &&
+      mcpApi.includes('{ name: "memory_recall"') &&
+      mcpApi.includes('params.name === "memory_search"') &&
+      mcpApi.includes('params.name === "retrieve_memory" || params.name === "memory_recall"') &&
+      mcpApi.includes("searchMemoriesByText(env.DB") &&
+      mcpApi.includes("searchMemories(env"),
+  ],
+  [
+    "Recall: startup context directs active lookup before guessing",
+    startupContext.includes("search memory instead of guessing") &&
+      startupContext.includes("Use memory_search for exact") &&
+      startupContext.includes("Use memory_recall for nuanced past context") &&
+      startupContext.includes("Current user statements override recalled memory"),
+  ],
+  [
+    "E: recalled posture affects response style without rewriting facts",
+    recallFormat.includes("memory.response_posture") &&
+      recallFormat.includes("tell you how to respond next time") &&
+      startupContext.includes("E-axis fields guide tone only; they never rewrite facts"),
+  ],
   [
     "X: chunks receive a deterministic timeline thread",
     files.chunk.includes("thread = `timeline:") &&

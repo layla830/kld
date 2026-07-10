@@ -74,6 +74,32 @@ function excludeAutoDiaryUnlessRequested(records: MemoryApiRecord[], requestedTy
   return records.filter((record) => record.type !== AUTO_DIARY_TYPE);
 }
 
+function memoryRouteFailure(request: Request, error: unknown): Response {
+  const requestId = crypto.randomUUID();
+  const url = new URL(request.url);
+  console.error(JSON.stringify({
+    event: "memory_api_unhandled_error",
+    request_id: requestId,
+    method: request.method,
+    path: url.pathname,
+    error: error instanceof Error
+      ? { name: error.name, message: error.message, stack: error.stack }
+      : { message: String(error) }
+  }));
+  return json(
+    {
+      error: {
+        message: "Memory operation failed",
+        type: "server_error",
+        param: null,
+        code: "memory_operation_failed",
+        request_id: requestId
+      }
+    },
+    { status: 500, headers: { "x-request-id": requestId } }
+  );
+}
+
 async function handleCreateMemory(
   request: Request,
   env: Env,
@@ -416,48 +442,52 @@ async function handleGetMemory(env: Env, profile: KeyProfile, id: string): Promi
 }
 
 export async function handleMemories(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-  const auth = await authenticate(request, env);
-  if (!auth.ok) return openAiError("Unauthorized", 401, "authentication_error");
+  try {
+    const auth = await authenticate(request, env);
+    if (!auth.ok) return openAiError("Unauthorized", 401, "authentication_error");
 
-  const url = new URL(request.url);
-  const parts = url.pathname.split("/").filter(Boolean);
-  const tail = parts.slice(2);
+    const url = new URL(request.url);
+    const parts = url.pathname.split("/").filter(Boolean);
+    const tail = parts.slice(2);
 
-  if (tail.length === 0 && request.method === "GET") {
-    return handleListMemories(request, env, auth.profile);
+    if (tail.length === 0 && request.method === "GET") {
+      return await handleListMemories(request, env, auth.profile);
+    }
+
+    if (tail.length === 0 && request.method === "POST") {
+      return await handleCreateMemory(request, env, ctx, auth.profile);
+    }
+
+    if (tail.length === 1 && tail[0] === "search" && request.method === "POST") {
+      return await handleSearchMemories(request, env, auth.profile);
+    }
+
+    if (tail.length === 1 && tail[0] === "resync-vectors" && request.method === "POST") {
+      return await handleResyncVectorMemories(request, env, auth.profile);
+    }
+
+    if (tail.length === 1 && tail[0] === "ingest" && request.method === "POST") {
+      return await handleIngestMemories(request, env, ctx, auth.profile);
+    }
+
+    if (tail.length === 1 && tail[0] === "split-diary" && request.method === "POST") {
+      return await handleSplitDiaryMemories(request, env, auth.profile);
+    }
+
+    if (tail.length === 2 && tail[0] === "reset" && tail[1] === "cc-connect" && request.method === "POST") {
+      const body = await readBody(request);
+      return await handleResetCcConnect(env, auth.profile, resolveNamespace(auth.profile, body?.namespace || "kld"));
+    }
+
+    if (tail.length === 1) {
+      const id = tail[0];
+      if (request.method === "GET") return await handleGetMemory(env, auth.profile, id);
+      if (request.method === "PATCH") return await handlePatchMemory(request, env, ctx, auth.profile, id);
+      if (request.method === "DELETE") return await handleDeleteMemory(env, ctx, auth.profile, id);
+    }
+
+    return openAiError("Not found", 404);
+  } catch (error) {
+    return memoryRouteFailure(request, error);
   }
-
-  if (tail.length === 0 && request.method === "POST") {
-    return handleCreateMemory(request, env, ctx, auth.profile);
-  }
-
-  if (tail.length === 1 && tail[0] === "search" && request.method === "POST") {
-    return handleSearchMemories(request, env, auth.profile);
-  }
-
-  if (tail.length === 1 && tail[0] === "resync-vectors" && request.method === "POST") {
-    return handleResyncVectorMemories(request, env, auth.profile);
-  }
-
-  if (tail.length === 1 && tail[0] === "ingest" && request.method === "POST") {
-    return handleIngestMemories(request, env, ctx, auth.profile);
-  }
-
-  if (tail.length === 1 && tail[0] === "split-diary" && request.method === "POST") {
-    return handleSplitDiaryMemories(request, env, auth.profile);
-  }
-
-  if (tail.length === 2 && tail[0] === "reset" && tail[1] === "cc-connect" && request.method === "POST") {
-    const body = await readBody(request);
-    return handleResetCcConnect(env, auth.profile, resolveNamespace(auth.profile, body?.namespace || "kld"));
-  }
-
-  if (tail.length === 1) {
-    const id = tail[0];
-    if (request.method === "GET") return handleGetMemory(env, auth.profile, id);
-    if (request.method === "PATCH") return handlePatchMemory(request, env, ctx, auth.profile, id);
-    if (request.method === "DELETE") return handleDeleteMemory(env, ctx, auth.profile, id);
-  }
-
-  return openAiError("Not found", 404);
 }

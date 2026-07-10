@@ -1,5 +1,5 @@
 import { authenticate } from "../auth/apiKey";
-import { createMemory, listMemories, softDeleteMemory, updateMemory } from "../db/memories";
+import { createMemory, listMemories, searchMemoriesByText, softDeleteMemory, updateMemory } from "../db/memories";
 import { deleteMemoryEmbedding, upsertMemoryEmbedding } from "../memory/embedding";
 import { searchMemories, toMemoryApiRecord } from "../memory/search";
 import { buildStartupContext } from "../memory/startupContext";
@@ -159,6 +159,15 @@ function getTools(): Array<Record<string, unknown>> {
     },
     required: ["query"]
   };
+  const keywordSearchSchema = {
+    type: "object",
+    properties: {
+      keyword: { type: "string", description: "Exact name, date, codename, quote, or term to find." },
+      query: { type: "string", description: "Alias for keyword." },
+      top_k: { type: "number", minimum: 1, maximum: 20 }
+    },
+    anyOf: [{ required: ["keyword"] }, { required: ["query"] }]
+  };
   const tagSearchSchema = {
     type: "object",
     properties: {
@@ -248,7 +257,9 @@ function getTools(): Array<Record<string, unknown>> {
   };
 
   return [
-    { name: "retrieve_memory", description: "Search long-term memories.", inputSchema: searchSchema },
+    { name: "memory_search", description: "Search long-term memory by exact keyword. Use first for names, dates, codenames, quotes, and literal terms.", inputSchema: keywordSearchSchema },
+    { name: "memory_recall", description: "Deep multi-channel recall across semantic, lexical, and relation-graph evidence. Use for past events, nuanced context, and anything uncertain.", inputSchema: searchSchema },
+    { name: "retrieve_memory", description: "Legacy alias for deep multi-channel memory recall.", inputSchema: searchSchema },
     { name: "search_by_tag", description: "Find active memories by tag.", inputSchema: tagSearchSchema },
     { name: "store_memory", description: "Save one memory.", inputSchema: createSchema },
     { name: "update_memory", description: "Edit one memory by id.", inputSchema: updateSchema },
@@ -416,7 +427,20 @@ async function databaseHealth(db: D1Database, namespace: string): Promise<Record
 async function callTool(env: Env, ctx: ExecutionContext, profile: KeyProfile, params: ToolCallParams): Promise<Record<string, unknown>> {
   const args = isRecord(params.arguments) ? params.arguments : {};
 
-  if (params.name === "retrieve_memory" || params.name === "memory_search") {
+  if (params.name === "memory_search") {
+    if (!hasScope(profile, "memory:read")) return toolError("Missing memory:read scope");
+    const query = readString(args.keyword) || readString(args.query);
+    if (!query) return toolError("keyword is required");
+    const limit = Math.min(Math.max(Math.floor(readNumber(args.top_k, 5)), 1), 20);
+    const data = await searchMemoriesByText(env.DB, {
+      namespace: resolveNamespace(profile, args.namespace),
+      query,
+      limit
+    });
+    return textToolResult({ data: data.map((record) => toMemoryApiRecord(record, record.score)) });
+  }
+
+  if (params.name === "retrieve_memory" || params.name === "memory_recall") {
     if (!hasScope(profile, "memory:read")) return toolError("Missing memory:read scope");
     const query = readString(args.query);
     if (!query) return toolError("query is required");
