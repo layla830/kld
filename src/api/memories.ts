@@ -344,6 +344,8 @@ async function handleSplitDiaryMemories(request: Request, env: Env, profile: Key
       diary_count: plans.length,
       item_count: plans.reduce((sum, plan) => sum + plan.items.length, 0),
       fact_key_count: plans.reduce((sum, plan) => sum + plan.items.filter((item) => item.fact_key).length, 0),
+      review_candidate_count: plans.reduce((sum, plan) => sum + plan.items.filter((item) => item.review_required).length, 0),
+      auto_item_count: plans.reduce((sum, plan) => sum + plan.items.filter((item) => !item.review_required).length, 0),
       plans
     }
   });

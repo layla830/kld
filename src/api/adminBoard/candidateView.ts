@@ -10,7 +10,8 @@ const ACTIONS: Record<string, { title: string; effect: string; approve: string }
   update: { title: "建议更新已有记忆", effect: "接受后：用下方新内容修改指定的旧记忆。", approve: "确认更新旧记忆" },
   delete: { title: "建议删除已有记忆", effect: "接受后：软删除指定旧记忆，可以追溯，不会物理清空。", approve: "确认软删除" },
   relation: { title: "建议建立记忆关联", effect: "它只建议连接两条记忆，不会修改记忆正文；目前暂不支持执行。", approve: "暂不支持执行" },
-  fact_group: { title: "建议归并为同一事实组", effect: "接受后：组内记忆会共享事实槽，并建立同事实关系；正文不变。", approve: "确认整组归并" }
+  fact_group: { title: "建议归并为同一事实组", effect: "接受后：组内记忆会共享事实槽，并建立同事实关系；正文不变。", approve: "确认整组归并" },
+  diary_split_fact: { title: "日记拆分 · 事实型候选", effect: "接受后：从原日记新增一条可召回的事实型记忆；原日记正文不变。", approve: "核对证据并新增" }
 };
 
 const ERRORS: Record<string, string> = {
@@ -41,11 +42,12 @@ export function renderMemoryCandidate(candidate: MemoryCandidateRecord): string 
   const blocked = candidate.status !== "pending";
   const canApprove = !blocked && candidate.action !== "relation" && (!(candidate.action === "update" || candidate.action === "delete") || Boolean(candidate.target_content));
   const subject = candidate.subject ? `<span class="tag-pill">主体：${htmlEscape(candidate.subject)}</span>` : "";
+  const sourceLabel = candidate.action === "diary_split_fact" ? "来自日记拆分" : "来自 VPS Dream";
   const status = blocked ? '<span class="tag-pill">人称有问题，不能执行</span>' : '<span class="tag-pill">等待你决定</span>';
   const warning = candidate.validation_error
     ? `<div class="review-warning"><strong>为什么被拦截：</strong>${htmlEscape(ERRORS[candidate.validation_error] || candidate.validation_error)}</div>` : "";
   const approve = canApprove
     ? `<form method="POST" action="/admin/memories/candidates/approve" onsubmit="return confirm('${attr(action.effect)}')"><input type="hidden" name="id" value="${attr(candidate.id)}"><button class="action-btn approve-review">${htmlEscape(action.approve)}</button></form>`
     : `<button class="action-btn" disabled>${candidate.action === "relation" ? "关联功能尚未开放" : blocked ? "需先修正人称" : "找不到旧记忆，不能执行"}</button>`;
-  return `<article class="memory-card review-card ${blocked ? "muted" : ""}"><div class="message-header"><strong>${htmlEscape(action.title)}</strong></div><div class="memory-meta"><span class="score-pill">来自 VPS Dream</span>${subject}${status}</div><div class="lmc-explain"><p><strong>这条会做什么：</strong>${htmlEscape(action.effect)}</p></div><div class="message-content" style="white-space:pre-wrap">${htmlEscape(pretty(content))}</div>${warning}${comparison(candidate, content)}<details class="memory-detail"><summary>为什么生成这条？查看来源对话摘要</summary><div class="char-count">来源片段：${htmlEscape(pretty(sourceIds))}</div><pre style="white-space:pre-wrap;overflow-wrap:anywhere">${htmlEscape(pretty(chunks))}</pre><details><summary>查看技术载荷</summary><pre style="white-space:pre-wrap;overflow-wrap:anywhere">${htmlEscape(pretty(payload))}</pre></details></details><div class="actions review-actions">${approve}<form method="POST" action="/admin/memories/candidates/reject" onsubmit="return confirm('确认拒绝这条建议？不会修改任何记忆。')"><input type="hidden" name="id" value="${attr(candidate.id)}"><button class="action-btn delete">拒绝，不做改动</button></form></div><div class="char-count">${htmlEscape(candidate.dream_date)} · ${htmlEscape(candidate.id)}</div></article>`;
+  return `<article class="memory-card review-card ${blocked ? "muted" : ""}"><div class="message-header"><strong>${htmlEscape(action.title)}</strong></div><div class="memory-meta"><span class="score-pill">${htmlEscape(sourceLabel)}</span>${subject}${status}</div><div class="lmc-explain"><p><strong>这条会做什么：</strong>${htmlEscape(action.effect)}</p></div><div class="message-content" style="white-space:pre-wrap">${htmlEscape(pretty(content))}</div>${candidate.action === "diary_split_fact" ? `<div class="review-warning"><strong>原文证据：</strong>${htmlEscape(pretty(payload.evidence || "（缺失）"))}</div>` : ""}${warning}${comparison(candidate, content)}<details class="memory-detail"><summary>为什么生成这条？查看来源对话摘要</summary><div class="char-count">来源片段：${htmlEscape(pretty(sourceIds))}</div><pre style="white-space:pre-wrap;overflow-wrap:anywhere">${htmlEscape(pretty(chunks))}</pre><details><summary>查看技术载荷</summary><pre style="white-space:pre-wrap;overflow-wrap:anywhere">${htmlEscape(pretty(payload))}</pre></details></details><div class="actions review-actions">${approve}<form method="POST" action="/admin/memories/candidates/reject" onsubmit="return confirm('确认拒绝这条建议？不会修改任何记忆。')"><input type="hidden" name="id" value="${attr(candidate.id)}"><button class="action-btn delete">拒绝，不做改动</button></form></div><div class="char-count">${htmlEscape(candidate.dream_date)} · ${htmlEscape(candidate.id)}</div></article>`;
 }

@@ -18,6 +18,12 @@ function coordinateNumber(value: unknown, min = 0): number | null | undefined {
 }
 function tags(value: unknown): string[] { return Array.isArray(value) ? value.map(String).map((item) => item.trim()).filter(Boolean) : []; }
 
+async function existingDiarySplitMemory(env: Env, itemKey: string): Promise<MemoryRecord | null> {
+  return (await env.DB.prepare(
+    "SELECT * FROM memories WHERE namespace = ? AND status = 'active' AND source = 'timeline_split' AND tags LIKE ? LIMIT 1"
+  ).bind("default", `%split_item:${itemKey}%`).first<MemoryRecord>()) ?? null;
+}
+
 function updatePatch(payload: Record<string, unknown>): UpdateMemoryInput {
   return {
     content: text(payload.content), type: text(payload.type), factKey: text(payload.fact_key) ?? null,
@@ -54,6 +60,33 @@ export async function approveCandidate(env: Env, form: FormData): Promise<Memory
       importance: number(payload.importance) ?? 0.7, confidence: number(payload.confidence) ?? 0.82,
       status: "active", pinned: false, tags: tags(payload.tags), source: "vps-dream-candidate", sourceMessageIds: [], expiresAt: null
     });
+  } else if (candidate.action === "diary_split_fact") {
+    const diaryId = text(payload.origin_diary_id);
+    const evidence = text(payload.evidence);
+    const itemKey = text(payload.split_item_key);
+    const content = text(payload.content);
+    const memoryType = text(payload.type);
+    if (!diaryId || !evidence || !itemKey || !content || !memoryType || !["rule", "preference", "project_state", "lesson"].includes(memoryType)) return null;
+    const diary = await getMemoryById(env.DB, { namespace: "default", id: diaryId });
+    if (!diary || diary.status !== "active" || !["diary", "layla_diary"].includes(diary.type) || !diary.content.includes(evidence)) return null;
+    target = await existingDiarySplitMemory(env, itemKey);
+    if (!target) {
+      target = await createMemory(env.DB, {
+        namespace: "default",
+        type: memoryType,
+        content,
+        summary: text(payload.summary) ?? null,
+        factKey: text(payload.fact_key) ?? null,
+        importance: number(payload.importance) ?? 0.7,
+        confidence: number(payload.confidence) ?? 0.82,
+        status: "active",
+        pinned: false,
+        tags: [...new Set([...tags(payload.tags), `origin:${diary.id}`, `split_item:${itemKey}`, "split_version:v2"])],
+        source: "timeline_split",
+        sourceMessageIds: [diary.id],
+        expiresAt: null
+      });
+    }
   } else if (candidate.action === "update" && candidate.target_id) {
     if (!(await getMemoryById(env.DB, { namespace: "default", id: candidate.target_id }))) return null;
     target = await updateMemory(env.DB, { namespace: "default", id: candidate.target_id, patch: updatePatch(payload) });

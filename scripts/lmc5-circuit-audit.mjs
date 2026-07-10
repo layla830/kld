@@ -38,6 +38,9 @@ const memoriesApi = fs.readFileSync("src/api/memories.ts", "utf8");
 const mcpApi = fs.readFileSync("src/api/mcp.ts", "utf8");
 const startupContext = fs.readFileSync("src/memory/startupContext.ts", "utf8");
 const recallFormat = fs.readFileSync("src/memory/recallFormat.ts", "utf8");
+const diarySplit = fs.readFileSync("src/memory/diarySplit.ts", "utf8");
+const candidateActions = fs.readFileSync("src/api/adminBoard/candidateActions.ts", "utf8");
+const candidateView = fs.readFileSync("src/api/adminBoard/candidateView.ts", "utf8");
 
 const checks = [
   [
@@ -167,6 +170,29 @@ const checks = [
     "Recall: long diary records are excluded from every route",
     files.search.includes('new Set(["diary", "layla_diary", "auto_diary"])') &&
       files.search.includes("filter(isRecallEligible)"),
+  ],
+  [
+    "Diary split: v2 requires verbatim evidence and bounded sparse output",
+    diarySplit.includes("It is valid to return") &&
+      diarySplit.includes("Prefer 3-8 useful items. Never exceed 12") &&
+      diarySplit.includes("!diary.includes(evidence)") &&
+      diarySplit.includes('type === "quote" && !diary.includes(content)') &&
+      diarySplit.includes("MAX_ITEMS_PER_DIARY = 12"),
+  ],
+  [
+    "Diary split: fact-like items are review-first with approval evidence revalidation",
+    diarySplit.includes('action: "diary_split_fact"') &&
+      diarySplit.includes("REVIEW_TYPES.has(type)") &&
+      candidateActions.includes('candidate.action === "diary_split_fact"') &&
+      candidateActions.includes("!diary.content.includes(evidence)") &&
+      candidateView.includes("原文证据："),
+  ],
+  [
+    "Diary split: item hashes and completion events make partial retries idempotent",
+    diarySplit.includes('crypto.subtle.digest("SHA-256"') &&
+      diarySplit.includes("split_item:") &&
+      diarySplit.includes("diary_split_v2_complete") &&
+      diarySplit.includes("existingSplitItemId"),
   ],
   [
     "Recall: fact-intent rule memories lead before milestone context",

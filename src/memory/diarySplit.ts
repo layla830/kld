@@ -1,4 +1,6 @@
 import { createMemory } from "../db/memories";
+import { upsertMemoryCandidate } from "../db/memoryCandidates";
+import { createMemoryEvent } from "../db/memoryEvents";
 import { callOpenAICompat } from "../proxy/openaiAdapter";
 import type { Env, MemoryRecord, OpenAIChatRequest, OpenAIChatResponse } from "../types";
 import { parseJsonStringArray } from "../utils/jsonHelpers";
@@ -7,8 +9,11 @@ import { upsertMemoryEmbedding } from "./embedding";
 const TIMELINE_SOURCE = "timeline_split";
 const DEFAULT_SPLIT_MODEL = "deepseek/deepseek-v4-flash";
 const MAX_DIARY_CHARS = 18000;
-const MAX_ITEMS_PER_DIARY = 24;
-const FACT_TYPES = new Set(["rule", "preference", "project_state", "lesson", "identity", "core"]);
+const MAX_ITEMS_PER_DIARY = 12;
+const FACT_TYPES = new Set(["rule", "preference", "project_state", "lesson"]);
+const REVIEW_TYPES = new Set(["rule", "preference", "project_state", "lesson"]);
+const SPLIT_VERSION_TAG = "split_version:v2";
+const SPLIT_COMPLETE_EVENT = "diary_split_v2_complete";
 const MEMORY_TYPES = new Set([
   "timeline_day",
   "quote",
@@ -31,6 +36,9 @@ export interface DiarySplitItem {
   confidence: number;
   tags: string[];
   fact_key: string | null;
+  evidence: string;
+  temporal_scope: "day" | "current" | "historical";
+  review_required: boolean;
 }
 
 interface DiarySplitDebug {
@@ -52,6 +60,7 @@ export interface DiarySplitPlan {
   existing_count?: number;
   items: DiarySplitItem[];
   created_ids?: string[];
+  candidate_keys?: string[];
   debug?: DiarySplitDebug;
 }
 
@@ -77,6 +86,8 @@ interface RawSplitItem {
   tags?: unknown;
   fact_key?: unknown;
   fact_like?: unknown;
+  evidence?: unknown;
+  temporal_scope?: unknown;
 }
 
 function clamp(value: unknown, fallback: number): number {
@@ -116,9 +127,14 @@ function splitBatchTag(date: string): string {
   return `split_batch:${date.replaceAll("-", "")}_diary`;
 }
 
-function factKeyForItem(raw: RawSplitItem, type: string): string | null {
+function temporalScope(raw: RawSplitItem): "day" | "current" | "historical" {
+  const value = cleanString(raw.temporal_scope, 20).toLowerCase();
+  return value === "current" || value === "historical" ? value : "day";
+}
+
+function factKeyForItem(raw: RawSplitItem, type: string, scope: "day" | "current" | "historical"): string | null {
   const factKey = cleanString(raw.fact_key, 120);
-  if (!factKey || !FACT_TYPES.has(type) || raw.fact_like !== true) return null;
+  if (!factKey || !FACT_TYPES.has(type) || raw.fact_like !== true || scope !== "current") return null;
   if (!/^[a-z0-9_.:-]+$/i.test(factKey)) return null;
   return factKey;
 }
@@ -239,17 +255,30 @@ function extractJsonPayload(text: string): unknown | null {
     .sort((a, b) => b.shapeCount - a.shapeCount || b.count - a.count || b.index - a.index)[0].candidate;
 }
 
-function parseItemsWithDebug(text: string, date: string, originId: string, includeDebug: boolean): { items: DiarySplitItem[]; debug?: DiarySplitDebug } {
+function parseItemsWithDebug(text: string, date: string, originId: string, diary: string, includeDebug: boolean): { items: DiarySplitItem[]; debug?: DiarySplitDebug } {
   const parsed = extractJsonPayload(text);
   const rawItems = extractRawItems(parsed);
   const items: DiarySplitItem[] = [];
+  const seen = new Set<string>();
+  let hasTimelineDay = false;
 
   for (const raw of rawItems.slice(0, MAX_ITEMS_PER_DIARY)) {
     if (!raw || typeof raw !== "object") continue;
     const type = rawItemType(raw);
     const content = rawItemContent(raw);
+    const evidence = cleanString(raw.evidence, 80);
     if (content === "Chinese memory text") continue;
     if (!MEMORY_TYPES.has(type) || content.length < 4) continue;
+    if (!evidence || !diary.includes(evidence)) continue;
+    if (type === "quote" && !diary.includes(content)) continue;
+    if (type === "timeline_day") {
+      if (hasTimelineDay) continue;
+      hasTimelineDay = true;
+    }
+    const dedupeKey = `${type}:${content.replace(/\s+/g, " ").trim().toLowerCase()}`;
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+    const scope = temporalScope(raw);
 
     const tags = [
       "timeline",
@@ -258,7 +287,9 @@ function parseItemsWithDebug(text: string, date: string, originId: string, inclu
       ...cleanTags(raw.tags),
       `origin:${originId}`,
       `source_label:${sourceLabel(date)}`,
-      splitBatchTag(date)
+      `temporal_scope:${scope}`,
+      splitBatchTag(date),
+      SPLIT_VERSION_TAG
     ];
 
     items.push({
@@ -268,7 +299,10 @@ function parseItemsWithDebug(text: string, date: string, originId: string, inclu
       importance: clamp(raw.importance, type === "timeline_day" ? 0.55 : 0.7),
       confidence: clamp(raw.confidence, 0.8),
       tags: [...new Set(tags)],
-      fact_key: factKeyForItem(raw, type)
+      fact_key: factKeyForItem(raw, type, scope),
+      evidence,
+      temporal_scope: scope,
+      review_required: REVIEW_TYPES.has(type)
     });
   }
 
@@ -297,21 +331,32 @@ function buildSplitPrompt(record: MemoryRecord, date: string): string {
   return [
     "Split this Chinese diary into searchable long-term memory records.",
     "Return JSON only. Do not use markdown.",
+    "It is valid to return {\"items\":[]} when the diary has no durable or searchable memory.",
+    "Prefer 3-8 useful items. Never exceed 12. Do not create one item for every allowed type.",
     "",
     "Allowed item types:",
-    "- timeline_day: one compact day-level summary. Usually exactly one.",
-    "- quote: a memorable line or compact quote-like moment.",
+    "- timeline_day: at most one compact day-level summary.",
+    "- quote: an exact memorable line copied from the diary. Never paraphrase a quote.",
     "- lesson: a durable lesson learned from this day.",
     "- milestone: a relationship/project milestone.",
     "- insight: a stable interpretation worth recalling.",
-    "- rule/preference/project_state: only when the diary states a durable current fact.",
+    "- rule/preference/project_state: only when the diary explicitly states a durable current fact.",
     "- warmth/event: warm memory or concrete event.",
     "",
     "fact_key rules:",
     "- fact_key is optional.",
-    "- Only set fact_like=true and fact_key for rule, preference, project_state, lesson, identity, or core records.",
+    "- Only set fact_like=true and fact_key for rule, preference, project_state, or lesson records with temporal_scope=current.",
     "- Never set fact_key for diary, timeline_day, quote, milestone, warmth, or one-off event records.",
+    "- A one-day event, temporary mood, role-play statement, or inference is not a durable current fact.",
+    "- Do not infer a rule, preference, project state, or lesson merely because the diary describes one occurrence.",
     "- Use lowercase dotted keys, for example user.preference.debugging_style or project.kld.memory_schema.",
+    "",
+    "evidence rules:",
+    "- Every item must include evidence: an exact verbatim substring from the diary, at most 80 Chinese characters.",
+    "- The evidence must directly support the item. Do not invent or paraphrase evidence.",
+    "- For quote items, content itself must also be an exact substring of the diary.",
+    "- temporal_scope must be day, current, or historical. Use current only for facts explicitly stated as still true.",
+    "- Do not generate relations or XYZEM coordinates; downstream maintenance handles them.",
     "",
     "Output schema:",
     JSON.stringify({
@@ -323,6 +368,8 @@ function buildSplitPrompt(record: MemoryRecord, date: string): string {
           importance: 0.65,
           confidence: 0.85,
           tags: ["keyword"],
+          evidence: "exact diary substring",
+          temporal_scope: "day",
           fact_like: false,
           fact_key: null
         }
@@ -353,8 +400,7 @@ async function callSplitModel(env: Env, record: MemoryRecord, date: string, incl
 
   const response = await callOpenAICompat(env, request);
   if (!response.ok) {
-    const body = await response.text().catch(() => "");
-    throw new Error(`split model failed: ${response.status} ${body.slice(0, 200)}`);
+    throw new Error(`split model failed: ${response.status}`);
   }
 
   const parsed = (await response.json()) as OpenAIChatResponse;
@@ -362,7 +408,7 @@ async function callSplitModel(env: Env, record: MemoryRecord, date: string, incl
   const content = typeof message?.content === "string" ? message.content.trim() : "";
   const reasoningContent = typeof message?.reasoning_content === "string" ? message.reasoning_content.trim() : "";
   const text = content || reasoningContent;
-  return parseItemsWithDebug(text, date, record.id, includeDebug);
+  return parseItemsWithDebug(text, date, record.id, record.content, includeDebug);
 }
 
 async function existingSplitCount(db: D1Database, input: { namespace: string; originId: string }): Promise<number> {
@@ -371,6 +417,36 @@ async function existingSplitCount(db: D1Database, input: { namespace: string; or
     .bind(input.namespace, TIMELINE_SOURCE, `%origin:${input.originId}%`)
     .first<{ count: number }>();
   return row?.count ?? 0;
+}
+
+async function existingV2SplitCount(db: D1Database, input: { namespace: string; originId: string }): Promise<number> {
+  const row = await db
+    .prepare("SELECT COUNT(*) AS count FROM memories WHERE namespace = ? AND status = 'active' AND source = ? AND tags LIKE ? AND tags LIKE ?")
+    .bind(input.namespace, TIMELINE_SOURCE, `%origin:${input.originId}%`, `%${SPLIT_VERSION_TAG}%`)
+    .first<{ count: number }>();
+  return row?.count ?? 0;
+}
+
+async function hasCompletedV2Split(db: D1Database, input: { namespace: string; originId: string }): Promise<boolean> {
+  const row = await db
+    .prepare("SELECT id FROM memory_events WHERE namespace = ? AND event_type = ? AND memory_id = ? LIMIT 1")
+    .bind(input.namespace, SPLIT_COMPLETE_EVENT, input.originId)
+    .first<{ id: string }>();
+  return Boolean(row?.id);
+}
+
+async function splitItemKey(diaryId: string, item: DiarySplitItem): Promise<string> {
+  const normalized = `${diaryId}\n${item.type}\n${item.content.replace(/\s+/g, " ").trim().toLowerCase()}`;
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(normalized));
+  return Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, "0")).join("").slice(0, 24);
+}
+
+async function existingSplitItemId(db: D1Database, namespace: string, itemKey: string): Promise<string | null> {
+  const row = await db
+    .prepare("SELECT id FROM memories WHERE namespace = ? AND status = 'active' AND source = ? AND tags LIKE ? LIMIT 1")
+    .bind(namespace, TIMELINE_SOURCE, `%split_item:${itemKey}%`)
+    .first<{ id: string }>();
+  return row?.id ?? null;
 }
 
 async function findDiaries(db: D1Database, input: SplitDiaryInput): Promise<Array<{ record: MemoryRecord; date: string }>> {
@@ -384,7 +460,7 @@ async function findDiaries(db: D1Database, input: SplitDiaryInput): Promise<Arra
   if (ids.length > 0) {
     const placeholders = ids.map(() => "?").join(", ");
     const result = await db
-      .prepare(`SELECT * FROM memories WHERE namespace = ? AND status = 'active' AND id IN (${placeholders})`)
+      .prepare(`SELECT * FROM memories WHERE namespace = ? AND status = 'active' AND type IN ('diary', 'layla_diary') AND id IN (${placeholders})`)
       .bind(input.namespace, ...ids)
       .all<MemoryRecord>();
     rows = result.results ?? [];
@@ -404,9 +480,48 @@ async function findDiaries(db: D1Database, input: SplitDiaryInput): Promise<Arra
   });
 }
 
-async function persistItems(env: Env, input: { namespace: string; diary: MemoryRecord; items: DiarySplitItem[] }): Promise<string[]> {
-  const ids: string[] = [];
+async function persistItems(
+  env: Env,
+  input: { namespace: string; diary: MemoryRecord; date: string; items: DiarySplitItem[] }
+): Promise<{ createdIds: string[]; candidateKeys: string[] }> {
+  const createdIds: string[] = [];
+  const candidateKeys: string[] = [];
   for (const item of input.items) {
+    const itemKey = await splitItemKey(input.diary.id, item);
+    const tags = [...new Set([...item.tags, `split_item:${itemKey}`])];
+    if (item.review_required) {
+      const externalKey = `diary-split-v2:${input.diary.id}:${itemKey}`;
+      await upsertMemoryCandidate(env.DB, input.namespace, {
+        externalKey,
+        dreamDate: input.date,
+        action: "diary_split_fact",
+        payload: {
+          _kind: "diary_split_fact",
+          origin_diary_id: input.diary.id,
+          split_item_key: itemKey,
+          type: item.type,
+          content: item.content,
+          summary: item.summary,
+          importance: item.importance,
+          confidence: item.confidence,
+          tags,
+          fact_key: item.fact_key,
+          evidence: item.evidence,
+          temporal_scope: item.temporal_scope
+        },
+        sourceChunkIds: [],
+        sourceChunks: [{ diary_id: input.diary.id, date: input.date, evidence: item.evidence }],
+        status: "pending"
+      });
+      candidateKeys.push(externalKey);
+      continue;
+    }
+
+    const existingId = await existingSplitItemId(env.DB, input.namespace, itemKey);
+    if (existingId) {
+      createdIds.push(existingId);
+      continue;
+    }
     const memory = await createMemory(env.DB, {
       namespace: input.namespace,
       type: item.type,
@@ -416,14 +531,14 @@ async function persistItems(env: Env, input: { namespace: string; diary: MemoryR
       activeFact: true,
       importance: item.importance,
       confidence: item.confidence,
-      tags: item.tags,
+      tags,
       source: TIMELINE_SOURCE,
       sourceMessageIds: [input.diary.id]
     });
-    ids.push(memory.id);
+    createdIds.push(memory.id);
     await upsertMemoryEmbedding(env, memory);
   }
-  return ids;
+  return { createdIds, candidateKeys };
 }
 
 export async function splitDiaryMemories(env: Env, input: SplitDiaryInput): Promise<DiarySplitPlan[]> {
@@ -431,21 +546,47 @@ export async function splitDiaryMemories(env: Env, input: SplitDiaryInput): Prom
   const plans: DiarySplitPlan[] = [];
 
   for (const { record, date } of diaries) {
-    const existing = await existingSplitCount(env.DB, { namespace: input.namespace, originId: record.id });
-    if (existing > 0 && !input.force) {
+    const [existing, existingV2, completedV2] = await Promise.all([
+      existingSplitCount(env.DB, { namespace: input.namespace, originId: record.id }),
+      existingV2SplitCount(env.DB, { namespace: input.namespace, originId: record.id }),
+      hasCompletedV2Split(env.DB, { namespace: input.namespace, originId: record.id })
+    ]);
+    if (!input.force && (completedV2 || (existing > 0 && existingV2 === 0))) {
       plans.push({ diary_id: record.id, date, skipped: true, reason: "already_split", existing_count: existing, items: [] });
       continue;
     }
 
     const { items, debug } = await callSplitModel(env, record, date, input.debug === true);
     if (items.length === 0) {
+      if (input.apply) {
+        await createMemoryEvent(env.DB, {
+          namespace: input.namespace,
+          eventType: SPLIT_COMPLETE_EVENT,
+          memoryId: record.id,
+          payload: { diary_id: record.id, date, created_ids: [], candidate_keys: [], item_count: 0 }
+        });
+      }
       plans.push({ diary_id: record.id, date, skipped: true, reason: "no_items", items: [], debug });
       continue;
     }
 
     const plan: DiarySplitPlan = { diary_id: record.id, date, skipped: false, items, debug };
     if (input.apply) {
-      plan.created_ids = await persistItems(env, { namespace: input.namespace, diary: record, items });
+      const persisted = await persistItems(env, { namespace: input.namespace, diary: record, date, items });
+      plan.created_ids = persisted.createdIds;
+      plan.candidate_keys = persisted.candidateKeys;
+      await createMemoryEvent(env.DB, {
+        namespace: input.namespace,
+        eventType: SPLIT_COMPLETE_EVENT,
+        memoryId: record.id,
+        payload: {
+          diary_id: record.id,
+          date,
+          created_ids: persisted.createdIds,
+          candidate_keys: persisted.candidateKeys,
+          item_count: items.length
+        }
+      });
     }
     plans.push(plan);
   }
