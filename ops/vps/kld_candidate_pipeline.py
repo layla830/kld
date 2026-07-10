@@ -19,5 +19,3 @@ if args.force:
 subprocess.run(generate, check=True)
 subprocess.run([sys.executable, f"{TOOLS}/kld_candidate_sync.py", "--date", date], check=True)
 print(f"candidate pipeline complete date={date}")
-
-

@@ -64,5 +64,3 @@ if int((result.get("data") or {}).get("accepted") or 0) != len(candidates):
 db.execute("UPDATE memory_candidates SET status='synced', updated_at=datetime('now') WHERE dream_date=? AND status IN ('pending','needs_subject_review')", (dream_date,))
 db.commit()
 print(json.dumps({"ok": True, "date": dream_date, "accepted": len(candidates)}, ensure_ascii=False))
-
-
