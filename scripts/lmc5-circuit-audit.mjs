@@ -201,9 +201,10 @@ const checks = [
     "Diary split: admin preview stays Worker-native and strictly read-only",
     diarySplit.includes("listRecentUnsplitDiaryIds") &&
       adminBoard.includes('url.pathname === "/admin/memories/diary-split/preview"') &&
-      adminBoard.includes("ids.length > 0") &&
+      adminBoard.includes("Promise.all(ids.map") &&
       adminBoard.includes("apply: false") &&
       adminBoardView.includes('input.tab === "timeline"') &&
+      adminBoardView.includes("data-diary-preview-status") &&
       adminBoardView.includes("只读试拆最近 3 篇") &&
       diarySplitPreviewView.includes("不创建记忆、候选、关系或向量") &&
       fs.readFileSync("src/index.ts", "utf8").includes("/admin/memories/diary-split/preview"),

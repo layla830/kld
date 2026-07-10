@@ -24,14 +24,20 @@ export async function handleAdminBoard(request: Request, env: Env, ctx: Executio
   if (request.method === "POST" && url.pathname === "/admin/memories/diary-split/preview") {
     try {
       const ids = await listRecentUnsplitDiaryIds(env.DB, "default", 3);
-      const plans = ids.length > 0
-        ? await splitDiaryMemories(env, {
-            namespace: "default",
-            ids,
-            apply: false,
-            debug: true
-          })
-        : [];
+      const startedAt = Date.now();
+      console.info("admin diary split preview started", { diary_count: ids.length });
+      const planGroups = await Promise.all(ids.map((id) => splitDiaryMemories(env, {
+        namespace: "default",
+        ids: [id],
+        apply: false,
+        debug: true
+      })));
+      const plans = planGroups.flat();
+      console.info("admin diary split preview completed", {
+        diary_count: plans.length,
+        item_count: plans.reduce((sum, plan) => sum + plan.items.length, 0),
+        duration_ms: Date.now() - startedAt
+      });
       return new Response(renderDiarySplitPreview(plans), {
         headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" }
       });
