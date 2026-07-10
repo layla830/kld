@@ -1,7 +1,7 @@
 import { finishIdempotentTask, tryStartIdempotentTask } from "../db/idempotency";
 import { searchMemoriesByText } from "../db/memories";
 import { getMessagesByIds } from "../db/messages";
-import { extractMemoriesFromMessages, type ExtractedMemory } from "./extract";
+import type { ExtractedMemory } from "./extract";
 import { persistMemoryWithMerge } from "./merge";
 import type { Env, MemoryMaintenanceQueueMessage, MessageRecord } from "../types";
 
@@ -63,9 +63,7 @@ export async function runMemoryMaintenance(env: Env, message: MemoryMaintenanceQ
     });
 
     const explicitMemories = buildExplicitMemoryFallback(sourceMessages);
-    const extraction =
-      explicitMemories.length > 0 ? { memories: [] } : await extractMemoriesFromMessages(env, sourceMessages);
-    const memories = explicitMemories.length > 0 ? explicitMemories : extraction.memories;
+    const memories = explicitMemories;
     const minImportance = getMinImportance(env);
 
     for (const memory of memories) {

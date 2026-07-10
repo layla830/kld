@@ -99,8 +99,8 @@ export async function listMetabolismCandidates(db: D1Database, namespace: string
      LEFT JOIN memories m ON m.namespace = c.namespace AND m.id = c.target_id
      WHERE c.namespace = ?
        AND c.action IN ('m_archive','m_relation_cleanup')
-       AND c.status IN ('pending','approved')
-     ORDER BY CASE c.status WHEN 'pending' THEN 0 ELSE 1 END, c.created_at DESC
+       AND c.status = 'pending'
+     ORDER BY c.created_at DESC
      LIMIT ?`
   ).bind(namespace, limit).all<MemoryCandidateRecord>();
   return enrichMetabolismRelationEndpoints(db, namespace, result.results ?? []);

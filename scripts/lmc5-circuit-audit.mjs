@@ -292,6 +292,24 @@ const checks = [
       metabolismView.includes("target_memory_content"),
   ],
   [
+    "Dream: Worker memory_maintenance uses explicit fallback only, no LLM extraction",
+    !fs
+      .readFileSync("src/memory/maintenance.ts", "utf8")
+      .includes("extractMemoriesFromMessages") &&
+      !fs
+        .readFileSync("src/memory/maintenance.ts", "utf8")
+        .includes("await extractMemories"),
+  ],
+  [
+    "M: listMetabolismCandidates shows pending only, no approved re-bubbling",
+    fs
+      .readFileSync("src/db/memoryCandidates.ts", "utf8")
+      .includes("AND c.status = 'pending'") &&
+      !fs
+        .readFileSync("src/db/memoryCandidates.ts", "utf8")
+        .includes("C c.status WHEN 'pending'"),
+  ],
+  [
     "Identity: narratives use explicit third-person subjects",
     files.narrative.includes("用户（Layla）") &&
       files.narrative.includes("KLD") &&
