@@ -71,7 +71,6 @@ export default {
         "/admin/memories/create",
         "/admin/memories/edit",
         "/admin/memories/delete",
-        "/admin/memories/diary-split/preview",
         "/admin/memories/review/approve",
         "/admin/memories/review/reject",
         "/admin/memories/candidates/approve",

@@ -13,43 +13,11 @@ import { approveTimelineCandidate, rejectTimelineCandidate } from "./adminBoard/
 import { getTimelineBackfillStatus, scanTimelineBackfillPage } from "../memory/timelineBackfill";
 import { scanMetabolismReviewCandidates } from "../memory/metabolismReview";
 import { approveMetabolismCandidate, batchReviewMetabolismCandidates, rejectMetabolismCandidate, rollbackMetabolismCandidate } from "./adminBoard/metabolismActions";
-import { listRecentUnsplitDiaryIds, splitDiaryMemories } from "../memory/diarySplit";
-import { renderDiarySplitPreview } from "./adminBoard/diarySplitPreviewView";
 
 export async function handleAdminBoard(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   if (!isAuthorized(request, env)) return unauthorized();
   if (!isSameOriginAdminPost(request)) return forbidden();
   const url = new URL(request.url);
-
-  if (request.method === "POST" && url.pathname === "/admin/memories/diary-split/preview") {
-    try {
-      const ids = await listRecentUnsplitDiaryIds(env.DB, "default", 3);
-      const startedAt = Date.now();
-      console.info("admin diary split preview started", { diary_count: ids.length });
-      const planGroups = await Promise.all(ids.map((id) => splitDiaryMemories(env, {
-        namespace: "default",
-        ids: [id],
-        apply: false,
-        debug: true
-      })));
-      const plans = planGroups.flat();
-      console.info("admin diary split preview completed", {
-        diary_count: plans.length,
-        item_count: plans.reduce((sum, plan) => sum + plan.items.length, 0),
-        duration_ms: Date.now() - startedAt
-      });
-      return new Response(renderDiarySplitPreview(plans), {
-        headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" }
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.error("admin diary split preview failed", { error: message });
-      return new Response(renderDiarySplitPreview([], message), {
-        status: 500,
-        headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" }
-      });
-    }
-  }
 
   if (request.method === "POST" && url.pathname === "/admin/memories/create") {
     const form = await request.formData();
