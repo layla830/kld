@@ -41,6 +41,9 @@ const recallFormat = fs.readFileSync("src/memory/recallFormat.ts", "utf8");
 const diarySplit = fs.readFileSync("src/memory/diarySplit.ts", "utf8");
 const candidateActions = fs.readFileSync("src/api/adminBoard/candidateActions.ts", "utf8");
 const candidateView = fs.readFileSync("src/api/adminBoard/candidateView.ts", "utf8");
+const adminBoard = fs.readFileSync("src/api/adminBoard.ts", "utf8");
+const adminBoardView = fs.readFileSync("src/api/adminBoard/view.ts", "utf8");
+const diarySplitPreviewView = fs.readFileSync("src/api/adminBoard/diarySplitPreviewView.ts", "utf8");
 
 const checks = [
   [
@@ -193,6 +196,16 @@ const checks = [
       diarySplit.includes("split_item:") &&
       diarySplit.includes("diary_split_v2_complete") &&
       diarySplit.includes("existingSplitItemId"),
+  ],
+  [
+    "Diary split: admin preview stays Worker-native and strictly read-only",
+    diarySplit.includes("listRecentUnsplitDiaryIds") &&
+      adminBoard.includes('url.pathname === "/admin/memories/diary-split/preview"') &&
+      adminBoard.includes("ids.length > 0") &&
+      adminBoard.includes("apply: false") &&
+      adminBoardView.includes("只读试拆最近 3 篇") &&
+      diarySplitPreviewView.includes("不创建记忆、候选、关系或向量") &&
+      fs.readFileSync("src/index.ts", "utf8").includes("/admin/memories/diary-split/preview"),
   ],
   [
     "Recall: fact-intent rule memories lead before milestone context",

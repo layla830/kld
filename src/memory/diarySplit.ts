@@ -541,6 +541,47 @@ async function persistItems(
   return { createdIds, candidateKeys };
 }
 
+export async function listRecentUnsplitDiaryIds(db: D1Database, namespace: string, limit = 3): Promise<string[]> {
+  const boundedLimit = Math.min(Math.max(Math.floor(limit), 1), 10);
+  const result = await db.prepare(
+    `SELECT d.*
+     FROM memories d
+     WHERE d.namespace = ?
+       AND d.status = 'active'
+       AND d.type IN ('diary', 'layla_diary')
+       AND NOT EXISTS (
+         SELECT 1 FROM memory_events e
+         WHERE e.namespace = d.namespace
+           AND e.event_type = ?
+           AND e.memory_id = d.id
+       )
+       AND (
+         NOT EXISTS (
+           SELECT 1 FROM memories s
+           WHERE s.namespace = d.namespace
+             AND s.status = 'active'
+             AND s.source = ?
+             AND s.tags LIKE '%origin:' || d.id || '%'
+         )
+         OR EXISTS (
+           SELECT 1 FROM memories s
+           WHERE s.namespace = d.namespace
+             AND s.status = 'active'
+             AND s.source = ?
+             AND s.tags LIKE '%origin:' || d.id || '%'
+             AND s.tags LIKE ?
+         )
+       )
+     ORDER BY d.created_at DESC
+     LIMIT ?`
+  ).bind(namespace, SPLIT_COMPLETE_EVENT, TIMELINE_SOURCE, TIMELINE_SOURCE, `%${SPLIT_VERSION_TAG}%`, boundedLimit * 4)
+    .all<MemoryRecord>();
+  return (result.results ?? [])
+    .filter((record) => Boolean(dateFromDiary(record)))
+    .slice(0, boundedLimit)
+    .map((record) => record.id);
+}
+
 export async function splitDiaryMemories(env: Env, input: SplitDiaryInput): Promise<DiarySplitPlan[]> {
   const diaries = await findDiaries(env.DB, input);
   const plans: DiarySplitPlan[] = [];
