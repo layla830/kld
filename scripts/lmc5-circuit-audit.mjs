@@ -131,7 +131,7 @@ const checks = [
       timelineBackfill.includes("scanTimelineBackfillPage") &&
       fs
         .readFileSync("src/api/adminBoard/view.ts", "utf8")
-        .includes("鎵弿杩涘害"),
+        .includes("扫描进度"),
   ],
   [
     "X: review cards remain reachable beyond the first page",
@@ -188,7 +188,7 @@ const checks = [
       diarySplit.includes("REVIEW_TYPES.has(type)") &&
       candidateActions.includes('candidate.action === "diary_split_fact"') &&
       candidateActions.includes("!diary.content.includes(evidence)") &&
-      candidateView.includes("鍘熸枃璇佹嵁锛?),
+      candidateView.includes("原文证据："),
   ],
   [
     "Diary split: item hashes and completion events make partial retries idempotent",
@@ -204,8 +204,8 @@ const checks = [
       adminBoard.includes("ids.length > 0") &&
       adminBoard.includes("apply: false") &&
       adminBoardView.includes('input.tab === "timeline"') &&
-      adminBoardView.includes("鍙璇曟媶鏈€杩?3 绡?) &&
-      diarySplitPreviewView.includes("涓嶅垱寤鸿蹇嗐€佸€欓€夈€佸叧绯绘垨鍚戦噺") &&
+      adminBoardView.includes("只读试拆最近 3 篇") &&
+      diarySplitPreviewView.includes("不创建记忆、候选、关系或向量") &&
       fs.readFileSync("src/index.ts", "utf8").includes("/admin/memories/diary-split/preview"),
   ],
   [
@@ -276,7 +276,7 @@ const checks = [
     "Z: supersede review displays before and after content",
     reviewView.includes('review?.action === "supersede"') &&
       reviewView.includes("review.replacement") &&
-      reviewView.includes("鎵瑰噯鏇挎崲"),
+      reviewView.includes("批准替换"),
   ],
   [
     "E: shadow gate controls ranking",
@@ -362,7 +362,7 @@ const checks = [
     "M: approved operations expose rollback closure",
     metabolismActions.includes('eventType: "m_rollback"') &&
       metabolismActions.includes("rolled_back") &&
-      metabolismView.includes("鍥炴粴杩欐鎿嶄綔"),
+      metabolismView.includes("回滚这次操作"),
   ],
   [
     "M: every review action is reachable through the Worker router",
@@ -377,26 +377,26 @@ const checks = [
     metabolismActions.includes("MAX_METABOLISM_BATCH_SIZE = 30") &&
       metabolismActions.includes("relationOnly: true") &&
       metabolismView.includes('form="m-batch-form"') &&
-      fs.readFileSync("src/api/adminBoard/view.ts", "utf8").includes("鍙垹閫変腑鐨勮竟") &&
-      fs.readFileSync("src/api/adminBoard/view.ts", "utf8").includes("淇濈暀閫変腑鐨勮竟"),
+      fs.readFileSync("src/api/adminBoard/view.ts", "utf8").includes("只删选中的边") &&
+      fs.readFileSync("src/api/adminBoard/view.ts", "utf8").includes("保留选中的边"),
   ],
   [
     "M: relation cleanup cards show both endpoint memories",
     fs
       .readFileSync("src/db/memoryCandidates.ts", "utf8")
       .includes("enrichMetabolismRelationEndpoints") &&
-      metabolismView.includes("杩欐潯杈硅繛鎺ョ殑涓ゆ潯璁板繂") &&
+      metabolismView.includes("这条边连接的两条记忆") &&
       metabolismView.includes("source_memory_content") &&
       metabolismView.includes("target_memory_content"),
   ],
   [
     "Y/M: cleanup cards explain issue, meaning, recommendation, and edge-only impact",
-    metabolismView.includes("闂绫诲瀷锛?) &&
-      metabolismView.includes("杩欐潯绾胯〃绀猴細") &&
-      metabolismView.includes("涓轰粈涔堝缓璁垹锛?) &&
-      metabolismView.includes("瀹℃牳寤鸿锛?) &&
-      metabolismView.includes("鍙垹杩欐潯杈?) &&
-      metabolismView.includes("A銆丅 涓ょ璁板繂姝ｆ枃閮戒笉浼氭敼鍙?),
+    metabolismView.includes("问题类型：") &&
+      metabolismView.includes("这条线表示：") &&
+      metabolismView.includes("为什么建议删：") &&
+      metabolismView.includes("审核建议：") &&
+      metabolismView.includes("只删这条边") &&
+      metabolismView.includes("A、B 两端记忆正文都不会改变"),
   ],
   [
     "Dream: Worker memory_maintenance uses explicit fallback only, no LLM extraction",
@@ -418,9 +418,9 @@ const checks = [
   ],
   [
     "Identity: narratives use explicit third-person subjects",
-    files.narrative.includes("鐢ㄦ埛锛圠ayla锛?) &&
+    files.narrative.includes("用户（Layla）") &&
       files.narrative.includes("KLD") &&
-      !files.narrative.includes("鎴?鍔╂墜"),
+      !files.narrative.includes("我=助手"),
   ],
 ];
 
@@ -431,4 +431,3 @@ for (const [label, ok] of checks) {
 }
 
 if (failed) process.exitCode = 1;
-
