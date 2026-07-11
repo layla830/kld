@@ -148,3 +148,28 @@ The system work is closed. Human decisions remain intentionally open:
 2. Review the 7 queued Z supersede proposals before changing active facts.
 3. Inspect or reject the 6 legacy Dream candidates that have no chunk provenance.
 
+## 2026-07-11 recall-noise follow-up
+
+Production MCP recall was re-tested with an explicit UTF-8 JSON-RPC client. The first PowerShell 5 probe had encoded Chinese request bodies incorrectly; its empty Chinese results were a client-side false negative, not a Worker or D1 failure.
+
+Deployed Worker version: `d51b9058-a89d-4432-9908-c7e20d8e38ca` at 100% traffic.
+
+Changes:
+
+- `memory_search` excludes `diary`, `layla_diary`, and `auto_diary` by default; callers can opt in with `include_diary=true`.
+- exact keyword ranking gives a small preference to canonical rule/lesson/core/preference records with a `fact_key`.
+- deep recall removes normalized duplicate content and rejects relation-only tail records below `0.30`.
+- explicit date recall deterministically leads with the matching `timeline_day` and removes records carrying a conflicting `date:YYYY-MM-DD` tag.
+- the live regression script now covers UTF-8 exact search, diary exclusion, duplicate output, conflicting date tags, and selectable test names.
+
+Verification:
+
+- `npm.cmd run typecheck`: passed.
+- `npm.cmd run test:lmc5-circuits`: 65 checks passed.
+- Wrangler deploy dry-run: passed with the existing D1, Vectorize, Queue, and AI bindings.
+- Final production regression: 6/6 passed across two targeted runs on the same deployed version.
+- `memory_search("擦眼泪")`: canonical `relationship.rule.comfort_when_crying` first; no diary records.
+- `memory_recall("6月10日换Fable、京腔、复婚和上课发生了什么")`: matching 2026-06-10 `timeline_day` first, then the communication preference and remarriage quote; no diary, duplicate content, or conflicting date tag.
+
+No D1 row, memory status, candidate, relation, vector, secret, or Worker variable was changed. To roll back the whole recall-noise follow-up, route production back to pre-change version `5a6f0aab-09a8-44c5-94b4-ec357ceb2e9d` with Wrangler rollback/deployment tooling.
+

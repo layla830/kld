@@ -17,6 +17,7 @@ Options:
   --api-url <url>   Worker base URL. Default: ${DEFAULT_API_URL}
   --api-key <key>   API key. Defaults to KLD_API_KEY or MEMORY_MCP_API_KEY.
   --top-k <n>       top_k per query. Default: 5.
+  --only <names>    Run comma-separated test names only.
   --report <path>   Report JSON output path. Default: ${DEFAULT_REPORT_PATH}
   --help, -h        Show this help.
 `);
@@ -27,6 +28,7 @@ function parseArgs(argv) {
     apiUrl: process.env.KLD_API_URL || DEFAULT_API_URL,
     apiKey: process.env.KLD_API_KEY || process.env.MEMORY_MCP_API_KEY || "",
     topK: 5,
+    only: [],
     reportPath: DEFAULT_REPORT_PATH,
   };
   for (let i = 0; i < argv.length; i += 1) {
@@ -35,6 +37,7 @@ function parseArgs(argv) {
     else if (a === "--api-url") args.apiUrl = argv[++i];
     else if (a === "--api-key") args.apiKey = argv[++i];
     else if (a === "--top-k") args.topK = Number(argv[++i]);
+    else if (a === "--only") args.only = String(argv[++i] || "").split(",").map((item) => item.trim()).filter(Boolean);
     else if (a === "--report") args.reportPath = argv[++i];
     else throw new Error(`Unknown argument: ${a}`);
   }
@@ -47,9 +50,27 @@ function parseArgs(argv) {
 
 const TESTS = [
   {
+    name: "exact-tears-no-diary",
+    tool: "memory_search",
+    query: "擦眼泪",
+    expectTop1FactKey: "relationship.rule.comfort_when_crying",
+    expectAllNotType: ["diary", "layla_diary", "auto_diary"],
+    rationale: "exact MCP search should prefer the canonical rule and exclude long diaries by default",
+  },
+  {
+    name: "date-recall-deduplicated",
+    query: "6月10日换Fable、京腔、复婚和上课发生了什么",
+    expectTop1Type: "timeline_day",
+    expectTop1DateTag: "date:2026-06-10",
+    expectNoConflictingDateTag: "date:2026-06-10",
+    expectAllNotType: ["diary", "layla_diary", "auto_diary"],
+    expectNoDuplicateContent: true,
+    rationale: "date recall should lead with timeline_day, exclude diaries, and collapse repeated event text",
+  },
+  {
     name: "angry-how-to-comfort",
     query: "她生气了怎么哄",
-    expectTop1FactKey: "relationship.rule.comfort_when_crying",
+    expectTop1FactKeys: ["relationship.rule.comfort_when_crying", "relationship.lesson.pacing_intimacy"],
     expectTop1Type: "lesson",
     expectTop1NotType: ["diary", "timeline_day", "layla_diary"],
     expectTop3NotType: ["diary", "timeline_day"],
@@ -156,13 +177,17 @@ async function httpPostJson(url, body, { timeoutMs = 60000 } = {}) {
   return bodyText;
 }
 
-async function callRetrieveMemory(apiUrl, apiKey, query, topK) {
+async function callMemoryTool(apiUrl, apiKey, test, topK) {
   const url = `${apiUrl}/mcp?token=${encodeURIComponent(apiKey)}`;
+  const tool = test.tool || "retrieve_memory";
+  const args = tool === "memory_search"
+    ? { keyword: test.query, top_k: topK }
+    : { query: test.query, top_k: topK };
   const body = JSON.stringify({
     jsonrpc: "2.0",
     id: 1,
     method: "tools/call",
-    params: { name: "retrieve_memory", arguments: { query, top_k: topK } },
+    params: { name: tool, arguments: args },
   });
   const text = await httpPostJson(url, body);
   const json = JSON.parse(text);
@@ -184,8 +209,14 @@ function checkExpectations(test, results) {
   if (test.expectTop1FactKey && top1.fact_key !== test.expectTop1FactKey) {
     failures.push(`top1.fact_key expected "${test.expectTop1FactKey}", got "${top1.fact_key || "-"}"`);
   }
+  if (test.expectTop1FactKeys && !test.expectTop1FactKeys.includes(top1.fact_key)) {
+    failures.push(`top1.fact_key expected one of ${JSON.stringify(test.expectTop1FactKeys)}, got "${top1.fact_key || "-"}"`);
+  }
   if (test.expectTop1Type && top1.type !== test.expectTop1Type) {
     failures.push(`top1.type expected "${test.expectTop1Type}", got "${top1.type}"`);
+  }
+  if (test.expectTop1DateTag && !(top1.tags || []).includes(test.expectTop1DateTag)) {
+    failures.push(`top1.tags must include "${test.expectTop1DateTag}"`);
   }
   if (test.expectTop1NotType && test.expectTop1NotType.includes(top1.type)) {
     failures.push(`top1.type "${top1.type}" must not lead (expected non-${test.expectTop1NotType.join("/")})`);
@@ -195,6 +226,30 @@ function checkExpectations(test, results) {
     for (let i = 0; i < top3.length; i += 1) {
       if (test.expectTop3NotType.includes(top3[i].type)) {
         failures.push(`top${i + 1}.type "${top3[i].type}" must not be in top3`);
+      }
+    }
+  }
+  if (test.expectAllNotType) {
+    for (let i = 0; i < results.length; i += 1) {
+      if (test.expectAllNotType.includes(results[i].type)) {
+        failures.push(`top${i + 1}.type "${results[i].type}" must not appear`);
+      }
+    }
+  }
+  if (test.expectNoDuplicateContent) {
+    const seen = new Set();
+    for (let i = 0; i < results.length; i += 1) {
+      const key = String(results[i].content || "").toLowerCase().replace(/\s+/g, "").replace(/[?？！。.,，、:：;；"“”'‘’]/g, "");
+      if (key.length < 12) continue;
+      if (seen.has(key)) failures.push(`top${i + 1} repeats normalized content from an earlier result`);
+      seen.add(key);
+    }
+  }
+  if (test.expectNoConflictingDateTag) {
+    for (let i = 0; i < results.length; i += 1) {
+      const dateTags = (results[i].tags || []).filter((tag) => /^date:20\d{2}-\d{2}-\d{2}$/i.test(tag));
+      if (dateTags.some((tag) => tag !== test.expectNoConflictingDateTag)) {
+        failures.push(`top${i + 1} has conflicting date tag ${JSON.stringify(dateTags)}`);
       }
     }
   }
@@ -208,10 +263,11 @@ async function main() {
 
   const report = { timestamp: new Date().toISOString(), apiUrl: args.apiUrl, topK: args.topK, results: [], summary: { total: 0, passed: 0, failed: 0 } };
 
-  for (const test of TESTS) {
+  const selectedTests = args.only.length > 0 ? TESTS.filter((test) => args.only.includes(test.name)) : TESTS;
+  for (const test of selectedTests) {
     let results;
     try {
-      results = await callRetrieveMemory(args.apiUrl, args.apiKey, test.query, args.topK);
+      results = await callMemoryTool(args.apiUrl, args.apiKey, test, args.topK);
     } catch (err) {
       console.log(`FAIL  ${test.name}: ${err.message}`);
       report.results.push({ name: test.name, query: test.query, status: "error", error: err.message, rationale: test.rationale });
@@ -243,9 +299,14 @@ async function main() {
       rationale: test.rationale,
       expectations: {
         expectTop1FactKey: test.expectTop1FactKey || null,
+        expectTop1FactKeys: test.expectTop1FactKeys || null,
         expectTop1Type: test.expectTop1Type || null,
+        expectTop1DateTag: test.expectTop1DateTag || null,
         expectTop1NotType: test.expectTop1NotType || null,
         expectTop3NotType: test.expectTop3NotType || null,
+        expectAllNotType: test.expectAllNotType || null,
+        expectNoDuplicateContent: test.expectNoDuplicateContent || false,
+        expectNoConflictingDateTag: test.expectNoConflictingDateTag || null,
       },
       top1: top1 ? { id: top1.id, type: top1.type, fact_key: top1.fact_key || null, thread: top1.thread || null } : null,
       topResults: results.slice(0, 3).map((m) => ({ id: m.id, type: m.type, fact_key: m.fact_key || null, thread: m.thread || null, content_preview: (m.content || "").slice(0, 120) })),

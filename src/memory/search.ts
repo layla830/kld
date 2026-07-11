@@ -2,7 +2,7 @@ import { listActiveMemoriesByFactKeys, listGuidanceSeedMemories, markMemoriesRec
 import { listRelationExpandedMemories } from "../db/memoryRelations";
 import { searchMessagesForRecall } from "../db/messages";
 import type { Env, MemoryApiRecord, MemoryRecord, MessageRecord } from "../types";
-import { postProcessMemorySearchResults, applyLead } from "./postProcess";
+import { postProcessMemorySearchResults, applyLead, pruneConflictingDateContext } from "./postProcess";
 import { toMemoryApiRecord } from "./mapper";
 import { factKeysForQueryHint, queryHintAliasGroups } from "./queryHints";
 import { searchVectorMemories, type ScoredMemoryRecord } from "./vectorStore";
@@ -24,6 +24,7 @@ const LITERAL_QUERY_MAX_CHARS = 80;
 const LITERAL_TOP_K = 3;
 const EMOTION_RESONATE_TOP_K = 4;
 const EMOTION_RESONATE_MIN_SCORE = 0.3;
+const RELATED_CONTEXT_MIN_SCORE = 0.3;
 const EMOTION_CATEGORY_TYPES = new Set(["diary", "layla_diary", "quote", "warmth", "milestone", "message", "intimate", "episodic"]);
 
 const QUERY_ALIAS_GROUPS = [
@@ -520,11 +521,26 @@ function keepRelatedContext(primary: MemoryApiRecord[], related: MemoryApiRecord
   const additions = related
     .filter(isRecallEligible)
     .filter((memory) => !keptIds.has(memory.id))
-    .filter((memory) => typeof memory.score !== "number" || memory.score >= 0.16)
+    .filter((memory) => typeof memory.score !== "number" || memory.score >= RELATED_CONTEXT_MIN_SCORE)
     .sort((a, b) => (b.score ?? 0) + b.importance * 0.05 - ((a.score ?? 0) + a.importance * 0.05))
     .slice(0, Math.min(2, topK - 1));
   if (additions.length === 0) return primary.slice(0, topK);
   return [...primary.slice(0, topK - additions.length), ...additions].slice(0, topK);
+}
+
+function normalizedRecallContent(content: string): string {
+  return content.toLowerCase().replace(/\s+/g, "").replace(/[?？！。.,，、:：;；"“”'‘’]/g, "");
+}
+
+function dedupeRecallOutput(memories: MemoryApiRecord[]): MemoryApiRecord[] {
+  const seen = new Set<string>();
+  return memories.filter((memory) => {
+    const key = normalizedRecallContent(memory.content);
+    if (key.length < 12) return true;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function keepExplicitHintContext(primary: MemoryApiRecord[], hinted: MemoryApiRecord[], topK: number): MemoryApiRecord[] {
@@ -674,7 +690,7 @@ export async function searchMemories(env: Env, input: SearchMemoriesInput): Prom
 
   // Lexical recall is deterministic evidence. A merely plausible vector hit must
   // never suppress it, otherwise names and exact phrases disappear from recall.
-  const ftsResults = await searchMemoriesByText(env.DB, { namespace: input.namespace, query: expandedQuery, types: input.types, limit: candidateLimit });
+  const ftsResults = await searchMemoriesByText(env.DB, { namespace: input.namespace, query: expandedQuery, types: input.types, excludeTypes: [...RECALL_EXCLUDED_TYPES], limit: candidateLimit });
   keywordRecords.push(...ftsResults.filter(isRecallEligible).map((record) => ({ ...record, keywordScore: record.score })));
 
   if (vectorTopScore < RAW_EVENTS_FLOOR && input.includeMessages) {
@@ -707,6 +723,7 @@ export async function searchMemories(env: Env, input: SearchMemoriesInput): Prom
       namespace: input.namespace,
       query: literalTerms.join(" "),
       types: input.types,
+      excludeTypes: [...RECALL_EXCLUDED_TYPES],
       limit: LITERAL_TOP_K
     });
     literalRecords = literalHits
@@ -772,7 +789,7 @@ export async function searchMemories(env: Env, input: SearchMemoriesInput): Prom
   })).filter(isRecallEligible);
   const relatedApiRecords = finalRelationRecords.map((record) => toMemoryApiRecord(record, record.score));
   const hintedApiRecords = hintedRecords.map((record) => toMemoryApiRecord(record, QUERY_HINT_SCORE));
-  const outputRecords = applyLead(
+  const outputRecords = dedupeRecallOutput(pruneConflictingDateContext(applyLead(
     await rerankMemories(env, {
       query: searchQuery,
       memories: keepRelatedContext(keepExplicitHintContext(processedRecords, hintedApiRecords, topK), relatedApiRecords, topK),
@@ -780,7 +797,7 @@ export async function searchMemories(env: Env, input: SearchMemoriesInput): Prom
     }),
     rawQuery,
     searchQuery
-  );
+  ), rawQuery)).slice(0, topK);
 
   if (shouldRecordRecall(input)) {
     const memoryIds = outputRecords.map((record) => record.id).filter((id) => !id.startsWith("msg_"));

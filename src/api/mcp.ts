@@ -164,7 +164,8 @@ function getTools(): Array<Record<string, unknown>> {
     properties: {
       keyword: { type: "string", description: "Exact name, date, codename, quote, or term to find." },
       query: { type: "string", description: "Alias for keyword." },
-      top_k: { type: "number", minimum: 1, maximum: 20 }
+      top_k: { type: "number", minimum: 1, maximum: 20 },
+      include_diary: { type: "boolean", description: "Include long diary records. Defaults to false." }
     },
     anyOf: [{ required: ["keyword"] }, { required: ["query"] }]
   };
@@ -257,7 +258,7 @@ function getTools(): Array<Record<string, unknown>> {
   };
 
   return [
-    { name: "memory_search", description: "Search long-term memory by exact keyword. Use first for names, dates, codenames, quotes, and literal terms.", inputSchema: keywordSearchSchema },
+    { name: "memory_search", description: "Search long-term memory by exact keyword. Long diaries are excluded unless include_diary=true.", inputSchema: keywordSearchSchema },
     { name: "memory_recall", description: "Deep multi-channel recall across semantic, lexical, and relation-graph evidence. Use for past events, nuanced context, and anything uncertain.", inputSchema: searchSchema },
     { name: "retrieve_memory", description: "Legacy alias for deep multi-channel memory recall.", inputSchema: searchSchema },
     { name: "search_by_tag", description: "Find active memories by tag.", inputSchema: tagSearchSchema },
@@ -432,9 +433,11 @@ async function callTool(env: Env, ctx: ExecutionContext, profile: KeyProfile, pa
     const query = readString(args.keyword) || readString(args.query);
     if (!query) return toolError("keyword is required");
     const limit = Math.min(Math.max(Math.floor(readNumber(args.top_k, 5)), 1), 20);
+    const includeDiary = readBoolean(args.include_diary);
     const data = await searchMemoriesByText(env.DB, {
       namespace: resolveNamespace(profile, args.namespace),
       query,
+      excludeTypes: includeDiary ? [] : ["diary", "layla_diary", "auto_diary"],
       limit
     });
     return textToolResult({ data: data.map((record) => toMemoryApiRecord(record, record.score)) });

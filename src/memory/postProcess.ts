@@ -71,6 +71,35 @@ function isMilestone(memory: MemoryApiRecord): boolean {
   return /milestone/i.test(meta(memory));
 }
 
+function explicitDateNeedles(query: string): string[] {
+  const iso = query.match(/\b(20\d{2})[.\-/年](\d{1,2})[.\-/月](\d{1,2})日?\b/);
+  if (iso) {
+    const [, year, month, day] = iso;
+    return [`${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`, `${Number(month)}月${Number(day)}日`];
+  }
+  const zh = query.match(/(?:^|[^\d])(\d{1,2})月(\d{1,2})日/);
+  if (!zh) return [];
+  const [, month, day] = zh;
+  return [`-${month.padStart(2, "0")}-${day.padStart(2, "0")}`, `${Number(month)}月${Number(day)}日`];
+}
+
+function hasExplicitDateHit(memory: MemoryApiRecord, query: string): boolean {
+  const needles = explicitDateNeedles(query);
+  if (needles.length === 0) return false;
+  const text = `${memory.content} ${memory.summary || ""} ${memory.tags.join(" ")}`.toLowerCase();
+  return needles.some((needle) => text.includes(needle.toLowerCase()));
+}
+
+export function pruneConflictingDateContext(memories: MemoryApiRecord[], query: string): MemoryApiRecord[] {
+  const needles = explicitDateNeedles(query);
+  if (needles.length === 0) return memories;
+  return memories.filter((memory) => {
+    const dateTags = memory.tags.filter((tag) => /^date:20\d{2}-\d{2}-\d{2}$/i.test(tag));
+    if (dateTags.length === 0) return true;
+    return dateTags.some((tag) => needles.some((needle) => tag.toLowerCase().includes(needle.toLowerCase())));
+  });
+}
+
 function isLongNarrative(memory: MemoryApiRecord): boolean {
   return (
     memory.content.length > 180 ||
@@ -113,6 +142,7 @@ function scoreMemory(
   if (input.kind === "time") {
     if (isTimelineDay(memory)) score += 2;
     else if (isTimeline(memory)) score += 0.7;
+    if (isTimelineDay(memory) && hasExplicitDateHit(memory, query)) score += 2.5;
     if (/diary|日记/i.test(meta(memory))) score -= 0.4;
   }
 
@@ -212,7 +242,7 @@ function leadFor(
   memories: MemoryApiRecord[],
 ): MemoryApiRecord | undefined {
   if (kind === "time")
-    return memories.find(isTimelineDay) || memories.find(isQuote);
+    return memories.find((memory) => isTimelineDay(memory) && hasExplicitDateHit(memory, `${query} ${rawQuery}`)) || memories.find(isTimelineDay) || memories.find(isQuote);
   if (kind === "fact") {
     const guidanceHit =
       memories.find(
@@ -261,7 +291,7 @@ export async function postProcessMemorySearchResults(
 
   const rawQuery = input.rawQuery || query;
   const { kind, memories } = rerank(query, rawQuery, input.memories);
-  const candidates = withoutIncidentalHandoff(rawQuery, memories);
+  const candidates = pruneConflictingDateContext(withoutIncidentalHandoff(rawQuery, memories), rawQuery);
   if (kind === "guidance") return candidates.slice(0, maxOutput);
   const filtered = await filterWithTimeout(env, rawQuery, candidates);
   const protectedSet = new Set(input.protectedIds ?? []);

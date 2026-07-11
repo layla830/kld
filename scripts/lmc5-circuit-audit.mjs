@@ -36,6 +36,7 @@ const candidateResultMigration = fs.readFileSync(
 );
 const memoriesApi = fs.readFileSync("src/api/memories.ts", "utf8");
 const mcpApi = fs.readFileSync("src/api/mcp.ts", "utf8");
+const memoriesDb = fs.readFileSync("src/db/memories.ts", "utf8");
 const startupContext = fs.readFileSync("src/memory/startupContext.ts", "utf8");
 const recallFormat = fs.readFileSync("src/memory/recallFormat.ts", "utf8");
 const queueConsumer = fs.readFileSync("src/queue/consumer.ts", "utf8");
@@ -207,6 +208,23 @@ const checks = [
       diarySplit.includes("split_item:") &&
       diarySplit.includes("diary_split_v2_complete") &&
       diarySplit.includes("existingSplitItemId"),
+  ],
+  [
+    "Recall: exact MCP search excludes diaries unless explicitly requested",
+    mcpApi.includes("include_diary") &&
+      mcpApi.includes('includeDiary ? [] : ["diary", "layla_diary", "auto_diary"]') &&
+      memoriesDb.includes("input.excludeTypes"),
+  ],
+  [
+    "Recall: final output deduplicates repeated content and rejects weak relation tails",
+    files.search.includes("dedupeRecallOutput") &&
+      files.search.includes("RELATED_CONTEXT_MIN_SCORE = 0.3"),
+  ],
+  [
+    "Recall: explicit dates deterministically lead with the matching timeline day",
+    postProcess.includes("hasExplicitDateHit") &&
+      postProcess.includes("isTimelineDay(memory) && hasExplicitDateHit") &&
+      postProcess.includes("pruneConflictingDateContext"),
   ],
   [
     "Diary split: selected fact candidates support bounded batch approve and reject",

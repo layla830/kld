@@ -4,6 +4,7 @@ import { nowIso } from "../utils/time";
 import { buildVectorId } from "../utils/vectorId";
 
 const D1_BIND_LIMIT = 90;
+const CANONICAL_SEARCH_TYPES = new Set(["rule", "lesson", "core", "preference"]);
 
 export interface CreateMemoryInput {
   namespace: string;
@@ -445,12 +446,13 @@ function scoreKeywordRecord(record: MemoryRecord, query: string, tokens: string[
   const tokenScore = tokens.length ? Math.min(1, hits / denominator) : 0;
   const presenceBoost = hits > 0 ? 0.14 : 0;
   const tagBoost = tagOrTypeHits > 0 ? Math.min(0.22, tagOrTypeHits * 0.11) : 0;
-  return 0.28 + exact + presenceBoost + tagBoost + tokenScore * 0.35 + record.importance * 0.05 + (record.pinned ? 0.05 : 0);
+  const canonicalBoost = record.fact_key && CANONICAL_SEARCH_TYPES.has(record.type.toLowerCase()) ? 0.12 : 0;
+  return 0.28 + exact + presenceBoost + tagBoost + tokenScore * 0.35 + canonicalBoost + record.importance * 0.05 + (record.pinned ? 0.05 : 0);
 }
 
 export async function searchMemoriesByText(
   db: D1Database,
-  input: { namespace: string; query: string; types?: string[]; limit: number }
+  input: { namespace: string; query: string; types?: string[]; excludeTypes?: string[]; limit: number }
 ): Promise<Array<MemoryRecord & { score: number }>> {
   const query = input.query.trim().replace(/\s+/g, " ").slice(0, 500);
   const tokens = tokenizeQuery(query);
@@ -458,10 +460,18 @@ export async function searchMemoriesByText(
   const binds: unknown[] = [input.namespace];
 
   const typeBudget = Math.max(0, D1_BIND_LIMIT - binds.length - 6);
-  const types = (input.types ?? []).slice(0, Math.min(input.types?.length ?? 0, typeBudget, 20));
+  const types = [...new Set((input.types ?? []).map((type) => type.trim()).filter(Boolean))]
+    .slice(0, Math.min(input.types?.length ?? 0, typeBudget, 20));
   if (types.length > 0) {
     sql += ` AND type IN (${types.map(() => "?").join(", ")})`;
     binds.push(...types);
+  }
+  const excludeBudget = Math.max(0, typeBudget - types.length);
+  const excludeTypes = [...new Set((input.excludeTypes ?? []).map((type) => type.trim()).filter(Boolean))]
+    .slice(0, Math.min(input.excludeTypes?.length ?? 0, excludeBudget, 20));
+  if (excludeTypes.length > 0) {
+    sql += ` AND type NOT IN (${excludeTypes.map(() => "?").join(", ")})`;
+    binds.push(...excludeTypes);
   }
 
   if (query) {
