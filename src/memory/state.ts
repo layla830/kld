@@ -40,11 +40,9 @@ async function updateSyncStatus(
   status: VectorSyncStatus
 ): Promise<void> {
   try {
-    await updateMemory(env.DB, {
-      namespace,
-      id,
-      patch: { vectorSyncStatus: status } as UpdateMemoryInput,
-    });
+    await env.DB.prepare(
+      "UPDATE memories SET vector_sync_status = ?, vector_synced = ?, updated_at = ? WHERE namespace = ? AND id = ?"
+    ).bind(status, status === "synced" ? 1 : 0, new Date().toISOString(), namespace, id).run();
   } catch (error) {
     console.error("updateSyncStatus failed", { id, status, error: error instanceof Error ? error.message : String(error) });
   }

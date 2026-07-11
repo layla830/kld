@@ -72,8 +72,9 @@ queue = "companion-memory"
 
 [[queues.consumers]]
 queue = "companion-memory"
-max_batch_size = 10
+max_batch_size = 1
 max_batch_timeout = 30
+max_concurrency = 1
 
 [triggers]
 crons = ["10 20 * * *", "*/5 * * * *"]

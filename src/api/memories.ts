@@ -335,12 +335,14 @@ async function handleSplitDiaryMemories(request: Request, env: Env, profile: Key
     dates: readStringArray(body.dates),
     apply: body.apply === true,
     force: body.force === true,
-    debug: body.debug === true
+    debug: body.debug === true,
+    replaceImporter: readOptionalString(body.replace_importer) ?? undefined
   });
 
   return json({
     data: {
       apply: body.apply === true,
+      replace_importer: readOptionalString(body.replace_importer) ?? null,
       diary_count: plans.length,
       item_count: plans.reduce((sum, plan) => sum + plan.items.length, 0),
       fact_key_count: plans.reduce((sum, plan) => sum + plan.items.filter((item) => item.fact_key).length, 0),

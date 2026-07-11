@@ -163,7 +163,8 @@ export async function runLegacyRelationBackfill(
   env: Env,
   namespace: string,
   apply = false,
-  selectedTypes: LegacyRelationType[] = []
+  selectedTypes: LegacyRelationType[] = [],
+  options: { requiredTag?: string } = {}
 ): Promise<{
   scanned: number;
   proposed: number;
@@ -172,11 +173,20 @@ export async function runLegacyRelationBackfill(
   sample: LegacyRelationProposal[];
   selected_relation_types: LegacyRelationType[];
 }> {
-  const rows = await env.DB.prepare(
-    `SELECT * FROM memories
-     WHERE namespace = ? AND status = 'active' AND active_fact != 0 AND type != 'dream_review'
-     ORDER BY id LIMIT 1000`
-  ).bind(namespace).all<MemoryRecord>();
+  const requiredTag = options.requiredTag?.trim();
+  if (requiredTag && !/^[a-z0-9._:-]{1,100}$/i.test(requiredTag)) throw new Error("invalid_required_tag");
+  const rows = requiredTag
+    ? await env.DB.prepare(
+        `SELECT * FROM memories
+         WHERE namespace = ? AND status = 'active' AND active_fact != 0 AND type != 'dream_review'
+           AND EXISTS (SELECT 1 FROM json_each(memories.tags) WHERE value = ?)
+         ORDER BY id LIMIT 1000`
+      ).bind(namespace, requiredTag).all<MemoryRecord>()
+    : await env.DB.prepare(
+        `SELECT * FROM memories
+         WHERE namespace = ? AND status = 'active' AND active_fact != 0 AND type != 'dream_review'
+         ORDER BY id LIMIT 1000`
+      ).bind(namespace).all<MemoryRecord>();
   const memories = rows.results ?? [];
   const proposals = new Map<string, LegacyRelationProposal>();
 

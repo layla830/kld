@@ -111,7 +111,50 @@ export interface RetentionQueueMessage {
   idempotencyKey: string;
 }
 
-export type QueueMessage = MemoryMaintenanceQueueMessage | ConversationChunkQueueMessage | RetentionQueueMessage;
+export interface DiaryRescreenQueueMessage {
+  type: "diary_rescreen";
+  namespace: string;
+  diaryIds: string[];
+  importer: string;
+  apply: boolean;
+  jobId: string;
+}
+
+export interface MemoryVectorSyncQueueMessage {
+  type: "memory_vector_sync";
+  namespace: string;
+  memoryIds: string[];
+  jobId: string;
+}
+
+export interface CoordinateBackfillQueueMessage {
+  type: "coordinate_backfill";
+  namespace: string;
+  jobId: string;
+}
+
+export interface RelationBackfillQueueMessage {
+  type: "relation_backfill";
+  namespace: string;
+  requiredTag: string;
+  jobId: string;
+}
+
+export interface MetabolismScanQueueMessage {
+  type: "metabolism_scan";
+  namespace: string;
+  jobId: string;
+}
+
+export type QueueMessage =
+  | MemoryMaintenanceQueueMessage
+  | ConversationChunkQueueMessage
+  | RetentionQueueMessage
+  | DiaryRescreenQueueMessage
+  | MemoryVectorSyncQueueMessage
+  | CoordinateBackfillQueueMessage
+  | RelationBackfillQueueMessage
+  | MetabolismScanQueueMessage;
 
 export type Scope =
   | "chat:proxy"

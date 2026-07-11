@@ -56,8 +56,14 @@ async function relationCleanupRows(env: { DB: D1Database }, namespace: string): 
   const symmetricPlaceholders = symmetricTypes.map(() => "?").join(", ");
   const [selfLoops, orphans, symmetricDuplicates] = await Promise.all([
     env.DB.prepare(
-      `SELECT * FROM memory_relations
-       WHERE namespace = ? AND source_memory_id = target_memory_id LIMIT 50`
+      `SELECT r.* FROM memory_relations r
+       WHERE r.namespace = ? AND r.source_memory_id = r.target_memory_id
+         AND NOT EXISTS (
+           SELECT 1 FROM memory_candidates c
+           WHERE c.namespace = r.namespace
+             AND c.external_key = 'm-review:relation:' || r.id
+         )
+       LIMIT 50`
     ).bind(namespace).all<RelationSnapshot>(),
     env.DB.prepare(
       `SELECT r.* FROM memory_relations r
@@ -66,7 +72,13 @@ async function relationCleanupRows(env: { DB: D1Database }, namespace: string): 
        WHERE r.namespace = ? AND (
          m1.id IS NULL OR m2.id IS NULL
          OR m1.status NOT IN ('active','review') OR m2.status NOT IN ('active','review')
-       ) LIMIT 50`
+       )
+         AND NOT EXISTS (
+           SELECT 1 FROM memory_candidates c
+           WHERE c.namespace = r.namespace
+             AND c.external_key = 'm-review:relation:' || r.id
+         )
+       LIMIT 50`
     ).bind(namespace).all<RelationSnapshot>(),
     env.DB.prepare(
       `SELECT b.* FROM memory_relations a
@@ -74,7 +86,13 @@ async function relationCleanupRows(env: { DB: D1Database }, namespace: string): 
          ON b.namespace = a.namespace AND b.relation_type = a.relation_type
         AND b.source_memory_id = a.target_memory_id AND b.target_memory_id = a.source_memory_id
         AND b.id > a.id
-       WHERE a.namespace = ? AND a.relation_type IN (${symmetricPlaceholders}) LIMIT 50`
+       WHERE a.namespace = ? AND a.relation_type IN (${symmetricPlaceholders})
+         AND NOT EXISTS (
+           SELECT 1 FROM memory_candidates c
+           WHERE c.namespace = b.namespace
+             AND c.external_key = 'm-review:relation:' || b.id
+         )
+       LIMIT 50`
     ).bind(namespace, ...symmetricTypes).all<RelationSnapshot>()
   ]);
 

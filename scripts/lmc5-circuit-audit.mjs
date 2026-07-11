@@ -38,6 +38,9 @@ const memoriesApi = fs.readFileSync("src/api/memories.ts", "utf8");
 const mcpApi = fs.readFileSync("src/api/mcp.ts", "utf8");
 const startupContext = fs.readFileSync("src/memory/startupContext.ts", "utf8");
 const recallFormat = fs.readFileSync("src/memory/recallFormat.ts", "utf8");
+const queueConsumer = fs.readFileSync("src/queue/consumer.ts", "utf8");
+const memoryState = fs.readFileSync("src/memory/state.ts", "utf8");
+const legacyRelations = fs.readFileSync("src/memory/legacyRelations.ts", "utf8");
 const diarySplit = fs.readFileSync("src/memory/diarySplit.ts", "utf8");
 const candidateActions = fs.readFileSync("src/api/adminBoard/candidateActions.ts", "utf8");
 const candidateView = fs.readFileSync("src/api/adminBoard/candidateView.ts", "utf8");
@@ -177,8 +180,13 @@ const checks = [
       diarySplit.includes("Return 2-6 high-signal items") &&
       diarySplit.includes("the diary narrator '我' is KLD") &&
       diarySplit.includes("Never store KLD's own behavior") &&
-      diarySplit.includes("!diary.includes(evidence)") &&
+    diarySplit.includes("!diary.includes(evidence)") &&
       diarySplit.includes('type === "quote" && !diary.includes(content)') &&
+      diarySplit.includes("content.length > 360") &&
+      diarySplit.includes("diary.length * 0.65") &&
+      diarySplit.includes("datesFromDiary") &&
+      diarySplit.includes("allowedDateSet.has") &&
+      diarySplit.includes("timelineDates.has(itemDate)") &&
       diarySplit.includes("MAX_ITEMS_PER_DIARY = 6") &&
       diarySplit.includes("max_tokens: 4200"),
   ],
@@ -196,6 +204,59 @@ const checks = [
       diarySplit.includes("split_item:") &&
       diarySplit.includes("diary_split_v2_complete") &&
       diarySplit.includes("existingSplitItemId"),
+  ],
+  [
+    "Diary rescreen: replacement is explicit, bounded, staged, and reversible",
+    diarySplit.includes("replace_importer requires force=true and explicit diary ids") &&
+      diarySplit.includes("replace_importer accepts at most 3 diary ids per request") &&
+      diarySplit.includes('status: replaceImporter ? "review" : "active"') &&
+      diarySplit.includes("rescreened_by:v2:") &&
+      diarySplit.includes('reason: "already_rescreened"') &&
+      diarySplit.includes("old_review") &&
+      diarySplit.includes("createdIds: []") &&
+      diarySplit.includes("env.DB.batch") &&
+      diarySplit.includes("removeMemoryVector") &&
+      diarySplit.includes("vector_sync_status = 'pending'"),
+  ],
+  [
+    "Diary rescreen: queue supports authenticated dry-run and bounded apply jobs",
+    queueConsumer.includes('case "diary_rescreen"') &&
+      queueConsumer.includes("hasCompletedDiaryRescreenJob") &&
+      queueConsumer.includes("diaryIds.slice(0, 3)") &&
+      queueConsumer.includes('"diary_rescreen_dry_run"') &&
+      queueConsumer.includes('"diary_rescreen_applied"'),
+  ],
+  [
+    "Vector sync: canonical and legacy status fields change together",
+    memoryState.includes("vector_sync_status = ?, vector_synced = ?") &&
+      memoryState.includes('status === "synced" ? 1 : 0'),
+  ],
+  [
+    "Vector sync: queue jobs are bounded and idempotent",
+    queueConsumer.includes('case "memory_vector_sync"') &&
+      queueConsumer.includes("message.memoryIds.slice(0, 3)") &&
+      queueConsumer.includes('eventType: "memory_vector_sync_complete"') &&
+      queueConsumer.includes("syncMemoryVector"),
+  ],
+  [
+    "Coordinate backfill: queue reuses the review-first scheduled path",
+    queueConsumer.includes('case "coordinate_backfill"') &&
+      queueConsumer.includes("runScheduledCoordinateBackfill") &&
+      queueConsumer.includes('eventType: "coordinate_backfill_complete"'),
+  ],
+  [
+    "Y: relation backfill can be scoped to one tagged import batch",
+    legacyRelations.includes("requiredTag") &&
+      legacyRelations.includes("json_each(memories.tags)") &&
+      queueConsumer.includes('case "relation_backfill"') &&
+      queueConsumer.includes('["origin_split"]') &&
+      queueConsumer.includes('eventType: "relation_backfill_complete"'),
+  ],
+  [
+    "M: queue patrol remains review-first",
+    queueConsumer.includes('case "metabolism_scan"') &&
+      queueConsumer.includes("scanMetabolismReviewCandidates") &&
+      queueConsumer.includes('eventType: "metabolism_scan_complete"'),
   ],
   [
     "Recall: fact-intent rule memories lead before milestone context",
@@ -329,6 +390,12 @@ const checks = [
     "M: patrol findings become explicit review candidates",
     metabolismReview.includes('action: "m_archive"') &&
       metabolismReview.includes('action: "m_relation_cleanup"'),
+  ],
+  [
+    "M: repeated patrols advance past relations already reviewed or queued",
+    metabolismReview.includes("NOT EXISTS") &&
+      metabolismReview.includes("c.external_key = 'm-review:relation:' || r.id") &&
+      metabolismReview.includes("c.external_key = 'm-review:relation:' || b.id"),
   ],
   [
     "M: protected memories never enter archive review",

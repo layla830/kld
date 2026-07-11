@@ -5,6 +5,7 @@ import { callOpenAICompat } from "../proxy/openaiAdapter";
 import type { Env, MemoryRecord, OpenAIChatRequest, OpenAIChatResponse } from "../types";
 import { parseJsonStringArray } from "../utils/jsonHelpers";
 import { upsertMemoryEmbedding } from "./embedding";
+import { removeMemoryVector } from "./state";
 
 const TIMELINE_SOURCE = "timeline_split";
 const DEFAULT_SPLIT_MODEL = "deepseek/deepseek-v4-flash";
@@ -29,6 +30,7 @@ const MEMORY_TYPES = new Set([
 const ITEM_ARRAY_KEYS = ["items", "memories", "records", "results", "entries"];
 
 export interface DiarySplitItem {
+  date: string;
   type: string;
   content: string;
   summary: string | null;
@@ -71,9 +73,11 @@ export interface SplitDiaryInput {
   apply: boolean;
   force?: boolean;
   debug?: boolean;
+  replaceImporter?: string;
 }
 
 interface RawSplitItem {
+  date?: unknown;
   type?: unknown;
   memory_type?: unknown;
   category?: unknown;
@@ -111,9 +115,11 @@ function normalizeDate(value: string): string | null {
 }
 
 function dateFromDiary(record: MemoryRecord): string | null {
+  const rangeMatch = record.content.match(/(?:^|\n)\s*(\d{1,2})\s*月\s*(\d{1,2})\s*[-–—至到]\s*(\d{1,2})\s*日/)
+    || parseJsonStringArray(record.tags).join(" ").match(/(\d{1,2})\s*月\s*(\d{1,2})\s*[-–—至到]\s*(\d{1,2})\s*日/);
   const contentMatch = record.content.match(/(?:^|\n)\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日(?:日记)?/);
   const tagMatch = parseJsonStringArray(record.tags).join(" ").match(/(\d{1,2})\s*月\s*(\d{1,2})\s*日/);
-  const match = contentMatch || tagMatch;
+  const match = rangeMatch || contentMatch || tagMatch;
   if (!match) return null;
   const year = new Date(record.created_at || Date.now()).getUTCFullYear();
   return `${year}-${match[1].padStart(2, "0")}-${match[2].padStart(2, "0")}`;
@@ -130,6 +136,19 @@ function splitBatchTag(date: string): string {
 function temporalScope(raw: RawSplitItem): "day" | "current" | "historical" {
   const value = cleanString(raw.temporal_scope, 20).toLowerCase();
   return value === "current" || value === "historical" ? value : "day";
+}
+
+function datesFromDiary(record: MemoryRecord, fallback: string): string[] {
+  const year = new Date(record.created_at || Date.now()).getUTCFullYear();
+  const text = `${record.content.slice(0, 300)} ${parseJsonStringArray(record.tags).join(" ")}`;
+  const dates = new Set<string>();
+  for (const match of text.matchAll(/(\d{1,2})\s*月\s*(\d{1,2})(?:\s*[-–—至到]\s*(\d{1,2}))?\s*日/g)) {
+    const month = match[1].padStart(2, "0");
+    dates.add(`${year}-${month}-${match[2].padStart(2, "0")}`);
+    if (match[3]) dates.add(`${year}-${month}-${match[3].padStart(2, "0")}`);
+  }
+  if (dates.size === 0) dates.add(fallback);
+  return [...dates];
 }
 
 function factKeyForItem(raw: RawSplitItem, type: string, scope: "day" | "current" | "historical"): string | null {
@@ -255,12 +274,13 @@ function extractJsonPayload(text: string): unknown | null {
     .sort((a, b) => b.shapeCount - a.shapeCount || b.count - a.count || b.index - a.index)[0].candidate;
 }
 
-function parseItemsWithDebug(text: string, date: string, originId: string, diary: string, includeDebug: boolean): { items: DiarySplitItem[]; debug?: DiarySplitDebug } {
+function parseItemsWithDebug(text: string, date: string, allowedDates: string[], originId: string, diary: string, includeDebug: boolean): { items: DiarySplitItem[]; debug?: DiarySplitDebug } {
   const parsed = extractJsonPayload(text);
   const rawItems = extractRawItems(parsed);
   const items: DiarySplitItem[] = [];
   const seen = new Set<string>();
-  let hasTimelineDay = false;
+  const timelineDates = new Set<string>();
+  const allowedDateSet = new Set(allowedDates);
 
   for (const raw of rawItems.slice(0, MAX_ITEMS_PER_DIARY)) {
     if (!raw || typeof raw !== "object") continue;
@@ -271,9 +291,12 @@ function parseItemsWithDebug(text: string, date: string, originId: string, diary
     if (!MEMORY_TYPES.has(type) || content.length < 4) continue;
     if (!evidence || !diary.includes(evidence)) continue;
     if (type === "quote" && !diary.includes(content)) continue;
+    const requestedDate = normalizeDate(cleanString(raw.date, 20));
+    const itemDate = requestedDate && allowedDateSet.has(requestedDate) ? requestedDate : date;
     if (type === "timeline_day") {
-      if (hasTimelineDay) continue;
-      hasTimelineDay = true;
+      if (content.length > 360 || content.length > Math.max(120, diary.length * 0.65)) continue;
+      if (timelineDates.has(itemDate)) continue;
+      timelineDates.add(itemDate);
     }
     const dedupeKey = `${type}:${content.replace(/\s+/g, " ").trim().toLowerCase()}`;
     if (seen.has(dedupeKey)) continue;
@@ -282,17 +305,18 @@ function parseItemsWithDebug(text: string, date: string, originId: string, diary
 
     const tags = [
       "timeline",
-      `date:${date}`,
+      `date:${itemDate}`,
       type,
       ...cleanTags(raw.tags),
       `origin:${originId}`,
-      `source_label:${sourceLabel(date)}`,
+      `source_label:${sourceLabel(itemDate)}`,
       `temporal_scope:${scope}`,
-      splitBatchTag(date),
+      splitBatchTag(itemDate),
       SPLIT_VERSION_TAG
     ];
 
     items.push({
+      date: itemDate,
       type,
       content,
       summary: cleanString(raw.summary, 300) || null,
@@ -326,7 +350,7 @@ function parseItemsWithDebug(text: string, date: string, originId: string, diary
   };
 }
 
-function buildSplitPrompt(record: MemoryRecord, date: string): string {
+function buildSplitPrompt(record: MemoryRecord, date: string, allowedDates: string[]): string {
   const diary = record.content.slice(0, MAX_DIARY_CHARS);
   return [
     "Split this Chinese diary into searchable long-term memory records.",
@@ -363,11 +387,14 @@ function buildSplitPrompt(record: MemoryRecord, date: string): string {
     "- For quote items, content itself must also be an exact substring of the diary.",
     "- temporal_scope must be day, current, or historical. Use current only for facts explicitly stated as still true.",
     "- Do not generate relations or XYZEM coordinates; downstream maintenance handles them.",
+    `- Each item must set date to one of these dates found in the diary title: ${allowedDates.join(", ")}.`,
+    "- If the diary covers multiple dates, assign each item to the date of its supporting evidence; each date may have at most one timeline_day.",
     "",
     "Output schema:",
     JSON.stringify({
       items: [
         {
+          date,
           type: "timeline_day",
           content: "Chinese memory text",
           summary: "optional short summary",
@@ -382,7 +409,8 @@ function buildSplitPrompt(record: MemoryRecord, date: string): string {
       ]
     }),
     "",
-    `Date: ${date}`,
+    `Default date: ${date}`,
+    `Allowed dates: ${allowedDates.join(", ")}`,
     `Diary memory id: ${record.id}`,
     "",
     "Diary:",
@@ -391,12 +419,13 @@ function buildSplitPrompt(record: MemoryRecord, date: string): string {
 }
 
 async function callSplitModel(env: Env, record: MemoryRecord, date: string, includeDebug: boolean): Promise<{ items: DiarySplitItem[]; debug?: DiarySplitDebug }> {
+  const allowedDates = datesFromDiary(record, date);
   const model = env.CC_CONNECT_CHUNK_EXTRACT_MODEL || env.MEMORY_MODEL || env.AUTO_CHUNK_SUMMARY_MODEL || env.CHAT_MODEL || DEFAULT_SPLIT_MODEL;
   const request: OpenAIChatRequest = {
     model,
     messages: [
       { role: "system", content: "You are a strict JSON generator for Chinese memory extraction. Output JSON only. Do not explain or show reasoning." },
-      { role: "user", content: buildSplitPrompt(record, date) }
+      { role: "user", content: buildSplitPrompt(record, date, allowedDates) }
     ],
     temperature: 0.1,
     max_tokens: 4200,
@@ -414,7 +443,7 @@ async function callSplitModel(env: Env, record: MemoryRecord, date: string, incl
   const content = typeof message?.content === "string" ? message.content.trim() : "";
   const reasoningContent = typeof message?.reasoning_content === "string" ? message.reasoning_content.trim() : "";
   const text = content || reasoningContent;
-  return parseItemsWithDebug(text, date, record.id, record.content, includeDebug);
+  return parseItemsWithDebug(text, date, allowedDates, record.id, record.content, includeDebug);
 }
 
 async function existingSplitCount(db: D1Database, input: { namespace: string; originId: string }): Promise<number> {
@@ -442,14 +471,14 @@ async function hasCompletedV2Split(db: D1Database, input: { namespace: string; o
 }
 
 async function splitItemKey(diaryId: string, item: DiarySplitItem): Promise<string> {
-  const normalized = `${diaryId}\n${item.type}\n${item.content.replace(/\s+/g, " ").trim().toLowerCase()}`;
+  const normalized = `${diaryId}\n${item.date}\n${item.type}\n${item.content.replace(/\s+/g, " ").trim().toLowerCase()}`;
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(normalized));
   return Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, "0")).join("").slice(0, 24);
 }
 
 async function existingSplitItemId(db: D1Database, namespace: string, itemKey: string): Promise<string | null> {
   const row = await db
-    .prepare("SELECT id FROM memories WHERE namespace = ? AND status = 'active' AND source = ? AND tags LIKE ? LIMIT 1")
+    .prepare("SELECT id FROM memories WHERE namespace = ? AND status IN ('active','review') AND source = ? AND tags LIKE ? LIMIT 1")
     .bind(namespace, TIMELINE_SOURCE, `%split_item:${itemKey}%`)
     .first<{ id: string }>();
   return row?.id ?? null;
@@ -488,18 +517,29 @@ async function findDiaries(db: D1Database, input: SplitDiaryInput): Promise<Arra
 
 async function persistItems(
   env: Env,
-  input: { namespace: string; diary: MemoryRecord; date: string; items: DiarySplitItem[] }
+  input: {
+    namespace: string;
+    diary: MemoryRecord;
+    date: string;
+    items: DiarySplitItem[];
+    status?: "active" | "review";
+    rescreenedFrom?: string;
+  }
 ): Promise<{ createdIds: string[]; candidateKeys: string[] }> {
   const createdIds: string[] = [];
   const candidateKeys: string[] = [];
   for (const item of input.items) {
     const itemKey = await splitItemKey(input.diary.id, item);
-    const tags = [...new Set([...item.tags, `split_item:${itemKey}`])];
+    const tags = [...new Set([
+      ...item.tags,
+      `split_item:${itemKey}`,
+      ...(input.rescreenedFrom ? [`rescreened_from:${input.rescreenedFrom}`] : [])
+    ])];
     if (item.review_required) {
       const externalKey = `diary-split-v2:${input.diary.id}:${itemKey}`;
       await upsertMemoryCandidate(env.DB, input.namespace, {
         externalKey,
-        dreamDate: input.date,
+        dreamDate: item.date,
         action: "diary_split_fact",
         payload: {
           _kind: "diary_split_fact",
@@ -516,7 +556,7 @@ async function persistItems(
           temporal_scope: item.temporal_scope
         },
         sourceChunkIds: [],
-        sourceChunks: [{ diary_id: input.diary.id, date: input.date, evidence: item.evidence }],
+        sourceChunks: [{ diary_id: input.diary.id, date: item.date, evidence: item.evidence }],
         status: "pending"
       });
       candidateKeys.push(externalKey);
@@ -534,24 +574,103 @@ async function persistItems(
       content: item.content,
       summary: item.summary,
       factKey: item.fact_key,
-      activeFact: true,
+      activeFact: input.status !== "review",
       importance: item.importance,
       confidence: item.confidence,
       tags,
       source: TIMELINE_SOURCE,
-      sourceMessageIds: [input.diary.id]
+      sourceMessageIds: [input.diary.id],
+      status: input.status ?? "active",
+      auditState: input.status === "review" ? "diary_rescreen_staged" : null
     });
     createdIds.push(memory.id);
-    await upsertMemoryEmbedding(env, memory);
+    if (memory.status === "active") await upsertMemoryEmbedding(env, memory);
   }
   return { createdIds, candidateKeys };
+}
+
+function cleanImporter(value: string | undefined): string | null {
+  const importer = value?.trim().toLowerCase();
+  return importer && /^[a-z0-9._-]{1,40}$/.test(importer) ? importer : null;
+}
+
+async function diaryAlreadyRescreened(
+  db: D1Database,
+  input: { namespace: string; diaryId: string; importer: string }
+): Promise<boolean> {
+  const originTag = `origin:${input.diaryId}`;
+  const importerTag = `importer:${input.importer}`;
+  const rescreenedTag = `rescreened_from:${input.importer}`;
+  const row = await db.prepare(
+    `SELECT
+       SUM(CASE WHEN status = 'active' AND EXISTS (SELECT 1 FROM json_each(memories.tags) WHERE value = ?) THEN 1 ELSE 0 END) AS old_active,
+       SUM(CASE WHEN status = 'review' AND EXISTS (SELECT 1 FROM json_each(memories.tags) WHERE value = ?) THEN 1 ELSE 0 END) AS old_review,
+       SUM(CASE WHEN status = 'active' AND EXISTS (SELECT 1 FROM json_each(memories.tags) WHERE value = ?) THEN 1 ELSE 0 END) AS new_active
+     FROM memories
+     WHERE namespace = ?
+       AND EXISTS (SELECT 1 FROM json_each(memories.tags) WHERE value = ?)`
+  ).bind(importerTag, importerTag, rescreenedTag, input.namespace, originTag).first<{ old_active: number; old_review: number; new_active: number }>();
+  return (row?.old_active ?? 0) === 0 && ((row?.new_active ?? 0) > 0 || (row?.old_review ?? 0) > 0);
+}
+
+async function activateRescreenedDiary(
+  env: Env,
+  input: { namespace: string; diaryId: string; importer: string; createdIds: string[] }
+): Promise<string[]> {
+  const importerTag = `importer:${input.importer}`;
+  const originTag = `origin:${input.diaryId}`;
+  const old = await env.DB.prepare(
+    `SELECT * FROM memories
+     WHERE namespace = ? AND status = 'active'
+       AND EXISTS (SELECT 1 FROM json_each(memories.tags) WHERE value = ?)
+       AND EXISTS (SELECT 1 FROM json_each(memories.tags) WHERE value = ?)`
+  ).bind(input.namespace, importerTag, originTag).all<MemoryRecord>();
+
+  const now = new Date().toISOString();
+  const statements = [env.DB.prepare(
+      `UPDATE memories
+       SET status = 'review', active_fact = 0, audit_state = ?, vector_synced = 0,
+           vector_sync_status = 'pending', updated_at = ?
+       WHERE namespace = ? AND status = 'active'
+         AND EXISTS (SELECT 1 FROM json_each(memories.tags) WHERE value = ?)
+         AND EXISTS (SELECT 1 FROM json_each(memories.tags) WHERE value = ?)`
+    ).bind(`rescreened_by:v2:${now}`, now, input.namespace, importerTag, originTag)];
+  if (input.createdIds.length > 0) {
+    const placeholders = input.createdIds.map(() => "?").join(", ");
+    statements.push(env.DB.prepare(
+      `UPDATE memories
+       SET status = 'active', active_fact = 1, audit_state = 'diary_rescreen_activated',
+           vector_synced = 0, vector_sync_status = 'pending', updated_at = ?
+       WHERE namespace = ? AND status = 'review' AND id IN (${placeholders})`
+    ).bind(now, input.namespace, ...input.createdIds));
+  }
+  await env.DB.batch(statements);
+
+  for (const memory of old.results ?? []) await removeMemoryVector(env, memory);
+  return (old.results ?? []).map((memory) => memory.id);
 }
 
 export async function splitDiaryMemories(env: Env, input: SplitDiaryInput): Promise<DiarySplitPlan[]> {
   const diaries = await findDiaries(env.DB, input);
   const plans: DiarySplitPlan[] = [];
+  const replaceImporter = cleanImporter(input.replaceImporter);
+  if (input.replaceImporter && !replaceImporter) throw new Error("invalid replace_importer");
+  if (replaceImporter && (!input.force || !input.ids?.length)) {
+    throw new Error("replace_importer requires force=true and explicit diary ids");
+  }
+  if (replaceImporter && input.ids!.length > 3) {
+    throw new Error("replace_importer accepts at most 3 diary ids per request");
+  }
 
   for (const { record, date } of diaries) {
+    if (replaceImporter && await diaryAlreadyRescreened(env.DB, {
+      namespace: input.namespace,
+      diaryId: record.id,
+      importer: replaceImporter
+    })) {
+      plans.push({ diary_id: record.id, date, skipped: true, reason: "already_rescreened", items: [] });
+      continue;
+    }
     const [existing, existingV2, completedV2] = await Promise.all([
       existingSplitCount(env.DB, { namespace: input.namespace, originId: record.id }),
       existingV2SplitCount(env.DB, { namespace: input.namespace, originId: record.id }),
@@ -565,11 +684,27 @@ export async function splitDiaryMemories(env: Env, input: SplitDiaryInput): Prom
     const { items, debug } = await callSplitModel(env, record, date, input.debug === true);
     if (items.length === 0) {
       if (input.apply) {
+        const replacedIds = replaceImporter
+          ? await activateRescreenedDiary(env, {
+              namespace: input.namespace,
+              diaryId: record.id,
+              importer: replaceImporter,
+              createdIds: []
+            })
+          : [];
         await createMemoryEvent(env.DB, {
           namespace: input.namespace,
           eventType: SPLIT_COMPLETE_EVENT,
           memoryId: record.id,
-          payload: { diary_id: record.id, date, created_ids: [], candidate_keys: [], item_count: 0 }
+          payload: {
+            diary_id: record.id,
+            date,
+            created_ids: [],
+            candidate_keys: [],
+            item_count: 0,
+            replace_importer: replaceImporter,
+            replaced_ids: replacedIds
+          }
         });
       }
       plans.push({ diary_id: record.id, date, skipped: true, reason: "no_items", items: [], debug });
@@ -578,9 +713,24 @@ export async function splitDiaryMemories(env: Env, input: SplitDiaryInput): Prom
 
     const plan: DiarySplitPlan = { diary_id: record.id, date, skipped: false, items, debug };
     if (input.apply) {
-      const persisted = await persistItems(env, { namespace: input.namespace, diary: record, date, items });
+      const persisted = await persistItems(env, {
+        namespace: input.namespace,
+        diary: record,
+        date,
+        items,
+        status: replaceImporter ? "review" : "active",
+        rescreenedFrom: replaceImporter ?? undefined
+      });
       plan.created_ids = persisted.createdIds;
       plan.candidate_keys = persisted.candidateKeys;
+      const replacedIds = replaceImporter
+        ? await activateRescreenedDiary(env, {
+            namespace: input.namespace,
+            diaryId: record.id,
+            importer: replaceImporter,
+            createdIds: persisted.createdIds
+          })
+        : [];
       await createMemoryEvent(env.DB, {
         namespace: input.namespace,
         eventType: SPLIT_COMPLETE_EVENT,
@@ -590,7 +740,9 @@ export async function splitDiaryMemories(env: Env, input: SplitDiaryInput): Prom
           date,
           created_ids: persisted.createdIds,
           candidate_keys: persisted.candidateKeys,
-          item_count: items.length
+          item_count: items.length,
+          replace_importer: replaceImporter,
+          replaced_ids: replacedIds
         }
       });
     }
