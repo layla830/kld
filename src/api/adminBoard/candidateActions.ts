@@ -40,6 +40,43 @@ export async function rejectCandidate(env: Env, form: FormData): Promise<boolean
   return id ? resolveMemoryCandidate(env.DB, "default", id, "rejected") : false;
 }
 
+export interface DiaryFactBatchResult {
+  decision: "approve" | "reject";
+  selected: number;
+  processed: number;
+  skipped: number;
+  targets: MemoryRecord[];
+}
+
+const MAX_DIARY_FACT_BATCH_SIZE = 100;
+
+export async function batchReviewDiaryFactCandidates(env: Env, form: FormData): Promise<DiaryFactBatchResult | null> {
+  const decision = readFormText(form, "decision");
+  if (decision !== "approve" && decision !== "reject") return null;
+  const ids = [...new Set(form.getAll("ids").map(String).map((id) => id.trim()).filter(Boolean))]
+    .slice(0, MAX_DIARY_FACT_BATCH_SIZE);
+  if (ids.length === 0) return null;
+
+  const targets: MemoryRecord[] = [];
+  let processed = 0;
+  for (const id of ids) {
+    const candidate = await getMemoryCandidate(env.DB, "default", id);
+    if (!candidate || candidate.status !== "pending" || candidate.action !== "diary_split_fact") continue;
+    const itemForm = new FormData();
+    itemForm.set("id", id);
+    if (decision === "approve") {
+      const target = await approveCandidate(env, itemForm);
+      if (!target) continue;
+      targets.push(target);
+    } else if (!(await rejectCandidate(env, itemForm))) {
+      continue;
+    }
+    processed += 1;
+  }
+
+  return { decision, selected: ids.length, processed, skipped: ids.length - processed, targets };
+}
+
 export async function approveCandidate(env: Env, form: FormData): Promise<MemoryRecord | null> {
   const id = readFormText(form, "id");
   if (!id) return null;

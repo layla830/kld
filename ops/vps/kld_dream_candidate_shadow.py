@@ -130,6 +130,7 @@ def build_prompt(date_label: str, start_iso: str, end_iso: str, messages: list[d
             "总原则：",
             "- 原始聊天不要逐条变成记忆，只保留未来真的会用到的事实、偏好、边界、项目进展、承诺。",
             "- 宁可少记，也不要把临时语气、寒暄、重复话、空内容、调试内容写进长期记忆。",
+            "- 只有一条消息或一句孤立表达、没有后续确认或上下文支撑的内容，不要生成 memories_to_add 或 important_excerpts。至少需要 2 条消息共同支撑。",
             "- 当旧记忆和新信息冲突时，优先更新或删除旧记忆，不要并排留下互相打架的版本。",
             "- 当新信息只是旧记忆的更准确版本，优先 memories_to_update，不要 memories_to_add。",
             "- 当多条旧记忆重复，保留更完整的一条并删除重复项；必要时先 update 保留项。",
@@ -337,6 +338,15 @@ def persist_candidates(db, date_label: str, plan: dict, chunks: list[dict]) -> d
             if str(value).isdigit() and int(value) in allowed_chunk_ids
         ]
         source_chunk_ids = sorted(set(source_chunk_ids))
+        source_message_count = sum(
+            max(0, int(chunks_by_id[chunk_id].get("message_count") or 0))
+            for chunk_id in source_chunk_ids
+        )
+        if action in {"add", "excerpt"} and source_message_count < 2:
+            reason = "single_message_not_durable"
+            dropped += 1
+            drop_reasons[reason] = drop_reasons.get(reason, 0) + 1
+            continue
         safe_payload = dict(payload)
         safe_payload["source_chunk_ids"] = source_chunk_ids
         evidence = evidence_text(action, safe_payload)

@@ -75,6 +75,7 @@ export default {
         "/admin/memories/review/reject",
         "/admin/memories/candidates/approve",
         "/admin/memories/candidates/reject",
+        "/admin/memories/candidates/batch-facts",
         "/admin/memories/x-timeline/scan",
         "/admin/memories/x-timeline/approve",
         "/admin/memories/x-timeline/reject",

@@ -44,6 +44,9 @@ const legacyRelations = fs.readFileSync("src/memory/legacyRelations.ts", "utf8")
 const diarySplit = fs.readFileSync("src/memory/diarySplit.ts", "utf8");
 const candidateActions = fs.readFileSync("src/api/adminBoard/candidateActions.ts", "utf8");
 const candidateView = fs.readFileSync("src/api/adminBoard/candidateView.ts", "utf8");
+const adminBoard = fs.readFileSync("src/api/adminBoard.ts", "utf8");
+const adminView = fs.readFileSync("src/api/adminBoard/view.ts", "utf8");
+const vpsDreamCandidate = fs.readFileSync("ops/vps/kld_dream_candidate_shadow.py", "utf8");
 
 const checks = [
   [
@@ -204,6 +207,21 @@ const checks = [
       diarySplit.includes("split_item:") &&
       diarySplit.includes("diary_split_v2_complete") &&
       diarySplit.includes("existingSplitItemId"),
+  ],
+  [
+    "Diary split: selected fact candidates support bounded batch approve and reject",
+    candidateActions.includes("MAX_DIARY_FACT_BATCH_SIZE = 100") &&
+      candidateActions.includes('candidate.action !== "diary_split_fact"') &&
+      adminBoard.includes("batchReviewDiaryFactCandidates") &&
+      adminView.includes('id="fact-batch-form"') &&
+      candidateView.includes('form="fact-batch-form"'),
+  ],
+  [
+    "Dream: isolated single-message content is not recorded as a new memory",
+    files.digest.includes("hasRepeatedMessageSupport") &&
+      files.digest.includes("source_message_ids 必须至少包含 2 个不同消息 id") &&
+      vpsDreamCandidate.includes("single_message_not_durable") &&
+      vpsDreamCandidate.includes('action in {"add", "excerpt"} and source_message_count < 2'),
   ],
   [
     "Diary rescreen: replacement is explicit, bounded, staged, and reversible",

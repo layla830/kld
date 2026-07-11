@@ -313,6 +313,10 @@ function normalizeExtractedMemory(value: unknown): ExtractedMemory | null {
   };
 }
 
+function hasRepeatedMessageSupport(sourceMessageIds: string[]): boolean {
+  return new Set(sourceMessageIds).size >= 2;
+}
+
 function normalizeDigestResult(value: unknown): DailyDigestResult {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   const raw = value as Record<string, unknown>;
@@ -333,12 +337,14 @@ function normalizeDigestResult(value: unknown): DailyDigestResult {
         const record = item as Record<string, unknown>;
         const quote = readString(record.quote);
         if (!quote) return [];
+        const sourceMessageIds = readStringArray(record.source_message_ids);
+        if (!hasRepeatedMessageSupport(sourceMessageIds)) return [];
         return [
           {
             quote,
             reason: readString(record.reason) ?? undefined,
             tags: readStringArray(record.tags),
-            source_message_ids: readStringArray(record.source_message_ids)
+            source_message_ids: sourceMessageIds
           }
         ];
       })
@@ -410,7 +416,7 @@ function normalizeDigestResult(value: unknown): DailyDigestResult {
     memories_to_add: Array.isArray(raw.memories_to_add)
       ? raw.memories_to_add.flatMap((item): ExtractedMemory[] => {
           const memory = normalizeExtractedMemory(item);
-          return memory ? [memory] : [];
+          return memory && hasRepeatedMessageSupport(memory.source_message_ids) ? [memory] : [];
         })
       : undefined,
     memories_to_update,
@@ -478,6 +484,7 @@ function buildDigestPrompt(input: {
     "总原则：",
     "- 原始聊天不要逐条变成记忆，只保留未来真的会用到的事实、偏好、边界、项目进展、承诺。",
     "- 宁可少记，也不要把临时语气、寒暄、重复话、空内容、调试内容写进长期记忆。",
+    "- 只在单条消息里出现一次、没有第二条独立消息确认或延续的信息，不写入 important_excerpts 或 memories_to_add；source_message_ids 必须至少包含 2 个不同消息 id。",
     "- 当旧记忆和新信息冲突时，优先更新或删除旧记忆，不要并排留下互相打架的版本。",
     "- 当新信息只是旧记忆的更准确版本，优先 memories_to_update，不要 memories_to_add。",
     "- 当多条旧记忆重复，保留更完整的一条并删除重复项；必要时先 update 保留项。",
