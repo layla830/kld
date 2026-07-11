@@ -3,6 +3,8 @@ import { toMemoryApiRecord } from "./search";
 import { BROAD_TIME_QUERY_RE } from "./recallIntent";
 import { dateNeedles, likeNeedle, matchesAnyNeedle, supportNeedles, topicNeedles } from "./recallNeedles";
 
+const BROAD_EVENT_QUESTION_RE = /说了什么|聊了什么|在聊什么|弄什么|做什么|干什么|怎么样|发生了什么|发生什么|怎么聊/;
+
 function isTimeSummaryCandidate(memory: MemoryApiRecord): boolean {
   const meta = `${memory.type} ${memory.tags.join(" ")} ${memory.source || ""}`;
   return /auto_diary|timeline|quote|diary|summary|日记|总结|conversation_message|date:\d{4}-\d{2}-\d{2}/i.test(meta);
@@ -47,6 +49,7 @@ async function fetchDatedTimelineCandidates(
     `SELECT * FROM memories
      WHERE namespace = ?
        AND status = 'active'
+       AND type NOT IN ('diary', 'layla_diary', 'auto_diary')
        AND (type = 'timeline_day' OR tags LIKE '%day_summary%' OR tags LIKE '%timeline%')
        AND (${clauses.join(" OR ")})
      ORDER BY importance DESC, updated_at DESC
@@ -55,7 +58,7 @@ async function fetchDatedTimelineCandidates(
 
   return (result.results ?? [])
     .map((record) => toMemoryApiRecord(record, 1))
-    .filter((memory) => isTimelineDay(memory) && matchesAnyNeedle(memory, needles));
+    .filter((memory) => isTimeSummaryCandidate(memory) && matchesAnyNeedle(memory, needles));
 }
 
 export async function addDatedTimelineCandidates(
@@ -78,6 +81,9 @@ export function filterUnsupportedRecallMemories(memories: MemoryApiRecord[], sea
   if (dateTerms.length > 0) {
     const dated = memories.filter((memory) => matchesAnyNeedle(memory, dateTerms));
     if (dated.length === 0) return [];
+    if (BROAD_TIME_QUERY_RE.test(rawQuery) || BROAD_EVENT_QUESTION_RE.test(rawQuery)) {
+      return dated.filter(isTimeSummaryCandidate);
+    }
 
     const topicTerms = topicNeedles(`${rawQuery} ${searchQuery}`);
     const datedWithTopic = dated.filter((memory) => matchesAnyNeedle(memory, topicTerms));

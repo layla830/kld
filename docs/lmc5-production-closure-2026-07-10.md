@@ -173,3 +173,28 @@ Verification:
 
 No D1 row, memory status, candidate, relation, vector, secret, or Worker variable was changed. To roll back the whole recall-noise follow-up, route production back to pre-change version `5a6f0aab-09a8-44c5-94b4-ec357ceb2e9d` with Wrangler rollback/deployment tooling.
 
+## 2026-07-12 recall ownership and latency follow-up
+
+Production Worker version: `ea2f0c73-cf5e-4668-8872-797e55925526`.
+
+Recall ownership is now explicit:
+
+- VPS local history handles recent conversational continuity and explicit verbatim/raw-evidence requests.
+- Worker memory handles historical dates and durable facts, rules, preferences, relationships, and response posture.
+- A weak local token hit can no longer suppress a stronger Worker result.
+
+Worker recall now takes a deterministic D1 fast path before vector expansion or model reranking when it finds a supported fact-key hint, dated timeline candidate, or lexical memory candidate. Generic question scaffolding such as `那次`, `为什么`, and `是谁来` is removed before lexical evidence lookup. Diaries remain excluded from recall candidates.
+
+VPS source snapshots and routing regression tests are in `ops/vps/recall_decision.py` and `ops/vps/test_recall_decision.py`. The deployed VPS file is `/home/ccagent/cc-workspace/tools/recall_decision.py`; its rollback backup is `/home/ccagent/cc-workspace/tools/recall_decision.py.bak-20260712-routing`.
+
+Verification:
+
+- VPS routing regression: 9/9 passed.
+- Worker TypeScript check: passed.
+- Wrangler dry-run: passed with unchanged bindings and no migration.
+- End-to-end hook latency after warm deployment: explicit date 648 ms; remarriage question 475 ms; quarrel question 474 ms; communication preference 639 ms; comfort posture 651 ms; recent local miss 4 ms.
+- Current-emotion input without a memory question remains a no-recall path.
+- The legacy raw-TLS MCP regression runner returned an empty transport error on its first case, so the full suite was not claimed as passed; the production hook path and its logs were verified directly instead.
+
+No D1 row, memory status, candidate, relation, vector, secret, Worker variable, systemd unit, or hook registration was changed. Worker rollback target for this follow-up is `d51b9058-a89d-4432-9908-c7e20d8e38ca`; VPS rollback is the backup path above.
+
