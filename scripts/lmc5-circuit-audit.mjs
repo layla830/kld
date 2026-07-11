@@ -257,6 +257,12 @@ const checks = [
       queueConsumer.includes("syncMemoryVector"),
   ],
   [
+    "Vector sync: five-minute self-healing excludes diary records",
+    fs.readFileSync("src/index.ts", "utf8").includes("retryStaleVectorSyncs(env, namespace, 12)") &&
+      memoryState.includes("type NOT IN ('diary','layla_diary','auto_diary')") &&
+      fs.readFileSync("src/index.ts", "utf8").includes("scheduled five-minute maintenance"),
+  ],
+  [
     "Coordinate backfill: queue reuses the review-first scheduled path",
     queueConsumer.includes('case "coordinate_backfill"') &&
       queueConsumer.includes("runScheduledCoordinateBackfill") &&

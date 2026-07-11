@@ -220,6 +220,7 @@ export async function retryStaleVectorSyncs(
       `SELECT * FROM memories
        WHERE namespace = ?
          AND status = 'active'
+         AND type NOT IN ('diary','layla_diary','auto_diary')
          AND (vector_sync_status = 'failed' OR vector_sync_status = 'pending' OR vector_sync_status IS NULL)
        ORDER BY updated_at DESC
        LIMIT ?`
