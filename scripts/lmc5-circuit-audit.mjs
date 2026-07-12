@@ -263,6 +263,8 @@ const checks = [
       queueProducer.includes("enqueueMissedDiarySplits") &&
       queueProducer.includes("diary_split_v2_complete") &&
       queueProducer.includes("'origin:' || m.id") &&
+      queueProducer.includes("has_timeline_split") &&
+      queueProducer.includes("dateFromDiary(memory)") &&
       queueConsumer.includes('case "diary_split"') &&
       queueConsumer.includes('eventType: "diary_split_queue_complete"') &&
       mcpApi.includes("enqueueDiarySplitIfNeeded(env, memory)") &&

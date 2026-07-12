@@ -1,6 +1,7 @@
 import { listUnprocessedChunkMessages } from "../db/messages";
 import type { Env, MemoryRecord, QueueMessage } from "../types";
 import { handleQueueMessage } from "./consumer";
+import { dateFromDiary } from "../memory/diarySplit";
 
 const DEFAULT_CHUNK_THRESHOLD = 10;
 const DEFAULT_CHUNK_MAX_MESSAGES = 80;
@@ -214,6 +215,7 @@ export async function enqueueDiarySplitIfNeeded(env: Env, memory: MemoryRecord):
 }
 
 export async function enqueueMissedDiarySplits(env: Env, namespace: string, limit = 2): Promise<number> {
+  const boundedLimit = Math.min(Math.max(limit, 1), 3);
   const rows = await env.DB.prepare(
     `SELECT m.* FROM memories m
      WHERE m.namespace = ? AND m.status = 'active' AND m.type IN ('diary','layla_diary')
@@ -227,8 +229,10 @@ export async function enqueueMissedDiarySplits(env: Env, namespace: string, limi
          WHERE split.namespace = m.namespace AND split.status IN ('active','review') AND split.source = 'timeline_split'
            AND EXISTS (SELECT 1 FROM json_each(split.tags) WHERE value = 'origin:' || m.id)
        )
-     ORDER BY m.created_at ASC LIMIT ?`
-  ).bind(namespace, new Date(Date.now() - 5 * 60_000).toISOString(), Math.min(Math.max(limit, 1), 3)).all<MemoryRecord>();
-  for (const memory of rows.results ?? []) await enqueueDiarySplitIfNeeded(env, memory);
-  return rows.results?.length ?? 0;
+       AND NOT EXISTS (SELECT 1 FROM json_each(m.tags) WHERE value = 'has_timeline_split')
+     ORDER BY m.created_at ASC LIMIT 25`
+  ).bind(namespace, new Date(Date.now() - 5 * 60_000).toISOString()).all<MemoryRecord>();
+  const eligible = (rows.results ?? []).filter((memory) => dateFromDiary(memory)).slice(0, boundedLimit);
+  for (const memory of eligible) await enqueueDiarySplitIfNeeded(env, memory);
+  return eligible.length;
 }

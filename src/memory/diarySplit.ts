@@ -114,7 +114,7 @@ function normalizeDate(value: string): string | null {
   return `${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`;
 }
 
-function dateFromDiary(record: MemoryRecord): string | null {
+export function dateFromDiary(record: MemoryRecord): string | null {
   const rangeMatch = record.content.match(/(?:^|\n)\s*(\d{1,2})\s*月\s*(\d{1,2})\s*[-–—至到]\s*(\d{1,2})\s*日/)
     || parseJsonStringArray(record.tags).join(" ").match(/(\d{1,2})\s*月\s*(\d{1,2})\s*[-–—至到]\s*(\d{1,2})\s*日/);
   const contentMatch = record.content.match(/(?:^|\n)\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日(?:日记)?/);
