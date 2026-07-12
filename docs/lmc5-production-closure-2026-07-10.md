@@ -225,7 +225,7 @@ No candidate was automatically rejected, approved, or promoted. No D1 schema, me
 
 ## 2026-07-12 structural-boundary refactor
 
-Production Worker version: `a33dcb9a-50d8-4a41-ba71-c8dc7c2cb4de`.
+Production Worker version: `a351d610-b67a-4822-8153-5cb636377b7a`.
 
 This refactor preserves the deployed memory behavior while establishing explicit ownership boundaries:
 
@@ -245,8 +245,10 @@ Verification:
 - `npm.cmd run test:lmc5-circuits`: 68/68 checks passed after updating checks to follow the new module owners.
 - Wrangler deploy dry-run: passed with unchanged D1, Vectorize, Queue, and AI bindings and no migration.
 - Production deployment completed with a 1 ms Worker startup time.
-- `npm audit --omit=dev` could not run because the approval service reported a usage-limit block. Vitest is development-only; no production runtime dependency was added.
-- The post-deploy VPS stdin regression was not claimed: the approval service blocked the composite SSH probe, and a later read-only D1 probe encountered `fetch failed` through the configured proxy.
+- `npm audit --omit=dev`: 0 production vulnerabilities; Vitest remains development-only.
+- A correctly UTF-8-encoded VPS shadow-hook date probe returned the two matching `timeline_day` records in 648 ms; the first was `mem_196b84bdc0db46a992d851c418e66197`.
+- A communication-style probe returned only canonical preference `mem_b21e997bc1dc49c6a7cf225d5c1733dc` in 502 ms.
+- The first PowerShell 5 stdin probe encoded Chinese incorrectly and produced an empty false negative. A subsequent correctly encoded probe exposed and verified the fix for dated candidates being displaced by hinted preferences or quotes.
 
 No D1 schema, memory row, candidate resolution, relation, secret, Worker variable, VPS file, hook registration, or service definition was changed by the refactor. Worker rollback target is `bc2a780d-551c-4331-9179-70e3b646e030`.
 

@@ -91,10 +91,9 @@ export async function buildRecallContext(
   const directLexicalCandidates = analysis.reasons.includes("explicit_recall_signal")
     ? await fetchDurableLexicalCandidates(env, { namespace: input.namespace, rawQuery: analysis.query, limit: topK })
     : [];
-  const directCandidates = mergeUniqueMemories(
-    directHintedCandidates,
-    mergeUniqueMemories(directDatedCandidates, directLexicalCandidates)
-  );
+  const directCandidates = directDatedCandidates.length > 0
+    ? mergeUniqueMemories(directDatedCandidates, mergeUniqueMemories(directHintedCandidates, directLexicalCandidates))
+    : mergeUniqueMemories(directHintedCandidates, directLexicalCandidates);
   if (directCandidates.length > 0) {
     const supportedDirect = filterUnsupportedRecallMemories(directCandidates, searchQuery, analysis.query).slice(0, topK);
     const directRecall = formatRecallBlock(supportedDirect, searchQuery);

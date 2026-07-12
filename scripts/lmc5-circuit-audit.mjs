@@ -50,6 +50,8 @@ const adminView = fs.readFileSync("src/api/adminBoard/view.ts", "utf8");
 const candidateQuality = fs.readFileSync("src/memory/candidateQuality.ts", "utf8");
 const recallTrace = fs.readFileSync("src/memory/recallTrace.ts", "utf8");
 const recallApi = fs.readFileSync("src/api/recall.ts", "utf8");
+const recallContext = fs.readFileSync("src/memory/recall.ts", "utf8");
+const recallFilter = fs.readFileSync("src/memory/recallFilter.ts", "utf8");
 const injection = fs.readFileSync("src/memory/inject.ts", "utf8");
 const coordinateBackfill = fs.readFileSync("src/application/coordinateBackfill.ts", "utf8");
 const recallFusion = fs.readFileSync("src/memory/recallFusion.ts", "utf8");
@@ -231,7 +233,9 @@ const checks = [
     "Recall: explicit dates deterministically lead with the matching timeline day",
     postProcess.includes("hasExplicitDateHit") &&
       postProcess.includes("isTimelineDay(memory) && hasExplicitDateHit") &&
-      postProcess.includes("pruneConflictingDateContext"),
+      postProcess.includes("pruneConflictingDateContext") &&
+      recallFilter.includes("CASE WHEN type = 'timeline_day'") &&
+      recallContext.includes("directDatedCandidates.length > 0"),
   ],
   [
     "Diary split: selected fact candidates support bounded batch approve and reject",

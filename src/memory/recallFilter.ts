@@ -52,7 +52,8 @@ async function fetchDatedTimelineCandidates(
        AND type NOT IN ('diary', 'layla_diary', 'auto_diary')
        AND (type = 'timeline_day' OR tags LIKE '%day_summary%' OR tags LIKE '%timeline%')
        AND (${clauses.join(" OR ")})
-     ORDER BY importance DESC, updated_at DESC
+     ORDER BY CASE WHEN type = 'timeline_day' OR tags LIKE '%day_summary%' THEN 0 ELSE 1 END,
+              importance DESC, updated_at DESC
      LIMIT ?`
   ).bind(...binds).all<MemoryRecord>();
 
