@@ -69,7 +69,22 @@ export function assessCandidateQuality(candidate: MemoryCandidateRecord): Candid
     reasons.push("正文过短，尚不足以成为可独立使用的长期记忆");
   }
 
-  const rejectFlags = new Set(["missing_content", "pipeline_scaffold", "interaction_noise", "contextless_excerpt"]);
+  if (candidate.action === "excerpt") {
+    const durableClaim = compact(payload.durable_claim);
+    const sourceMessageIds = Array.isArray(payload.source_message_ids)
+      ? [...new Set(payload.source_message_ids.map(String).filter(Boolean))]
+      : [];
+    if (!durableClaim) {
+      flags.push("missing_durable_claim");
+      reasons.push("原话没有说明未来可复用的稳定偏好、边界、承诺或关系事实");
+    }
+    if (sourceMessageIds.length < 2) {
+      flags.push("single_message_support");
+      reasons.push("原话只有一条消息证据，缺少上下文共同支撑");
+    }
+  }
+
+  const rejectFlags = new Set(["missing_content", "pipeline_scaffold", "interaction_noise", "contextless_excerpt", "missing_durable_claim", "single_message_support"]);
   const label: CandidateQualityLabel = flags.some((flag) => rejectFlags.has(flag))
     ? "reject_suggested"
     : flags.length > 0 ? "needs_review" : "pass";

@@ -1,4 +1,4 @@
-import { getMemoryCandidate, resolveMemoryCandidate } from "../../db/memoryCandidates";
+import { getMemoryCandidate, resolveMemoryCandidate, updateMemoryCandidateEvidence } from "../../db/memoryCandidates";
 import { createMemory, getMemoryById, softDeleteMemory, updateMemory, type UpdateMemoryInput } from "../../db/memories";
 import type { Env, MemoryRecord } from "../../types";
 import { readFormText } from "./utils";
@@ -18,6 +18,46 @@ function coordinateNumber(value: unknown, min = 0): number | null | undefined {
   return Number.isFinite(n) ? Math.max(min, Math.min(1, n)) : undefined;
 }
 function tags(value: unknown): string[] { return Array.isArray(value) ? value.map(String).map((item) => item.trim()).filter(Boolean) : []; }
+
+function quotedEvidence(candidate: Awaited<ReturnType<typeof getMemoryCandidate>>): string[] {
+  if (!candidate) return [];
+  try {
+    const chunks = JSON.parse(candidate.source_chunks_json) as unknown;
+    if (!Array.isArray(chunks)) return [];
+    return [...new Set(chunks.flatMap((chunk) => {
+      if (!chunk || typeof chunk !== "object") return [];
+      const quotes = (chunk as { important_quotes?: unknown }).important_quotes;
+      return Array.isArray(quotes) ? quotes.map(String).map((quote) => quote.trim()).filter(Boolean) : [];
+    }))];
+  } catch {
+    return [];
+  }
+}
+
+export type CandidateEvidenceRepairResult = "repaired" | "not_found" | "not_verbatim" | "too_long";
+
+export async function repairCandidateEvidence(env: Env, form: FormData): Promise<CandidateEvidenceRepairResult> {
+  const id = readFormText(form, "id");
+  const evidence = readFormText(form, "evidence");
+  if (!id || !evidence) return "not_found";
+  if (evidence.length > 80) return "too_long";
+  const candidate = await getMemoryCandidate(env.DB, "default", id);
+  if (!candidate || !["pending", "needs_subject_review"].includes(candidate.status)) return "not_found";
+  if (!quotedEvidence(candidate).some((quote) => quote.includes(evidence))) return "not_verbatim";
+
+  const payload = payloadOf(candidate.payload_json);
+  payload.evidence = evidence;
+  const remainingErrors = (candidate.validation_error || "").split(";")
+    .map((error) => error.trim()).filter((error) => error && ![
+      "missing_evidence", "evidence_too_long", "evidence_not_verbatim_in_source_chunks"
+    ].includes(error));
+  delete payload.validation_error;
+  if (remainingErrors.length > 0) payload.validation_error = remainingErrors.join(";");
+  const updated = await updateMemoryCandidateEvidence(
+    env.DB, "default", id, payload, remainingErrors.length ? remainingErrors.join(";") : null
+  );
+  return updated ? "repaired" : "not_found";
+}
 
 async function existingDiarySplitMemory(env: Env, itemKey: string): Promise<MemoryRecord | null> {
   return (await env.DB.prepare(

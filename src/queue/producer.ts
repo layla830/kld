@@ -197,3 +197,38 @@ export async function enqueueMemoryVectorSync(env: Env, memories: MemoryRecord[]
     }
   }
 }
+
+function isSplittableDiary(memory: MemoryRecord): boolean {
+  return memory.status === "active" && ["diary", "layla_diary"].includes(memory.type);
+}
+
+export async function enqueueDiarySplitIfNeeded(env: Env, memory: MemoryRecord): Promise<boolean> {
+  if (!isSplittableDiary(memory)) return false;
+  await sendQueueMessage(env, {
+    type: "diary_split",
+    namespace: memory.namespace,
+    diaryId: memory.id,
+    jobId: `diary-split:${memory.id}`
+  });
+  return true;
+}
+
+export async function enqueueMissedDiarySplits(env: Env, namespace: string, limit = 2): Promise<number> {
+  const rows = await env.DB.prepare(
+    `SELECT m.* FROM memories m
+     WHERE m.namespace = ? AND m.status = 'active' AND m.type IN ('diary','layla_diary')
+       AND m.created_at <= ?
+       AND NOT EXISTS (
+         SELECT 1 FROM memory_events e
+         WHERE e.namespace = m.namespace AND e.memory_id = m.id AND e.event_type = 'diary_split_v2_complete'
+       )
+       AND NOT EXISTS (
+         SELECT 1 FROM memories split
+         WHERE split.namespace = m.namespace AND split.status IN ('active','review') AND split.source = 'timeline_split'
+           AND EXISTS (SELECT 1 FROM json_each(split.tags) WHERE value = 'origin:' || m.id)
+       )
+     ORDER BY m.created_at ASC LIMIT ?`
+  ).bind(namespace, new Date(Date.now() - 5 * 60_000).toISOString(), Math.min(Math.max(limit, 1), 3)).all<MemoryRecord>();
+  for (const memory of rows.results ?? []) await enqueueDiarySplitIfNeeded(env, memory);
+  return rows.results?.length ?? 0;
+}

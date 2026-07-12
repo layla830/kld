@@ -177,6 +177,23 @@ export async function getMemoryCandidate(db: D1Database, namespace: string, id: 
     .bind(namespace, id).first<MemoryCandidateRecord>()) ?? null;
 }
 
+export async function updateMemoryCandidateEvidence(
+  db: D1Database,
+  namespace: string,
+  id: string,
+  payload: Record<string, unknown>,
+  validationError: string | null
+): Promise<boolean> {
+  const now = nowIso();
+  const status = validationError ? "needs_subject_review" : "pending";
+  const result = await db.prepare(
+    `UPDATE memory_candidates
+     SET payload_json = ?, validation_error = ?, status = ?, updated_at = ?
+     WHERE namespace = ? AND id = ? AND status IN ('pending','needs_subject_review')`
+  ).bind(JSON.stringify(payload), validationError, status, now, namespace, id).run();
+  return (result.meta.changes ?? 0) > 0;
+}
+
 export async function resolveMemoryCandidate(db: D1Database, namespace: string, id: string, status: "approved" | "rejected", resultMemoryId?: string | null): Promise<boolean> {
   const now = nowIso();
   const result = await db.prepare(

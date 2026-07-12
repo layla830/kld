@@ -40,6 +40,9 @@ const memoriesDb = fs.readFileSync("src/db/memories.ts", "utf8");
 const startupContext = fs.readFileSync("src/memory/startupContext.ts", "utf8");
 const recallFormat = fs.readFileSync("src/memory/recallFormat.ts", "utf8");
 const queueConsumer = fs.readFileSync("src/queue/consumer.ts", "utf8");
+const queueProducer = fs.readFileSync("src/queue/producer.ts", "utf8");
+const workerIndex = fs.readFileSync("src/index.ts", "utf8");
+const candidateDb = fs.readFileSync("src/db/memoryCandidates.ts", "utf8");
 const memoryState = fs.readFileSync("src/memory/state.ts", "utf8");
 const legacyRelations = fs.readFileSync("src/memory/legacyRelations.ts", "utf8");
 const diarySplit = fs.readFileSync("src/memory/diarySplit.ts", "utf8");
@@ -248,9 +251,37 @@ const checks = [
   [
     "Dream: isolated single-message content is not recorded as a new memory",
     files.digest.includes("hasRepeatedMessageSupport") &&
-      files.digest.includes("source_message_ids 必须至少包含 2 个不同消息 id") &&
+    files.digest.includes("source_message_ids 必须至少包含 2 个不同消息 id") &&
       vpsDreamCandidate.includes("single_message_not_durable") &&
-      vpsDreamCandidate.includes('action in {"add", "excerpt"} and source_message_count < 2'),
+      vpsDreamCandidate.includes('action in {"add", "excerpt"} and len(source_message_ids) < 2') &&
+      vpsDreamCandidate.includes("missing_durable_claim") &&
+      candidateQuality.includes("single_message_support"),
+  ],
+  [
+    "Diary split: active formal diaries enqueue automatically and missed jobs self-heal",
+    queueProducer.includes("enqueueDiarySplitIfNeeded") &&
+      queueProducer.includes("enqueueMissedDiarySplits") &&
+      queueProducer.includes("diary_split_v2_complete") &&
+      queueProducer.includes("'origin:' || m.id") &&
+      queueConsumer.includes('case "diary_split"') &&
+      queueConsumer.includes('eventType: "diary_split_queue_complete"') &&
+      mcpApi.includes("enqueueDiarySplitIfNeeded(env, memory)") &&
+      memoriesApi.includes("enqueueDiarySplitIfNeeded(env, memory)"),
+  ],
+  [
+    "Five-axis: nightly XYZEM is independent from narrative Dream and M stays review-first",
+    workerIndex.includes("isFiveAxisEnabled") &&
+      workerIndex.includes("FIVE_AXIS_DRY_RUN") &&
+      workerIndex.includes("scanMetabolismReviewCandidates") &&
+      workerIndex.includes('skipped: "five_axis_disabled"'),
+  ],
+  [
+    "Dream review: blocked verbatim evidence can be repaired and revalidated inline",
+    candidateActions.includes("repairCandidateEvidence") &&
+      candidateActions.includes("quote.includes(evidence)") &&
+      candidateDb.includes("updateMemoryCandidateEvidence") &&
+      candidateView.includes("修复逐字证据") &&
+      adminBoard.includes("repair-evidence"),
   ],
   [
     "Diary rescreen: replacement is explicit, bounded, staged, and reversible",

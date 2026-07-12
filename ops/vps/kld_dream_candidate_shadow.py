@@ -146,7 +146,7 @@ def build_prompt(date_label: str, start_iso: str, end_iso: str, messages: list[d
             "- title 是 12 字以内标题。",
             "- summary 写成一段简短自然中文，描述这次 dream 整理出了什么。",
             "- sections 最多 3 段，每段有 heading 和 content；没有必要可以给空数组。",
-            f"- important_excerpts 最多 {EXCERPT_LIMIT} 条，quote 必须是值得保留的原文片段。",
+            f"- important_excerpts 最多 {EXCERPT_LIMIT} 条，quote 必须是值得保留的原文片段；每条还必须给 durable_claim，用明确第三人称说明这段原话未来证明什么稳定偏好、边界、承诺或关系事实。",
             "- memories_to_add 最多 12 条，每条要短、稳定、可复用。",
             "- memories_to_update 只针对给出的旧记忆 id。",
             "- memories_to_delete 只删除空、重复、明显过期或被新信息否定的旧记忆。",
@@ -156,6 +156,7 @@ def build_prompt(date_label: str, start_iso: str, end_iso: str, messages: list[d
             "- memories_to_add 可以附带 LMC-5 坐标：fact_key 是稳定事实槽，thread 是主题线，risk_level 只能 low/normal/medium/high，urgency_level 只能 low/normal/medium/high，tension_score 是 0-1，response_posture 是未来回应姿态。",
             "- fact_key 不确定就输出 null，不要为了分类硬编事实槽。",
             "- 当输入是 chunk 时，每条新增、更新、删除和重要原文都要输出 source_chunk_ids，只能引用输入中的 chunk id。",
+            "- memories_to_add 和 important_excerpts 必须各自引用至少 2 个不同的 source_message_ids，且每个消息 id 必须落在所引 chunk 的消息范围内；不能用一个包含很多消息的 chunk 冒充多消息证据。",
             "- 每个候选（新增、更新、删除、重要原文、关系）都必须输出 evidence 和 source_chunk_ids。evidence 必须是所引用 chunk 的关键原话中的逐字片段，最多 80 字；不能用摘要、推断或改写冒充证据。",
             "- memories_to_add 和 memories_to_update 的 content 至少包含 30 个中文字符；不足时不要输出。",
             "- relation 的 source_memory_id 和 target_memory_id 不得相同。没有可靠候选时，输出空数组是合法结果。",
@@ -171,7 +172,7 @@ def build_prompt(date_label: str, start_iso: str, end_iso: str, messages: list[d
                     "title": "夜间整理",
                     "summary": "这次 dream 合并了重复记忆，更新了项目状态，并保留了关键原文。",
                     "sections": [{"heading": "整理结果", "content": "……"}],
-                    "important_excerpts": [{"quote": "用户或 KLD 说过的关键原文", "reason": "为什么值得保留", "tags": ["project"], "source_message_ids": ["1"]}],
+                    "important_excerpts": [{"quote": "用户或 KLD 说过的关键原文", "durable_claim": "用户（Layla）的稳定边界或关系事实", "reason": "为什么值得保留", "tags": ["project"], "source_message_ids": ["1", "2"], "source_chunk_ids": [1]}],
                     "memories_to_add": [
                         {
                             "type": "project",
@@ -187,7 +188,7 @@ def build_prompt(date_label: str, start_iso: str, end_iso: str, messages: list[d
                             "tension_score": 0.2,
                             "response_posture": "技术讨论中直接推进，优先保持现有功能兼容",
                             "evidence": "用户正在简化 KLD 的记忆写入策略",
-                            "source_message_ids": ["1"],
+                            "source_message_ids": ["1", "2"],
                             "source_chunk_ids": [1],
                         }
                     ],
@@ -241,9 +242,9 @@ def restore_candidate_provenance(raw_plan: dict, plan: dict) -> dict:
             if not bucket:
                 continue
             source = bucket.pop(0)
-            for field in ("subject", "evidence", "source_chunk_ids"):
+            for field in ("subject", "evidence", "durable_claim", "source_message_ids", "source_chunk_ids"):
                 value = source.get(field)
-                if field == "source_chunk_ids":
+                if field in {"source_message_ids", "source_chunk_ids"}:
                     if isinstance(value, list):
                         normalized[field] = list(value)
                 else:
@@ -306,6 +307,25 @@ def evidence_validation_error(
     return None
 
 
+def valid_source_message_ids(payload: dict, source_chunk_ids: list[int], chunks_by_id: dict[int, dict]) -> list[str]:
+    ranges = []
+    for chunk_id in source_chunk_ids:
+        chunk = chunks_by_id[chunk_id]
+        try:
+            ranges.append((int(chunk["start_message_id"]), int(chunk["end_message_id"])))
+        except (KeyError, TypeError, ValueError):
+            continue
+    valid = []
+    for value in payload.get("source_message_ids") or []:
+        try:
+            message_id = int(str(value))
+        except (TypeError, ValueError):
+            continue
+        if any(start <= message_id <= end for start, end in ranges):
+            valid.append(str(message_id))
+    return sorted(set(valid), key=int)
+
+
 def persist_candidates(db, date_label: str, plan: dict, chunks: list[dict]) -> dict:
     now = iso_utc(datetime.now(timezone.utc))
     chunks_by_id = {int(chunk["id"]): chunk for chunk in chunks}
@@ -338,17 +358,20 @@ def persist_candidates(db, date_label: str, plan: dict, chunks: list[dict]) -> d
             if str(value).isdigit() and int(value) in allowed_chunk_ids
         ]
         source_chunk_ids = sorted(set(source_chunk_ids))
-        source_message_count = sum(
-            max(0, int(chunks_by_id[chunk_id].get("message_count") or 0))
-            for chunk_id in source_chunk_ids
-        )
-        if action in {"add", "excerpt"} and source_message_count < 2:
+        source_message_ids = valid_source_message_ids(payload, source_chunk_ids, chunks_by_id)
+        if action in {"add", "excerpt"} and len(source_message_ids) < 2:
             reason = "single_message_not_durable"
             dropped += 1
             drop_reasons[reason] = drop_reasons.get(reason, 0) + 1
             continue
         safe_payload = dict(payload)
         safe_payload["source_chunk_ids"] = source_chunk_ids
+        safe_payload["source_message_ids"] = source_message_ids
+        if action == "excerpt" and not clean_str(safe_payload.get("durable_claim")):
+            reason = "missing_durable_claim"
+            dropped += 1
+            drop_reasons[reason] = drop_reasons.get(reason, 0) + 1
+            continue
         evidence = evidence_text(action, safe_payload)
         if evidence:
             safe_payload["evidence"] = evidence

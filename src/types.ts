@@ -66,6 +66,8 @@
   CACHE_MAX_VALUE_BYTES?: string;
   SUMMARY_MODEL?: string;
   ENABLE_DREAM?: string;
+  ENABLE_FIVE_AXIS?: string;
+  FIVE_AXIS_DRY_RUN?: string;
   DREAM_DRY_RUN?: string;
   DREAM_MODEL?: string;
   DREAM_TIME_ZONE?: string;
@@ -121,6 +123,13 @@ export interface DiaryRescreenQueueMessage {
   jobId: string;
 }
 
+export interface DiarySplitQueueMessage {
+  type: "diary_split";
+  namespace: string;
+  diaryId: string;
+  jobId: string;
+}
+
 export interface MemoryVectorSyncQueueMessage {
   type: "memory_vector_sync";
   namespace: string;
@@ -152,6 +161,7 @@ export type QueueMessage =
   | ConversationChunkQueueMessage
   | RetentionQueueMessage
   | DiaryRescreenQueueMessage
+  | DiarySplitQueueMessage
   | MemoryVectorSyncQueueMessage
   | CoordinateBackfillQueueMessage
   | RelationBackfillQueueMessage

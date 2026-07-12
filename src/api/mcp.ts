@@ -3,6 +3,7 @@ import { createMemory, listMemories, searchMemoriesByText, softDeleteMemory, upd
 import { deleteMemoryEmbedding, upsertMemoryEmbedding } from "../memory/embedding";
 import { searchMemories, toMemoryApiRecord } from "../memory/search";
 import { buildStartupContext } from "../memory/startupContext";
+import { enqueueDiarySplitIfNeeded } from "../queue/producer";
 import {
   normalizeFactKey,
   normalizeThread,
@@ -482,7 +483,10 @@ async function callTool(env: Env, ctx: ExecutionContext, profile: KeyProfile, pa
       sourceMessageIds: readStringArray(args.source_message_ids),
       expiresAt: null
     });
-    waitForBackground(ctx, upsertMemoryEmbedding(env, memory));
+    waitForBackground(ctx, Promise.all([
+      upsertMemoryEmbedding(env, memory),
+      enqueueDiarySplitIfNeeded(env, memory)
+    ]));
     const apiRecord = toMemoryApiRecord(memory);
     return textToolResult({ data: apiRecord, success: true, message: "Memory stored", id: memory.id, content_hash: memory.id });
   }

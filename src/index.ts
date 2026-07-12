@@ -21,7 +21,9 @@ import { runXyzemNightlyMaintenance } from "./memory/xyzem";
 import { runNarrativeTimeline, runTimelineSweep } from "./memory/narrativeTimeline";
 import { retryStaleVectorSyncs } from "./memory/state";
 import { getCoordinateBackfillControl, recordCoordinateBackfillRun } from "./memory/coordinateBackfillControl";
+import { scanMetabolismReviewCandidates } from "./memory/metabolismReview";
 import { handleQueueMessage } from "./queue/consumer";
+import { enqueueMissedDiarySplits } from "./queue/producer";
 import type { Env, QueueMessage } from "./types";
 import { openAiError } from "./utils/json";
 
@@ -39,6 +41,14 @@ function getDreamMaxRuns(env: Env): number {
 function isDreamEnabled(env: Env): boolean {
   const flag = env.ENABLE_DREAM?.trim();
   return flag ? flag !== "false" : false;
+}
+
+function isFiveAxisEnabled(env: Env): boolean {
+  return env.ENABLE_FIVE_AXIS?.trim() !== "false";
+}
+
+function isFiveAxisDryRun(env: Env): boolean {
+  return env.FIVE_AXIS_DRY_RUN?.trim() === "true";
 }
 
 function isDreamDryRun(env: Env): boolean {
@@ -75,6 +85,7 @@ export default {
         "/admin/memories/review/reject",
         "/admin/memories/candidates/approve",
         "/admin/memories/candidates/reject",
+        "/admin/memories/candidates/repair-evidence",
         "/admin/memories/candidates/batch-quality-reject",
         "/admin/memories/candidates/batch-facts",
         "/admin/memories/x-timeline/scan",
@@ -225,9 +236,10 @@ export default {
                 return result;
               })
             : Promise.resolve({ skipped: "disabled" as const }),
-          retryStaleVectorSyncs(env, namespace, 12)
+          retryStaleVectorSyncs(env, namespace, 12),
+          enqueueMissedDiarySplits(env, namespace, 2)
         ])
-          .then(([coordinate, vectorSync]) => console.log("scheduled five-minute maintenance", { namespace, coordinate, vectorSync }))
+          .then(([coordinate, vectorSync, diarySplits]) => console.log("scheduled five-minute maintenance", { namespace, coordinate, vectorSync, diarySplits }))
           .catch((error) => {
             console.error("scheduled five-minute maintenance failed", { namespace, error: error instanceof Error ? error.message : String(error) });
             throw error;
@@ -239,9 +251,12 @@ export default {
       Promise.all([
         runDreamBatches(env, namespace).then(async (digest) => ({
           digest,
-          xyzem: isDreamEnabled(env)
-            ? await runXyzemNightlyMaintenance(env, namespace, { dryRun: isDreamDryRun(env) })
-            : { skipped: "dream_disabled" as const },
+          xyzem: isFiveAxisEnabled(env)
+            ? await runXyzemNightlyMaintenance(env, namespace, { dryRun: isFiveAxisDryRun(env) }).then(async (result) => ({
+                ...result,
+                metabolismReview: await scanMetabolismReviewCandidates(env, namespace)
+              }))
+            : { skipped: "five_axis_disabled" as const },
           narrative: isDreamEnabled(env)
             ? await runNarrativeTimeline(env, namespace)
             : { skipped: "dream_disabled" as const },

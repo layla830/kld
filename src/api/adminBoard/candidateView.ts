@@ -20,8 +20,24 @@ const ERRORS: Record<string, string> = {
   missing_or_invalid_subject: "没有判断清楚这是谁的记忆。",
   user_subject_prefix_mismatch: "标记为用户记忆，但正文没有明确写‘用户（Layla）’。",
   kld_subject_prefix_mismatch: "标记为 KLD 记忆，但正文没有明确写‘KLD’。",
-  relationship_subjects_missing: "关系记忆没有同时明确写出用户（Layla）和 KLD。"
+  relationship_subjects_missing: "关系记忆没有同时明确写出用户（Layla）和 KLD。",
+  missing_evidence: "候选缺少可核对的逐字证据。",
+  evidence_too_long: "证据超过 80 字，请截取来源中的关键原话。",
+  evidence_not_verbatim_in_source_chunks: "候选正文可以保留，但引用证据不是来源关键原话中的逐字片段。"
 };
+
+function sourceQuotes(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.flatMap((chunk) => {
+    if (!chunk || typeof chunk !== "object") return [];
+    const quotes = (chunk as { important_quotes?: unknown }).important_quotes;
+    return Array.isArray(quotes) ? quotes.map(String).map((quote) => quote.trim()).filter(Boolean) : [];
+  }))];
+}
+
+function validationMessage(value: string): string {
+  return value.split(";").map((error) => ERRORS[error] || error).join("；");
+}
 
 function comparison(candidate: MemoryCandidateRecord, content: unknown): string {
   if (candidate.action !== "update" && candidate.action !== "delete") return "";
@@ -54,12 +70,19 @@ export function renderMemoryCandidate(candidate: MemoryCandidateRecord): string 
   const qualityChoice = quality.label !== "pass"
     ? `<label class="m-batch-choice"><input class="quality-batch-checkbox" form="quality-batch-form" type="checkbox" name="ids" value="${attr(candidate.id)}" onchange="updateQualityBatch()"> 选入低质量批量拒绝</label>` : "";
   const warning = candidate.validation_error
-    ? `<div class="review-warning"><strong>为什么被拦截：</strong>${htmlEscape(ERRORS[candidate.validation_error] || candidate.validation_error)}</div>` : "";
+    ? `<div class="review-warning"><strong>为什么被拦截：</strong>${htmlEscape(validationMessage(candidate.validation_error))}</div>` : "";
+  const evidenceBlocked = Boolean(candidate.validation_error?.split(";").some((error) => [
+    "missing_evidence", "evidence_too_long", "evidence_not_verbatim_in_source_chunks"
+  ].includes(error)));
+  const quotes = sourceQuotes(chunks);
+  const evidenceRepair = evidenceBlocked
+    ? `<section class="review-target"><div class="review-section-title">修复逐字证据</div><p>正文不会被改动。请从下面来源关键原话中复制一段不超过 80 字的逐字片段，保存后会立即重新校验。</p>${quotes.length ? `<details open><summary>来源关键原话</summary>${quotes.map((quote) => `<blockquote style="white-space:pre-wrap">${htmlEscape(quote)}</blockquote>`).join("")}</details>` : `<div class="review-warning">来源快照里没有关键原话，这条候选只能拒绝后由 Dream 重新生成。</div>`}<form method="POST" action="/admin/memories/candidates/repair-evidence"><input type="hidden" name="id" value="${attr(candidate.id)}"><textarea name="evidence" maxlength="80" required placeholder="粘贴来源中的逐字片段" style="width:100%;min-height:72px"></textarea><button class="action-btn approve-review" ${quotes.length ? "" : "disabled"}>保存证据并重新校验</button></form></section>`
+    : "";
   const batchChoice = candidate.action === "diary_split_fact" && candidate.status === "pending"
     ? `<label class="m-batch-choice"><input class="fact-batch-checkbox" form="fact-batch-form" type="checkbox" name="ids" value="${attr(candidate.id)}" onchange="updateFactBatch()"> 选入批量审核</label>`
     : "";
   const approve = canApprove
     ? `${batchChoice}<form method="POST" action="/admin/memories/candidates/approve" onsubmit="return confirm('${attr(action.effect)}')"><input type="hidden" name="id" value="${attr(candidate.id)}"><button class="action-btn approve-review">${htmlEscape(action.approve)}</button></form>`
     : `<button class="action-btn" disabled>${candidate.action === "relation" ? "关联功能尚未开放" : blocked ? "需先处理校验问题" : "找不到旧记忆，不能执行"}</button>`;
-  return `<article class="memory-card review-card ${blocked ? "muted" : ""}"><div class="message-header"><strong>${htmlEscape(action.title)}</strong></div><div class="memory-meta"><span class="score-pill">${htmlEscape(sourceLabel)}</span>${subject}${status}${qualityPill}</div><div class="lmc-explain"><p><strong>这条会做什么：</strong>${htmlEscape(action.effect)}</p></div><div class="message-content" style="white-space:pre-wrap">${htmlEscape(pretty(content))}</div>${candidate.action === "diary_split_fact" ? `<div class="review-warning"><strong>原文证据：</strong>${htmlEscape(pretty(payload.evidence || "（缺失）"))}</div>` : ""}${qualityWarning}${warning}${comparison(candidate, content)}<details class="memory-detail"><summary>为什么生成这条？查看来源对话摘要</summary><div class="char-count">来源片段：${htmlEscape(pretty(sourceIds))}</div><pre style="white-space:pre-wrap;overflow-wrap:anywhere">${htmlEscape(pretty(chunks))}</pre><details><summary>查看技术载荷</summary><pre style="white-space:pre-wrap;overflow-wrap:anywhere">${htmlEscape(pretty(payload))}</pre></details></details><div class="actions review-actions">${qualityChoice}${approve}<form method="POST" action="/admin/memories/candidates/reject" onsubmit="return confirm('确认拒绝这条建议？不会修改任何记忆。')"><input type="hidden" name="id" value="${attr(candidate.id)}"><button class="action-btn delete">拒绝，不做改动</button></form></div><div class="char-count">${htmlEscape(candidate.dream_date)} · ${htmlEscape(candidate.id)}</div></article>`;
+  return `<article class="memory-card review-card ${blocked ? "muted" : ""}"><div class="message-header"><strong>${htmlEscape(action.title)}</strong></div><div class="memory-meta"><span class="score-pill">${htmlEscape(sourceLabel)}</span>${subject}${status}${qualityPill}</div><div class="lmc-explain"><p><strong>这条会做什么：</strong>${htmlEscape(action.effect)}</p></div><div class="message-content" style="white-space:pre-wrap">${htmlEscape(pretty(content))}</div>${candidate.action === "diary_split_fact" ? `<div class="review-warning"><strong>原文证据：</strong>${htmlEscape(pretty(payload.evidence || "（缺失）"))}</div>` : ""}${qualityWarning}${warning}${evidenceRepair}${comparison(candidate, content)}<details class="memory-detail"><summary>为什么生成这条？查看来源对话摘要</summary><div class="char-count">来源片段：${htmlEscape(pretty(sourceIds))}</div><pre style="white-space:pre-wrap;overflow-wrap:anywhere">${htmlEscape(pretty(chunks))}</pre><details><summary>查看技术载荷</summary><pre style="white-space:pre-wrap;overflow-wrap:anywhere">${htmlEscape(pretty(payload))}</pre></details></details><div class="actions review-actions">${qualityChoice}${approve}<form method="POST" action="/admin/memories/candidates/reject" onsubmit="return confirm('确认拒绝这条建议？不会修改任何记忆。')"><input type="hidden" name="id" value="${attr(candidate.id)}"><button class="action-btn delete">拒绝，不做改动</button></form></div><div class="char-count">${htmlEscape(candidate.dream_date)} · ${htmlEscape(candidate.id)}</div></article>`;
 }

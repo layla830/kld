@@ -23,7 +23,7 @@ import {
 import { splitDiaryMemories } from "../memory/diarySplit";
 import { filterAndCompressMemoriesWithMeta } from "../memory/filter";
 import { searchMemories, toMemoryApiRecord } from "../memory/search";
-import { enqueueMemoryMaintenanceIfNeeded } from "../queue/producer";
+import { enqueueDiarySplitIfNeeded, enqueueMemoryMaintenanceIfNeeded } from "../queue/producer";
 import type { Env, KeyProfile, MemoryApiRecord, OpenAIChatMessage } from "../types";
 import { json, openAiError } from "../utils/json";
 import {
@@ -142,11 +142,12 @@ async function handleCreateMemory(
     expiresAt: readOptionalString(body.expires_at)
   });
 
-  ctx.waitUntil(
-    upsertMemoryEmbedding(env, memory).catch((error) => {
-      console.error("failed to upsert memory embedding", error);
-    })
-  );
+  ctx.waitUntil(Promise.all([
+    upsertMemoryEmbedding(env, memory),
+    enqueueDiarySplitIfNeeded(env, memory)
+  ]).catch((error) => {
+    console.error("failed to schedule memory background work", error);
+  }));
 
   return json({ data: cleanMemoryForResponse(toMemoryApiRecord(memory)) }, { status: 201 });
 }

@@ -23,6 +23,13 @@ async function hasCompletedDiaryRescreenJob(env: Env, namespace: string, jobId: 
   return Boolean(row?.id);
 }
 
+async function hasCompletedDiarySplit(env: Env, namespace: string, diaryId: string): Promise<boolean> {
+  const row = await env.DB.prepare(
+    "SELECT id FROM memory_events WHERE namespace = ? AND memory_id = ? AND event_type = 'diary_split_v2_complete' LIMIT 1"
+  ).bind(namespace, diaryId).first<{ id: string }>();
+  return Boolean(row?.id);
+}
+
 export async function handleQueueMessage(message: QueueMessage, env: Env): Promise<void> {
   switch (message.type) {
     case "memory_maintenance":
@@ -61,6 +68,23 @@ export async function handleQueueMessage(message: QueueMessage, env: Env): Promi
           diary_ids: message.diaryIds,
           plans
         }
+      });
+      return;
+    }
+    case "diary_split": {
+      if (await hasCompletedDiarySplit(env, message.namespace, message.diaryId)) return;
+      const plans = await splitDiaryMemories(env, {
+        namespace: message.namespace,
+        ids: [message.diaryId],
+        apply: true,
+        force: false,
+        debug: false
+      });
+      await createMemoryEvent(env.DB, {
+        namespace: message.namespace,
+        eventType: "diary_split_queue_complete",
+        memoryId: message.diaryId,
+        payload: { job_id: message.jobId, plans }
       });
       return;
     }

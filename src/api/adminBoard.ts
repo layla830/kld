@@ -1,5 +1,5 @@
 import type { Env } from "../types";
-import { enqueueMemoryVectorSync } from "../queue/producer";
+import { enqueueDiarySplitIfNeeded, enqueueMemoryVectorSync } from "../queue/producer";
 import { approveDreamReview, createBoardMemory, deleteBoardMemory, editBoardMemory, rejectDreamReview } from "./adminBoard/actions";
 import { forbidden, isAuthorized, isSameOriginAdminPost, unauthorized } from "./adminBoard/auth";
 import { fetchHeatmap, fetchLmc5Dashboard, fetchMemories, fetchQuoteCategories, fetchStats, fetchTimelineDates, fetchTypes } from "./adminBoard/data";
@@ -7,7 +7,7 @@ import { fetchDreamReviewMemories } from "./adminBoard/reviewData";
 import { inputFromUrl, noticeUrl, PAGE_SIZE, qs, readFormText } from "./adminBoard/utils";
 import { renderPage } from "./adminBoard/view";
 import { countMemoryCandidatesByAction, countPendingMetabolismCandidates, listMemoryCandidates, listMemoryCandidatesByAction, listMetabolismCandidates } from "../db/memoryCandidates";
-import { approveCandidate, batchRejectLowQualityCandidates, batchReviewDiaryFactCandidates, rejectCandidate } from "./adminBoard/candidateActions";
+import { approveCandidate, batchRejectLowQualityCandidates, batchReviewDiaryFactCandidates, rejectCandidate, repairCandidateEvidence } from "./adminBoard/candidateActions";
 import { getCoordinateBackfillStatus, setCoordinateBackfillEnabled } from "../memory/coordinateBackfillControl";
 import { approveTimelineCandidate, rejectTimelineCandidate } from "./adminBoard/timelineActions";
 import { getTimelineBackfillStatus, scanTimelineBackfillPage } from "../memory/timelineBackfill";
@@ -27,7 +27,10 @@ export async function handleAdminBoard(request: Request, env: Env, ctx: Executio
     const created = await createBoardMemory(env, form);
     const kind = readFormText(form, "kind");
     const tab = kind === "diary" ? "diary" : kind === "quote" ? "quote" : kind === "memory" ? "browse" : "message";
-    if (created) scheduleVectorSync(created);
+    if (created) {
+      scheduleVectorSync(created);
+      ctx.waitUntil(enqueueDiarySplitIfNeeded(env, created));
+    }
     return Response.redirect(`${url.origin}/admin/memories${qs(inputFromUrl(new URL(`${url.origin}/admin/memories?tab=${tab}`)), { tab, notice: created ? "created" : "empty" })}`, 303);
   }
 
@@ -136,6 +139,17 @@ export async function handleAdminBoard(request: Request, env: Env, ctx: Executio
       return Response.redirect(`${url.origin}${noticeUrl(ref, rejected ? "x-rejected" : "empty")}`, 303);
     } catch (error) {
       console.error("admin timeline reject failed", error);
+      return Response.redirect(`${url.origin}${noticeUrl(ref, "error")}`, 303);
+    }
+  }
+
+  if (request.method === "POST" && url.pathname === "/admin/memories/candidates/repair-evidence") {
+    const ref = request.headers.get("referer") || `${url.origin}/admin/memories?tab=review`;
+    try {
+      const result = await repairCandidateEvidence(env, await request.formData());
+      return Response.redirect(`${url.origin}${noticeUrl(ref, `evidence-${result}`)}`, 303);
+    } catch (error) {
+      console.error("admin candidate evidence repair failed", error);
       return Response.redirect(`${url.origin}${noticeUrl(ref, "error")}`, 303);
     }
   }
