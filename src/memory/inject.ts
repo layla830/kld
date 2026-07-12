@@ -1,5 +1,6 @@
 import { listMemories, markMemoriesRecalled } from "../db/memories";
 import type { Env, InjectionMode, KeyProfile, MemoryApiRecord, OpenAIChatMessage, OpenAIChatRequest } from "../types";
+import { loadRecallConfig } from "../config/runtime";
 import { filterAndCompressMemories } from "./filter";
 import { searchMemories, toMemoryApiRecord } from "./search";
 import { sanitizeMemoryContent } from "./contentSanitizer";
@@ -34,8 +35,7 @@ function resolveInjectionMode(profile: KeyProfile, env: Env): InjectionMode {
 }
 
 function getTopK(env: Env): number {
-  const value = Number(env.MEMORY_TOP_K || 8);
-  return Number.isFinite(value) ? Math.min(Math.max(value, 1), 50) : 8;
+  return loadRecallConfig(env).searchTopK;
 }
 
 function excludeAutoDiary(memories: MemoryApiRecord[]): MemoryApiRecord[] {

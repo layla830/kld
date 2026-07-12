@@ -1,4 +1,5 @@
 import type { Env } from "../types";
+import { loadRecallConfig } from "../config/runtime";
 import { factKeysForQueryHint } from "./queryHints";
 
 const MAX_PROMPT_CHARS = 1_200;
@@ -31,7 +32,7 @@ function normalizePrompt(prompt: string): string {
 }
 
 export function getRecallTopK(env: Env, requested?: number): number {
-  const fallback = Number(env.MEMORY_RECALL_TOP_K || DEFAULT_RECALL_TOP_K);
+  const fallback = loadRecallConfig(env).contextTopK;
   const value = requested || fallback;
   return Number.isFinite(value) ? clamp(Math.floor(value), 1, MAX_RECALL_TOP_K) : DEFAULT_RECALL_TOP_K;
 }

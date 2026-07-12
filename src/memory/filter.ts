@@ -1,5 +1,6 @@
 import { callOpenAICompat } from "../proxy/openaiAdapter";
 import type { Env, MemoryApiRecord, OpenAIChatRequest, OpenAIChatResponse } from "../types";
+import { loadRecallConfig } from "../config/runtime";
 import { sanitizeMemoryContent } from "./contentSanitizer";
 
 const DEFAULT_WORKERS_AI_FILTER_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
@@ -41,28 +42,23 @@ function clamp(value: number, min: number, max: number): number {
 }
 
 function getMaxCandidates(env: Env): number {
-  const value = Number(env.MEMORY_FILTER_MAX_CANDIDATES || 12);
-  return Number.isFinite(value) ? clamp(Math.floor(value), 1, 50) : 12;
+  return loadRecallConfig(env).filterMaxCandidates;
 }
 
 function getMaxOutput(env: Env): number {
-  const value = Number(env.MEMORY_FILTER_MAX_OUTPUT || 6);
-  return Number.isFinite(value) ? clamp(Math.floor(value), 1, 20) : 6;
+  return loadRecallConfig(env).filterMaxOutput;
 }
 
 function getMaxContentChars(env: Env): number {
-  const value = Number(env.MEMORY_FILTER_MAX_CONTENT_CHARS || 700);
-  return Number.isFinite(value) ? clamp(Math.floor(value), 120, 3000) : 700;
+  return loadRecallConfig(env).filterMaxContentChars;
 }
 
 function getMaxOutputChars(env: Env): number {
-  const value = Number(env.MEMORY_FILTER_OUTPUT_CHARS || 300);
-  return Number.isFinite(value) ? clamp(Math.floor(value), 60, 1000) : 300;
+  return loadRecallConfig(env).filterOutputChars;
 }
 
 function getFilterMinScore(env: Env): number {
-  const value = Number(env.MEMORY_FILTER_MIN_SCORE || env.MEMORY_MIN_SCORE || 0.35);
-  return Number.isFinite(value) ? clamp(value, 0, 1) : 0.35;
+  return loadRecallConfig(env).filterMinScore;
 }
 
 function truncateText(text: string, maxChars: number): string {

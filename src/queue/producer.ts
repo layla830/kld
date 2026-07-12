@@ -1,5 +1,5 @@
 import { listUnprocessedChunkMessages } from "../db/messages";
-import type { Env, QueueMessage } from "../types";
+import type { Env, MemoryRecord, QueueMessage } from "../types";
 import { handleQueueMessage } from "./consumer";
 
 const DEFAULT_CHUNK_THRESHOLD = 10;
@@ -176,4 +176,24 @@ export async function enqueueRetentionIfNeeded(
   };
 
   await sendQueueMessage(env, message);
+}
+
+export async function enqueueMemoryVectorSync(env: Env, memories: MemoryRecord[]): Promise<void> {
+  const unique = [...new Map(memories.map((memory) => [memory.id, memory])).values()];
+  const byNamespace = new Map<string, MemoryRecord[]>();
+  for (const memory of unique) byNamespace.set(memory.namespace, [...(byNamespace.get(memory.namespace) ?? []), memory]);
+  for (const [namespace, records] of byNamespace) {
+    for (let offset = 0; offset < records.length; offset += 3) {
+      const batch = records.slice(offset, offset + 3);
+      const signature = batch.map((memory) => `${memory.id}:${memory.updated_at}:${memory.status}`).join("|");
+      const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(signature));
+      const hash = [...new Uint8Array(digest)].slice(0, 8).map((byte) => byte.toString(16).padStart(2, "0")).join("");
+      await sendQueueMessage(env, {
+        type: "memory_vector_sync",
+        namespace,
+        memoryIds: batch.map((memory) => memory.id),
+        jobId: `vector:${hash}`
+      });
+    }
+  }
 }

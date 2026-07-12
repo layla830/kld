@@ -51,6 +51,9 @@ const candidateQuality = fs.readFileSync("src/memory/candidateQuality.ts", "utf8
 const recallTrace = fs.readFileSync("src/memory/recallTrace.ts", "utf8");
 const recallApi = fs.readFileSync("src/api/recall.ts", "utf8");
 const injection = fs.readFileSync("src/memory/inject.ts", "utf8");
+const coordinateBackfill = fs.readFileSync("src/application/coordinateBackfill.ts", "utf8");
+const recallFusion = fs.readFileSync("src/memory/recallFusion.ts", "utf8");
+const recallOutputPolicy = fs.readFileSync("src/memory/recallOutputPolicy.ts", "utf8");
 const vpsDreamCandidate = fs.readFileSync("ops/vps/kld_dream_candidate_shadow.py", "utf8");
 
 const checks = [
@@ -164,7 +167,7 @@ const checks = [
   ],
   [
     "Recall: lexical evidence is never vector-gated",
-    files.search.includes("const ftsResults = await searchMemoriesByText") &&
+    files.search.includes("searchMemoriesByText(env.DB") &&
       !files.search.includes("vectorTopScore < FTS_FLOOR"),
   ],
   [
@@ -174,12 +177,12 @@ const checks = [
   ],
   [
     "Recall: relation context receives reserved output slots",
-    files.search.includes("topK - additions.length") &&
-      files.search.includes("Math.min(2, topK - 1)"),
+    recallOutputPolicy.includes("topK - additions.length") &&
+      recallOutputPolicy.includes("Math.min(2, Math.max(0, topK - 1))"),
   ],
   [
     "Recall: long diary records are excluded from every route",
-    files.search.includes('new Set(["diary", "layla_diary", "auto_diary"])') &&
+    recallOutputPolicy.includes('new Set(["diary", "layla_diary", "auto_diary"])') &&
       files.search.includes("filter(isRecallEligible)"),
   ],
   [
@@ -222,7 +225,7 @@ const checks = [
   [
     "Recall: final output deduplicates repeated content and rejects weak relation tails",
     files.search.includes("dedupeRecallOutput") &&
-      files.search.includes("RELATED_CONTEXT_MIN_SCORE = 0.3"),
+      recallOutputPolicy.includes('memory.score >= 0.3'),
   ],
   [
     "Recall: explicit dates deterministically lead with the matching timeline day",
@@ -315,8 +318,8 @@ const checks = [
         "leadQuery = query && query.trim() ? query : rawQuery",
       ) &&
       postProcess.includes("memories.find(isGuidanceRecord);") &&
-      files.search.includes("rawQuery,") &&
-      /rawQuery,\r?\n    searchQuery/.test(files.search),
+      files.search.includes("plan.rawQuery") &&
+      files.search.includes("plan.searchQuery"),
   ],
   [
     "Y: existing memories have deterministic additive backfill",
@@ -377,7 +380,7 @@ const checks = [
   [
     "E: shadow gate controls ranking",
     files.search.includes("shouldApplyEAxisToRanking(env)") &&
-      files.search.includes("applyEAxis ? eAxisBoost(record) : 0"),
+      recallFusion.includes("applyEAxis ? eAxisBoost(record) : 0"),
   ],
   [
     "Night: Y runs before Z and M",
@@ -388,15 +391,16 @@ const checks = [
   ],
   [
     "Safety: coordinate backfill apply=false is read-only",
-    files.debug.includes("const apply = body?.apply === true"),
+    coordinateBackfill.includes("if (apply)") &&
+      files.debug.includes("apply: body?.apply === true"),
   ],
   [
     "Safety: coordinate proposals are bounded and exceptions are reviewable",
-    files.debug.includes("BACKFILL_BATCH_SIZE = 5") &&
-      files.debug.includes("slice(offset, offset + limit)") &&
-      files.debug.includes("splitCoordinatePatch") &&
-      files.debug.includes(
-        'mode: apply ? "auto_apply_with_exception_review" : "dry_run"',
+    coordinateBackfill.includes("COORDINATE_BACKFILL_BATCH_SIZE = 5") &&
+      coordinateBackfill.includes("slice(offset, offset + limit)") &&
+      coordinateBackfill.includes("splitCoordinatePatch") &&
+      coordinateBackfill.includes(
+        'apply ? "auto_apply_with_exception_review" : "dry_run"',
       ),
   ],
   [

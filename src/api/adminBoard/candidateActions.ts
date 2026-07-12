@@ -3,7 +3,7 @@ import { createMemory, getMemoryById, softDeleteMemory, updateMemory, type Updat
 import type { Env, MemoryRecord } from "../../types";
 import { readFormText } from "./utils";
 import { createMemoryRelation } from "../../db/memoryRelations";
-import { upsertMemoryEmbedding } from "../../memory/embedding";
+import { syncMemoryVector } from "../../memory/state";
 import { assessCandidateQuality } from "../../memory/candidateQuality";
 
 function payloadOf(text: string): Record<string, unknown> {
@@ -165,7 +165,7 @@ export async function approveCandidate(env: Env, form: FormData): Promise<Memory
     }
     if (updated.length !== ids.length) return null;
     for (const memory of updated.slice(1)) await createMemoryRelation(env.DB, { namespace:"default", sourceMemoryId:updated[0].id, targetMemoryId:memory.id, relationType:"same_fact_key", strength:0.92, reason:"approved fact group" });
-    await Promise.all(updated.map(memory => upsertMemoryEmbedding(env, memory)));
+    await Promise.all(updated.map((memory) => syncMemoryVector(env, memory)));
     target = updated[0];
   }
   if (!target) return null;

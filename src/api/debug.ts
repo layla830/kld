@@ -3,25 +3,15 @@ import { requireScope } from "../auth/scopes";
 import { runDailyMemoryDigest } from "../memory/dailyDigest";
 import { listFactKeyConflictsForReview, runXyzemNightlyMaintenance, runZAudit } from "../memory/xyzem";
 import { markMemorySupersededSynced } from "../memory/state";
-import { listMemories, updateMemory } from "../db/memories";
-import { dismissPendingMemoryCandidateByExternalKey, upsertMemoryCandidate } from "../db/memoryCandidates";
 import { callOpenAICompat } from "../proxy/openaiAdapter";
 import { extractJsonObject } from "../utils/jsonHelpers";
-import {
-  normalizeThread,
-  normalizeRiskLevel,
-  normalizeUrgencyLevel,
-  normalizeTensionScore,
-  normalizeResponsePosture,
-  normalizeValence,
-  normalizeArousal
-} from "../memory/coordinates";
 import { json, openAiError } from "../utils/json";
 import { readBody } from "./common";
 import type { Env, MemoryRecord, OpenAIChatRequest, OpenAIChatResponse } from "../types";
 import { proposeFactGroups } from "../memory/factGroups";
 import { runTimelineBackfill } from "../memory/timelineBackfill";
 import { runLegacyRelationBackfill, parseLegacyRelationRequest, isLegacyRelationRequestError } from "../memory/legacyRelations";
+import { runCoordinateBackfill } from "../application/coordinateBackfill";
 
 interface CacheHealthRow {
   created_at: string;
@@ -293,42 +283,6 @@ const BACKFILL_BATCH_SIZE = 5;
 const BACKFILL_MODEL_BATCH_SIZE = 5;
 
 type BackfillUpdate = Record<string, unknown> & { id: string };
-type CoordinatePatch = Parameters<typeof updateMemory>[1]["patch"];
-
-const THREAD_SLUG = /^[a-z0-9]+(?:[._-][a-z0-9]+)*$/;
-
-function coordinatePayload(patch: CoordinatePatch): Record<string, unknown> {
-  return Object.fromEntries(Object.entries({
-    fact_key: patch.factKey,
-    thread: patch.thread,
-    risk_level: patch.riskLevel,
-    urgency_level: patch.urgencyLevel,
-    tension_score: patch.tensionScore,
-    response_posture: patch.responsePosture,
-    valence: patch.valence,
-    arousal: patch.arousal
-  }).filter(([, value]) => value !== undefined));
-}
-
-function splitCoordinatePatch(patch: CoordinatePatch): {
-  automatic: CoordinatePatch;
-  review: CoordinatePatch;
-  reasons: string[];
-} {
-  const reasons: string[] = [];
-  const automatic = { ...patch };
-  const review: CoordinatePatch = {};
-  const move = (key: keyof CoordinatePatch, reason: string) => {
-    if (automatic[key] === undefined) return;
-    (review as Record<string, unknown>)[key] = automatic[key];
-    delete automatic[key];
-    if (!reasons.includes(reason)) reasons.push(reason);
-  };
-  if (patch.thread && !THREAD_SLUG.test(patch.thread)) move("thread", "noncanonical_thread");
-
-  return { automatic, review, reasons };
-}
-
 function readAssistantText(response: OpenAIChatResponse): string {
   const content = (response.choices?.[0]?.message as { content?: unknown } | undefined)?.content;
   if (typeof content === "string") return content.trim();
@@ -419,126 +373,29 @@ export async function handleBackfillCoordinates(
   }
 
   const body = request.method === "POST" ? await readBody(request) : null;
-  const namespace = typeof body?.namespace === "string" ? String(body.namespace) : "default";
-  const apply = body?.apply === true;
-  const limit = typeof body?.limit === "number" ? Math.min(Math.max(Math.floor(body.limit), 1), BACKFILL_BATCH_SIZE) : BACKFILL_BATCH_SIZE;
-  const offset = typeof body?.offset === "number" ? Math.min(Math.max(Math.floor(body.offset), 0), 1000) : 0;
-
-  const model = env.MEMORY_MODEL || env.DREAM_MODEL || env.MEMORY_EXTRACT_MODEL;
-  if (!model) return json({ error: "missing_model" }, { status: 400 });
-
   try {
-    const allMemories = await listMemories(env.DB, { namespace, status: "active", limit: 1000 });
-    const needBackfill = allMemories.filter(
-      (m) => !m.fact_key && !m.thread && m.risk_level === null && m.valence === null
-    );
-    const batch = needBackfill.slice(offset, offset + limit);
-
-    if (batch.length === 0) {
-      return json({ ok: true, mode: apply ? "auto_apply_with_exception_review" : "dry_run", scanned: allMemories.length, needBackfill: needBackfill.length, offset, nextOffset: null, processed: 0, applied: 0, queued: 0, message: "No memories in this backfill page" });
-    }
-
-    const updates: BackfillUpdate[] = [];
-    for (let offset = 0; offset < batch.length; offset += BACKFILL_MODEL_BATCH_SIZE) {
-      updates.push(...await labelBackfillBatch(env, model, batch.slice(offset, offset + BACKFILL_MODEL_BATCH_SIZE)));
-    }
-
-    const byId = new Map(batch.map((memory) => [memory.id, memory]));
-    const results: Array<{ id: string; outcome: string; automatic_fields: string[]; review_fields: string[]; review_reasons: string[]; before: Record<string, unknown>; proposed: Record<string, unknown> }> = [];
-    let applied = 0;
-    let queued = 0;
-
-    for (const item of updates) {
-      if (!item || typeof item !== "object") continue;
-      const record = item as Record<string, unknown>;
-      const id = typeof record.id === "string" ? record.id : null;
-      const current = id ? byId.get(id) : null;
-      if (!id || !current) continue;
-
-      const patch: CoordinatePatch = {};
-      if (record.thread !== undefined) patch.thread = normalizeThread(record.thread);
-      if (record.risk_level !== undefined) patch.riskLevel = normalizeRiskLevel(record.risk_level);
-      if (record.urgency_level !== undefined) patch.urgencyLevel = normalizeUrgencyLevel(record.urgency_level);
-      if (record.tension_score !== undefined) patch.tensionScore = normalizeTensionScore(record.tension_score);
-      if (record.response_posture !== undefined) patch.responsePosture = normalizeResponsePosture(record.response_posture);
-      if (record.valence !== undefined) patch.valence = normalizeValence(record.valence);
-      if (record.arousal !== undefined) patch.arousal = normalizeArousal(record.arousal);
-
-      const fields = Object.keys(patch);
-      if (fields.length === 0) continue;
-
-      const before = {
-        fact_key: current.fact_key,
-        thread: current.thread,
-        risk_level: current.risk_level,
-        urgency_level: current.urgency_level,
-        tension_score: current.tension_score,
-        response_posture: current.response_posture,
-        valence: current.valence,
-        arousal: current.arousal
-      };
-      const proposed = coordinatePayload(patch);
-      const split = splitCoordinatePatch(patch);
-      const automaticFields = Object.keys(split.automatic);
-      const reviewFields = Object.keys(split.review);
-
-      if (apply) {
-        if (automaticFields.length > 0) {
-          const updated = await updateMemory(env.DB, { namespace, id, patch: split.automatic });
-          if (updated) applied += 1;
-        }
-        if (reviewFields.length > 0) {
-          await upsertMemoryCandidate(env.DB, namespace, {
-            externalKey: `coordinate-backfill:${id}`,
-            dreamDate: new Date().toISOString().slice(0, 10),
-            action: "update",
-            subject: "memory_coordinates",
-            targetId: id,
-            payload: { _kind: "coordinate_backfill", _before: before, _review_reasons: split.reasons, ...coordinatePayload(split.review) },
-            sourceChunkIds: [],
-            sourceChunks: [],
-            status: "pending"
-          });
-          queued += 1;
-        } else {
-          await dismissPendingMemoryCandidateByExternalKey(env.DB, namespace, `coordinate-backfill:${id}`);
-        }
-      }
-
-      const outcome = !apply ? "dry_run" : automaticFields.length > 0 && reviewFields.length > 0 ? "auto_and_review" : reviewFields.length > 0 ? "review" : "auto_applied";
-      results.push({ id, outcome, automatic_fields: automaticFields, review_fields: reviewFields, review_reasons: split.reasons, before, proposed });
-    }
-
-    return json({
-      ok: true,
-      mode: apply ? "auto_apply_with_exception_review" : "dry_run",
-      scanned: allMemories.length,
-      needBackfill: needBackfill.length,
-      offset,
-      nextOffset: offset + batch.length < needBackfill.length ? offset + batch.length : null,
-      processed: batch.length,
-      applied,
-      queued,
-      results
-    });
+    return json(await runCoordinateBackfill(env, {
+      namespace: typeof body?.namespace === "string" ? body.namespace : "default",
+      apply: body?.apply === true,
+      limit: typeof body?.limit === "number" ? body.limit : BACKFILL_BATCH_SIZE,
+      offset: typeof body?.offset === "number" ? body.offset : 0
+    }, labelBackfillBatch));
   } catch (error) {
     console.error("backfill_coordinates failed", error);
     const detail = error instanceof Error ? error.message : String(error);
+    if (detail === "missing_model") return json({ error: detail }, { status: 400 });
     const isModelError = detail.startsWith("model_status_") || detail === "invalid_model_json_after_retry";
     return json({ error: isModelError ? "model_output_error" : "backfill_failed", detail }, { status: isModelError ? 502 : 500 });
   }
 }
 
 export async function runScheduledCoordinateBackfill(env: Env, namespace: string): Promise<unknown> {
-  const request = new Request("https://internal.invalid/v1/debug/backfill_coordinates", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ namespace, apply: true, limit: BACKFILL_BATCH_SIZE, offset: 0 })
-  });
-  const response = await handleBackfillCoordinates(request, env, { trustedInternal: true });
-  const result = await response.json();
-  if (!response.ok) throw new Error(`scheduled_coordinate_backfill_failed:${response.status}:${JSON.stringify(result)}`);
-  return result;
+  return runCoordinateBackfill(env, {
+    namespace,
+    apply: true,
+    limit: BACKFILL_BATCH_SIZE,
+    offset: 0
+  }, labelBackfillBatch);
 }
 
 export async function handleFactGroupProposals(request: Request, env: Env): Promise<Response> {

@@ -1,9 +1,16 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import json
+from pathlib import Path
 import unittest
 
 from recall_decision import decide_recall
+
+
+FIXTURES = json.loads(
+    (Path(__file__).resolve().parents[2] / "fixtures" / "recall-ownership.json").read_text(encoding="utf-8")
+)
 
 
 class RecallRoutingRegressionTest(unittest.TestCase):
@@ -13,34 +20,14 @@ class RecallRoutingRegressionTest(unittest.TestCase):
         self.assertEqual(local, decision.use_local, decision)
         self.assertEqual(remote, decision.use_remote, decision)
 
-    def test_historical_date_uses_curated_timeline(self) -> None:
-        self.assert_route("6月10日我们发生了什么", local=False, remote=True)
-
-    def test_response_posture_question_uses_worker(self) -> None:
-        self.assert_route("我哭的时候你应该怎么做", local=False, remote=True)
-
-    def test_preference_question_uses_worker(self) -> None:
-        self.assert_route("我不喜欢你用什么说话方式", local=False, remote=True)
-
-    def test_relationship_history_uses_worker(self) -> None:
-        self.assert_route("那次我们为什么吵架", local=False, remote=True)
-
-    def test_status_question_uses_worker(self) -> None:
-        self.assert_route("复婚是谁来提", local=False, remote=True)
-
-    def test_recent_context_uses_vps(self) -> None:
-        self.assert_route("刚才聊到哪了", local=True, remote=False)
-
-    def test_explicit_raw_evidence_uses_vps(self) -> None:
-        self.assert_route("把6月10日我当时的原话找出来", local=True, remote=False)
-
-    def test_current_emotion_does_not_force_recall(self) -> None:
-        decision = decide_recall("我现在好难过")
-        self.assertFalse(decision.should_recall, decision)
-
-    def test_trivial_message_does_not_recall(self) -> None:
-        decision = decide_recall("好")
-        self.assertFalse(decision.should_recall, decision)
+    def test_shared_ownership_contract(self) -> None:
+        for fixture in FIXTURES:
+            with self.subTest(fixture=fixture["name"]):
+                decision = decide_recall(fixture["prompt"])
+                owner = fixture["expected_owner"]
+                self.assertEqual(owner != "none", decision.should_recall, decision)
+                self.assertEqual(owner == "local", decision.use_local, decision)
+                self.assertEqual(owner == "worker", decision.use_remote, decision)
 
 
 if __name__ == "__main__":

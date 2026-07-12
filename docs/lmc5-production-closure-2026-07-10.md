@@ -223,3 +223,30 @@ Verification:
 
 No candidate was automatically rejected, approved, or promoted. No D1 schema, memory status, relation, vector, secret, Worker variable, VPS hook, or service definition was changed. Worker rollback target is `ea2f0c73-cf5e-4668-8872-797e55925526`.
 
+## 2026-07-12 structural-boundary refactor
+
+Production Worker version: `a33dcb9a-50d8-4a41-ba71-c8dc7c2cb4de`.
+
+This refactor preserves the deployed memory behavior while establishing explicit ownership boundaries:
+
+- Worker and VPS routing tests now consume the same `fixtures/recall-ownership.json` contract;
+- Vitest provides executable unit coverage for recall ownership, query planning, typed runtime config, and legacy-candidate proposal mapping;
+- scheduled coordinate backfill calls an application use case directly instead of constructing a fake HTTP `Request`;
+- core recall settings are parsed and clamped once through typed runtime config, and time-sensitive code uses an injected clock boundary;
+- `src/memory/search.ts` is now a 136-line orchestrator instead of an 810-line policy module;
+- temporal parsing, query planning, candidate fusion, affective retrieval, and output policy have separate owners;
+- the existing `memory_candidates` table is mapped to typed X/Y/Z/E/M/ingest proposals without a schema migration;
+- admin memory writes enqueue bounded, idempotent vector-sync jobs through the existing Queue consumer instead of maintaining per-route Vectorize branches.
+
+Verification:
+
+- `npm.cmd test`: 14/14 unit tests passed.
+- `npm.cmd run typecheck`: passed.
+- `npm.cmd run test:lmc5-circuits`: 68/68 checks passed after updating checks to follow the new module owners.
+- Wrangler deploy dry-run: passed with unchanged D1, Vectorize, Queue, and AI bindings and no migration.
+- Production deployment completed with a 1 ms Worker startup time.
+- `npm audit --omit=dev` could not run because the approval service reported a usage-limit block. Vitest is development-only; no production runtime dependency was added.
+- The post-deploy VPS stdin regression was not claimed: the approval service blocked the composite SSH probe, and a later read-only D1 probe encountered `fetch failed` through the configured proxy.
+
+No D1 schema, memory row, candidate resolution, relation, secret, Worker variable, VPS file, hook registration, or service definition was changed by the refactor. Worker rollback target is `bc2a780d-551c-4331-9179-70e3b646e030`.
+

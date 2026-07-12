@@ -1,4 +1,5 @@
 import type { Env, MemoryApiRecord } from "../types";
+import { loadRecallConfig } from "../config/runtime";
 import { filterAndCompressMemories } from "./filter";
 
 const FILTER_TIMEOUT_MS = 8000;
@@ -16,11 +17,7 @@ const SHORT_UTTERANCE_NOISE_RE =
 type IntentKind = "utterance" | "fact" | "time" | "guidance" | "general";
 
 function getMaxOutput(env: Env, requestedTopK: number): number {
-  const value = Number(env.MEMORY_SEARCH_MAX_OUTPUT || 8);
-  const maxOutput = Number.isFinite(value)
-    ? Math.min(Math.max(Math.floor(value), 1), 20)
-    : 8;
-  return Math.min(requestedTopK, maxOutput);
+  return Math.min(requestedTopK, loadRecallConfig(env).searchMaxOutput);
 }
 
 function intentKind(rawQuery: string, query: string): IntentKind {
