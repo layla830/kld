@@ -7,7 +7,7 @@ import { fetchDreamReviewMemories } from "./adminBoard/reviewData";
 import { inputFromUrl, noticeUrl, PAGE_SIZE, qs, readFormText } from "./adminBoard/utils";
 import { renderPage } from "./adminBoard/view";
 import { countMemoryCandidatesByAction, countPendingMetabolismCandidates, listMemoryCandidates, listMemoryCandidatesByAction, listMetabolismCandidates } from "../db/memoryCandidates";
-import { approveCandidate, batchReviewDiaryFactCandidates, rejectCandidate } from "./adminBoard/candidateActions";
+import { approveCandidate, batchRejectLowQualityCandidates, batchReviewDiaryFactCandidates, rejectCandidate } from "./adminBoard/candidateActions";
 import { getCoordinateBackfillStatus, setCoordinateBackfillEnabled } from "../memory/coordinateBackfillControl";
 import { approveTimelineCandidate, rejectTimelineCandidate } from "./adminBoard/timelineActions";
 import { getTimelineBackfillStatus, scanTimelineBackfillPage } from "../memory/timelineBackfill";
@@ -135,6 +135,18 @@ export async function handleAdminBoard(request: Request, env: Env, ctx: Executio
       return Response.redirect(`${url.origin}${noticeUrl(ref, rejected ? "x-rejected" : "empty")}`, 303);
     } catch (error) {
       console.error("admin timeline reject failed", error);
+      return Response.redirect(`${url.origin}${noticeUrl(ref, "error")}`, 303);
+    }
+  }
+
+  if (request.method === "POST" && url.pathname === "/admin/memories/candidates/batch-quality-reject") {
+    const ref = request.headers.get("referer") || `${url.origin}/admin/memories?tab=review`;
+    try {
+      const result = await batchRejectLowQualityCandidates(env, await request.formData());
+      const notice = !result || result.processed === 0 ? "empty" : result.skipped > 0 ? "quality-batch-partial" : "quality-batch-rejected";
+      return Response.redirect(`${url.origin}${noticeUrl(ref, notice)}`, 303);
+    } catch (error) {
+      console.error("admin candidate quality batch reject failed", error);
       return Response.redirect(`${url.origin}${noticeUrl(ref, "error")}`, 303);
     }
   }

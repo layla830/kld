@@ -1,0 +1,44 @@
+import type { MemoryApiRecord } from "../types";
+
+export type RecallLayerName = "authority" | "evidence" | "association" | "fallback";
+
+export interface RecallLayerTrace {
+  count: number;
+  ids: string[];
+  types: string[];
+}
+
+export interface RecallTrace {
+  strategy: "deterministic_fast_path" | "hybrid_search";
+  layers: Record<RecallLayerName, RecallLayerTrace>;
+}
+
+const AUTHORITY_TYPES = new Set(["rule", "lesson", "core", "preference", "identity", "project_state", "timeline_day"]);
+const EVIDENCE_TYPES = new Set(["quote", "excerpt", "milestone", "message", "conversation_message", "episodic"]);
+
+function layerOf(memory: MemoryApiRecord): RecallLayerName {
+  const type = memory.type.toLowerCase();
+  if (memory.fact_key || AUTHORITY_TYPES.has(type)) return "authority";
+  if (EVIDENCE_TYPES.has(type)) return "evidence";
+  if (memory.thread || memory.tags.some((tag) => /relation|timeline|same_|in_thread|derived_from/i.test(tag))) return "association";
+  return "fallback";
+}
+
+export function buildRecallTrace(memories: MemoryApiRecord[], strategy: RecallTrace["strategy"]): RecallTrace {
+  const buckets: Record<RecallLayerName, MemoryApiRecord[]> = {
+    authority: [], evidence: [], association: [], fallback: []
+  };
+  for (const memory of memories) buckets[layerOf(memory)].push(memory);
+
+  const layers = Object.fromEntries(
+    (Object.entries(buckets) as Array<[RecallLayerName, MemoryApiRecord[]]>).map(([name, records]) => [
+      name,
+      {
+        count: records.length,
+        ids: records.map((record) => record.id),
+        types: [...new Set(records.map((record) => record.type))]
+      }
+    ])
+  ) as Record<RecallLayerName, RecallLayerTrace>;
+  return { strategy, layers };
+}

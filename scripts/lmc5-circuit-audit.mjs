@@ -47,6 +47,10 @@ const candidateActions = fs.readFileSync("src/api/adminBoard/candidateActions.ts
 const candidateView = fs.readFileSync("src/api/adminBoard/candidateView.ts", "utf8");
 const adminBoard = fs.readFileSync("src/api/adminBoard.ts", "utf8");
 const adminView = fs.readFileSync("src/api/adminBoard/view.ts", "utf8");
+const candidateQuality = fs.readFileSync("src/memory/candidateQuality.ts", "utf8");
+const recallTrace = fs.readFileSync("src/memory/recallTrace.ts", "utf8");
+const recallApi = fs.readFileSync("src/api/recall.ts", "utf8");
+const injection = fs.readFileSync("src/memory/inject.ts", "utf8");
 const vpsDreamCandidate = fs.readFileSync("ops/vps/kld_dream_candidate_shadow.py", "utf8");
 
 const checks = [
@@ -504,6 +508,35 @@ const checks = [
       !fs
         .readFileSync("src/memory/maintenance.ts", "utf8")
         .includes("await extractMemories"),
+  ],
+  [
+    "Dream: candidate atom quality is advisory, deterministic, and batch-reject only",
+    candidateQuality.includes('"reject_suggested"') &&
+      candidateQuality.includes("pipeline_scaffold") &&
+      candidateQuality.includes("contextless_excerpt") &&
+      candidateView.includes("原子质量提示") &&
+      candidateActions.includes("batchRejectLowQualityCandidates") &&
+      candidateActions.includes('resolveMemoryCandidate(env.DB, "default", id, "rejected")') &&
+      !candidateQuality.includes("createMemory(") &&
+      adminView.includes("只会拒绝你勾选的低质量候选"),
+  ],
+  [
+    "Recall: final injected memories feed M state with privacy-preserving layered trace",
+    recallApi.includes('eventType: "recall_context_injected"') &&
+      recallApi.includes("query_hash") &&
+      recallApi.includes("markMemoriesRecalled") &&
+      recallApi.includes("ctx.waitUntil") &&
+      !recallApi.includes("payload: {\n            prompt:") &&
+      recallTrace.includes('"authority"') &&
+      recallTrace.includes('"evidence"') &&
+      recallTrace.includes('"association"') &&
+      recallTrace.includes('"fallback"'),
+  ],
+  [
+    "Recall: gateway feedback counts final compressed output rather than search candidates",
+    !injection.includes("recordRecall: true") &&
+      injection.includes("finalizeInjectionSelection") &&
+      injection.includes("markMemoriesRecalled"),
   ],
   [
     "M: listMetabolismCandidates shows pending only, no approved re-bubbling",

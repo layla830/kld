@@ -198,3 +198,28 @@ Verification:
 
 No D1 row, memory status, candidate, relation, vector, secret, Worker variable, systemd unit, or hook registration was changed. Worker rollback target for this follow-up is `d51b9058-a89d-4432-9908-c7e20d8e38ca`; VPS rollback is the backup path above.
 
+## 2026-07-12 atom quality and recall-feedback follow-up
+
+Production Worker version: `bc2a780d-551c-4331-9179-70e3b646e030`.
+
+This follow-up selectively adopts the useful LMC-5 patterns without replacing KLD's existing retrieval architecture:
+
+- candidate cards now receive an advisory atom-quality assessment for scaffold text, interaction noise, overly coarse or multi-fact content, multi-chunk evidence, contextless excerpts, and content that is too thin;
+- the review page supports batch rejection of selected low-quality candidates, while approval and formal-memory writes remain individual human decisions;
+- recall responses carry a layered trace covering authority, evidence, association, and fallback results;
+- only the memories in the final returned or compressed injection are counted as recalled;
+- final API injection records a `recall_context_injected` event with a short SHA-256 query hash, query length, selected memory IDs, reasons, latency, and the layered trace; raw prompt text is not stored.
+
+The existing KLD hybrid ranking already includes rank fusion. No production switch to upstream pure RRF was made; KLD should first accumulate its own layered traces and compare replay quality.
+
+Verification:
+
+- `npm.cmd run typecheck`: passed.
+- `npm.cmd run test:lmc5-circuits`: 68/68 checks passed.
+- Wrangler deploy dry-run: passed with unchanged bindings and no migration.
+- Live automatic recall for the communication-style question returned canonical fact `user.preference.communication_style`.
+- The corresponding final-injection event recorded one authority-layer preference result in 376 ms, and the selected memory's recall counter advanced to 20.
+- A read-only production candidate query confirmed at least two contextless excerpts (`莲花^_^` and `56.25！`) that the new review audit can surface.
+
+No candidate was automatically rejected, approved, or promoted. No D1 schema, memory status, relation, vector, secret, Worker variable, VPS hook, or service definition was changed. Worker rollback target is `ea2f0c73-cf5e-4668-8872-797e55925526`.
+

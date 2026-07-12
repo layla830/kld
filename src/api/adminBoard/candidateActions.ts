@@ -4,6 +4,7 @@ import type { Env, MemoryRecord } from "../../types";
 import { readFormText } from "./utils";
 import { createMemoryRelation } from "../../db/memoryRelations";
 import { upsertMemoryEmbedding } from "../../memory/embedding";
+import { assessCandidateQuality } from "../../memory/candidateQuality";
 
 function payloadOf(text: string): Record<string, unknown> {
   try { const value = JSON.parse(text); return value && typeof value === "object" ? value : {}; } catch { return {}; }
@@ -38,6 +39,29 @@ function updatePatch(payload: Record<string, unknown>): UpdateMemoryInput {
 export async function rejectCandidate(env: Env, form: FormData): Promise<boolean> {
   const id = readFormText(form, "id");
   return id ? resolveMemoryCandidate(env.DB, "default", id, "rejected") : false;
+}
+
+export interface CandidateQualityBatchResult {
+  selected: number;
+  processed: number;
+  skipped: number;
+}
+
+const MAX_QUALITY_BATCH_SIZE = 100;
+
+export async function batchRejectLowQualityCandidates(env: Env, form: FormData): Promise<CandidateQualityBatchResult | null> {
+  const ids = [...new Set(form.getAll("ids").map(String).map((id) => id.trim()).filter(Boolean))]
+    .slice(0, MAX_QUALITY_BATCH_SIZE);
+  if (ids.length === 0) return null;
+
+  let processed = 0;
+  for (const id of ids) {
+    const candidate = await getMemoryCandidate(env.DB, "default", id);
+    if (!candidate || !["pending", "needs_subject_review"].includes(candidate.status)) continue;
+    if (assessCandidateQuality(candidate).label === "pass") continue;
+    if (await resolveMemoryCandidate(env.DB, "default", id, "rejected")) processed += 1;
+  }
+  return { selected: ids.length, processed, skipped: ids.length - processed };
 }
 
 export interface DiaryFactBatchResult {

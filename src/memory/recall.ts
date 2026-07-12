@@ -7,9 +7,20 @@ import { topicNeedles } from "./recallNeedles";
 import { formatRecallBlock } from "./recallFormat";
 import { analyzeRecallNeed, getRecallTopK } from "./recallIntent";
 import { factKeysForQueryHint } from "./queryHints";
+import { buildRecallTrace, type RecallTrace } from "./recallTrace";
 
 export { formatRecallBlock } from "./recallFormat";
 export { analyzeRecallNeed } from "./recallIntent";
+
+export interface RecallContextResult {
+  should_recall: boolean;
+  score: number;
+  reasons: string[];
+  query: string;
+  memories: MemoryApiRecord[];
+  recall: string;
+  trace: RecallTrace;
+}
 
 function mergeUniqueMemories(primary: MemoryApiRecord[], secondary: MemoryApiRecord[]): MemoryApiRecord[] {
   const seen = new Set<string>();
@@ -57,10 +68,10 @@ async function fetchDurableLexicalCandidates(
 export async function buildRecallContext(
   env: Env,
   input: { namespace: string; prompt: string; topK?: number; force?: boolean }
-): Promise<{ should_recall: boolean; score: number; reasons: string[]; query: string; memories: MemoryApiRecord[]; recall: string }> {
+): Promise<RecallContextResult> {
   const analysis = analyzeRecallNeed(input.prompt);
   if (!input.force && !analysis.shouldRecall) {
-    return { should_recall: false, score: analysis.score, reasons: analysis.reasons, query: analysis.query, memories: [], recall: "" };
+    return { should_recall: false, score: analysis.score, reasons: analysis.reasons, query: analysis.query, memories: [], recall: "", trace: buildRecallTrace([], "hybrid_search") };
   }
 
   const topK = getRecallTopK(env, input.topK);
@@ -94,7 +105,8 @@ export async function buildRecallContext(
         reasons: [...new Set([...analysis.reasons, "deterministic_fast_path"])],
         query: searchQuery,
         memories: supportedDirect,
-        recall: directRecall
+        recall: directRecall,
+        trace: buildRecallTrace(supportedDirect, "deterministic_fast_path")
       };
     }
   }
@@ -130,6 +142,7 @@ export async function buildRecallContext(
     reasons: analysis.reasons,
     query: searchQuery,
     memories: supportedMemories,
-    recall
+    recall,
+    trace: buildRecallTrace(supportedMemories, "hybrid_search")
   };
 }

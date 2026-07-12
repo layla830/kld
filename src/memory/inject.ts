@@ -1,4 +1,4 @@
-import { listMemories } from "../db/memories";
+import { listMemories, markMemoriesRecalled } from "../db/memories";
 import type { Env, InjectionMode, KeyProfile, MemoryApiRecord, OpenAIChatMessage, OpenAIChatRequest } from "../types";
 import { filterAndCompressMemories } from "./filter";
 import { searchMemories, toMemoryApiRecord } from "./search";
@@ -51,14 +51,29 @@ async function searchMemoriesForInjection(
       namespace: input.namespace,
       query: input.query,
       topK: input.topK,
-      includeMessages: true,
-      recordRecall: true
+      includeMessages: true
     });
     return excludeAutoDiary(memories);
   } catch (error) {
     console.error("memory injection search failed", error);
     return [];
   }
+}
+
+async function finalizeInjectionSelection(
+  env: Env,
+  namespace: string,
+  memories: MemoryApiRecord[]
+): Promise<MemoryApiRecord[]> {
+  const memoryIds = memories.map((memory) => memory.id).filter((id) => !id.startsWith("msg_"));
+  if (memoryIds.length > 0) {
+    try {
+      await markMemoriesRecalled(env.DB, { namespace, ids: memoryIds });
+    } catch (error) {
+      console.error("memory injection feedback write failed", error);
+    }
+  }
+  return memories;
 }
 
 function dedupeMemories(memories: MemoryApiRecord[]): MemoryApiRecord[] {
@@ -90,10 +105,10 @@ export async function selectMemoriesForInjection(
       limit: 100
     });
 
-    return filterAndCompressMemories(env, {
+    return finalizeInjectionSelection(env, namespace, await filterAndCompressMemories(env, {
       query: input.query,
       memories: excludeAutoDiary(records.map((record) => toMemoryApiRecord(record)))
-    });
+    }));
   }
 
   const ragMemories = input.query.trim()
@@ -105,10 +120,10 @@ export async function selectMemoriesForInjection(
     : [];
 
   if (mode === "rag") {
-    return filterAndCompressMemories(env, {
+    return finalizeInjectionSelection(env, namespace, await filterAndCompressMemories(env, {
       query: input.query,
       memories: ragMemories
-    });
+    }));
   }
 
   const records = await listMemories(env.DB, {
@@ -118,10 +133,10 @@ export async function selectMemoriesForInjection(
   });
   const pinned = excludeAutoDiary(records.filter((record) => record.pinned).map((record) => toMemoryApiRecord(record)));
 
-  return filterAndCompressMemories(env, {
+  return finalizeInjectionSelection(env, namespace, await filterAndCompressMemories(env, {
     query: input.query,
     memories: dedupeMemories([...pinned, ...ragMemories])
-  });
+  }));
 }
 
 function formatCoordHints(memory: MemoryApiRecord): { prefix: string; suffix: string } {

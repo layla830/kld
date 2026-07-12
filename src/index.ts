@@ -75,6 +75,7 @@ export default {
         "/admin/memories/review/reject",
         "/admin/memories/candidates/approve",
         "/admin/memories/candidates/reject",
+        "/admin/memories/candidates/batch-quality-reject",
         "/admin/memories/candidates/batch-facts",
         "/admin/memories/x-timeline/scan",
         "/admin/memories/x-timeline/approve",
@@ -137,7 +138,7 @@ export default {
     }
 
     if (request.method === "POST" && url.pathname === "/v1/memories/recall") {
-      return handleRecall(request, env);
+      return handleRecall(request, env, ctx);
     }
 
     if (url.pathname === "/v1/memory-relations") {

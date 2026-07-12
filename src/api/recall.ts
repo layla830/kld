@@ -1,6 +1,7 @@
 import { authenticate } from "../auth/apiKey";
 import { requireScope } from "../auth/scopes";
 import { markMemoriesRecalled } from "../db/memories";
+import { createMemoryEvent } from "../db/memoryEvents";
 import { buildRecallContext } from "../memory/recall";
 import type { Env, KeyProfile } from "../types";
 import { json, openAiError } from "../utils/json";
@@ -30,7 +31,12 @@ async function readBody(request: Request): Promise<Record<string, unknown> | nul
   }
 }
 
-export async function handleRecall(request: Request, env: Env): Promise<Response> {
+async function promptHash(prompt: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(prompt));
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("").slice(0, 16);
+}
+
+export async function handleRecall(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   const auth = await authenticate(request, env);
   if (!auth.ok) return openAiError("Unauthorized", 401, "authentication_error");
 
@@ -44,6 +50,7 @@ export async function handleRecall(request: Request, env: Env): Promise<Response
   if (!prompt) return openAiError("prompt is required", 400);
 
   const namespace = resolveNamespace(auth.profile, body.namespace);
+  const started = Date.now();
   const result = await buildRecallContext(env, {
     namespace,
     prompt,
@@ -53,7 +60,25 @@ export async function handleRecall(request: Request, env: Env): Promise<Response
 
   if (result.should_recall) {
     const memoryIds = result.memories.map((memory) => memory.id).filter((id) => !id.startsWith("msg_"));
-    await markMemoriesRecalled(env.DB, { namespace, ids: memoryIds });
+    ctx.waitUntil((async () => {
+      const queryHash = await promptHash(prompt);
+      await Promise.all([
+        markMemoriesRecalled(env.DB, { namespace, ids: memoryIds }),
+        createMemoryEvent(env.DB, {
+          namespace,
+          eventType: "recall_context_injected",
+          payload: {
+            query_hash: queryHash,
+            query_length: prompt.length,
+            memory_ids: memoryIds,
+            result_count: result.memories.length,
+            elapsed_ms: Date.now() - started,
+            reasons: result.reasons,
+            trace: result.trace
+          }
+        })
+      ]);
+    })().catch((error) => console.error("recall feedback write failed", error)));
   }
 
   return json(result);
