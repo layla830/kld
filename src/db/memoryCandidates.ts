@@ -106,6 +106,33 @@ export async function listMetabolismCandidates(db: D1Database, namespace: string
   return enrichMetabolismRelationEndpoints(db, namespace, result.results ?? []);
 }
 
+const OPERATIONAL_REVIEW_ACTIONS = ["z_supersede", "m_archive", "m_relation_cleanup"] as const;
+
+export async function listOperationalReviewCandidates(db: D1Database, namespace: string, limit = 100): Promise<MemoryCandidateRecord[]> {
+  const placeholders = OPERATIONAL_REVIEW_ACTIONS.map(() => "?").join(", ");
+  const result = await db.prepare(
+    `SELECT c.*, m.content AS target_content, m.type AS target_type, m.status AS target_status
+     FROM memory_candidates c
+     LEFT JOIN memories m ON m.namespace = c.namespace AND m.id = c.target_id
+     WHERE c.namespace = ? AND c.action IN (${placeholders}) AND c.status = 'pending'
+     ORDER BY CASE c.action WHEN 'z_supersede' THEN 0 ELSE 1 END, c.created_at DESC
+     LIMIT ?`
+  ).bind(namespace, ...OPERATIONAL_REVIEW_ACTIONS, limit).all<MemoryCandidateRecord>();
+  return enrichMetabolismRelationEndpoints(db, namespace, result.results ?? []);
+}
+
+export async function listRecentApprovedOperationalReviewCandidates(db: D1Database, namespace: string, limit = 12): Promise<MemoryCandidateRecord[]> {
+  const placeholders = OPERATIONAL_REVIEW_ACTIONS.map(() => "?").join(", ");
+  const result = await db.prepare(
+    `SELECT c.*, m.content AS target_content, m.type AS target_type, m.status AS target_status
+     FROM memory_candidates c
+     LEFT JOIN memories m ON m.namespace = c.namespace AND m.id = c.target_id
+     WHERE c.namespace = ? AND c.action IN (${placeholders}) AND c.status = 'approved'
+     ORDER BY c.resolved_at DESC LIMIT ?`
+  ).bind(namespace, ...OPERATIONAL_REVIEW_ACTIONS, limit).all<MemoryCandidateRecord>();
+  return enrichMetabolismRelationEndpoints(db, namespace, result.results ?? []);
+}
+
 function readRelationEndpointIds(candidate: MemoryCandidateRecord): { sourceId: string | null; targetId: string | null } {
   try {
     const payload = JSON.parse(candidate.payload_json) as unknown;
@@ -169,6 +196,15 @@ export async function countPendingMetabolismCandidates(db: D1Database, namespace
     `SELECT COUNT(*) AS count FROM memory_candidates
      WHERE namespace = ? AND action IN ('m_archive','m_relation_cleanup') AND status = 'pending'`
   ).bind(namespace).first<{ count: number }>();
+  return row?.count ?? 0;
+}
+
+export async function countPendingOperationalReviewCandidates(db: D1Database, namespace: string): Promise<number> {
+  const placeholders = OPERATIONAL_REVIEW_ACTIONS.map(() => "?").join(", ");
+  const row = await db.prepare(
+    `SELECT COUNT(*) AS count FROM memory_candidates
+     WHERE namespace = ? AND action IN (${placeholders}) AND status = 'pending'`
+  ).bind(namespace, ...OPERATIONAL_REVIEW_ACTIONS).first<{ count: number }>();
   return row?.count ?? 0;
 }
 

@@ -2,7 +2,7 @@ import { authenticate } from "../auth/apiKey";
 import { requireScope } from "../auth/scopes";
 import { runDailyMemoryDigest } from "../memory/dailyDigest";
 import { listFactKeyConflictsForReview, runXyzemNightlyMaintenance, runZAudit } from "../memory/xyzem";
-import { markMemorySupersededSynced } from "../memory/state";
+import { listMemoryCandidatesByAction } from "../db/memoryCandidates";
 import { callOpenAICompat } from "../proxy/openaiAdapter";
 import { extractJsonObject } from "../utils/jsonHelpers";
 import { json, openAiError } from "../utils/json";
@@ -12,6 +12,8 @@ import { proposeFactGroups } from "../memory/factGroups";
 import { runTimelineBackfill } from "../memory/timelineBackfill";
 import { runLegacyRelationBackfill, parseLegacyRelationRequest, isLegacyRelationRequestError } from "../memory/legacyRelations";
 import { runCoordinateBackfill } from "../application/coordinateBackfill";
+import { scanFactTransitionReviewCandidates } from "../memory/factTransitionReview";
+import { approveFactTransitionCandidate } from "./adminBoard/factTransitionActions";
 
 interface CacheHealthRow {
   created_at: string;
@@ -252,27 +254,26 @@ export async function handleZAuditApprove(request: Request, env: Env): Promise<R
   if (!factKey) return json({ error: "fact_key_required" }, { status: 400 });
 
   try {
-    const reviews = await listFactKeyConflictsForReview(env, namespace, 200);
-    const target = reviews.find(
-      (review) => review.fact_key === factKey && review.reason === "pending_supersede_review" && review.best
-    );
-    if (!target || !target.best) {
+    await scanFactTransitionReviewCandidates(env, namespace);
+    const candidates = (await listMemoryCandidatesByAction(env.DB, namespace, "z_supersede", 200))
+      .filter((candidate) => {
+        try { return (JSON.parse(candidate.payload_json) as { fact_key?: unknown }).fact_key === factKey; }
+        catch { return false; }
+      });
+    if (candidates.length === 0) {
       return json({ ok: false, error: "no_pending_conflict", fact_key: factKey }, { status: 404 });
     }
 
     const superseded: string[] = [];
-    for (const weaker of target.weaker) {
-      const result = await markMemorySupersededSynced(env, namespace, weaker.id, {
-        fact_key: target.fact_key,
-        best_id: target.best.id,
-        superseded_id: weaker.id,
-        action: "z_approve",
-        reason: "manual approve via z_approve endpoint"
-      });
-      if (result) superseded.push(weaker.id);
+    for (const candidate of candidates) {
+      const form = new FormData();
+      form.set("id", candidate.id);
+      form.set("namespace", namespace);
+      const result = await approveFactTransitionCandidate(env, form);
+      if (result) superseded.push(...result.memories.map((memory) => memory.id));
     }
 
-    return json({ ok: true, fact_key: factKey, best_id: target.best.id, superseded });
+    return json({ ok: true, fact_key: factKey, superseded });
   } catch (error) {
     console.error("z_approve failed", error);
     return json({ error: "z_approve_failed", detail: error instanceof Error ? error.message : String(error) }, { status: 500 });

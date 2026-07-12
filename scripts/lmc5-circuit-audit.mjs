@@ -25,6 +25,10 @@ const metabolismView = fs.readFileSync(
   "src/api/adminBoard/metabolismView.ts",
   "utf8",
 );
+const factTransitionReview = fs.readFileSync("src/memory/factTransitionReview.ts", "utf8");
+const operationalReview = fs.readFileSync("src/memory/operationalReview.ts", "utf8");
+const factTransitionActions = fs.readFileSync("src/api/adminBoard/factTransitionActions.ts", "utf8");
+const operationalReviewActions = fs.readFileSync("src/api/adminBoard/operationalReviewActions.ts", "utf8");
 
 const timelineBackfill = fs.readFileSync(
   "src/memory/timelineBackfill.ts",
@@ -271,10 +275,10 @@ const checks = [
       memoriesApi.includes("enqueueDiarySplitIfNeeded(env, memory)"),
   ],
   [
-    "Five-axis: nightly XYZEM is independent from narrative Dream and M stays review-first",
+    "Five-axis: nightly XYZEM is independent from narrative Dream and Z/M stay review-first",
     workerIndex.includes("isFiveAxisEnabled") &&
       workerIndex.includes("FIVE_AXIS_DRY_RUN") &&
-      workerIndex.includes("scanMetabolismReviewCandidates") &&
+      workerIndex.includes("scanOperationalReviewCandidates") &&
       workerIndex.includes('skipped: "five_axis_disabled"'),
   ],
   [
@@ -477,6 +481,47 @@ const checks = [
     "M: patrol findings become explicit review candidates",
     metabolismReview.includes('action: "m_archive"') &&
       metabolismReview.includes('action: "m_relation_cleanup"'),
+  ],
+  [
+    "Z: nightly conflicts become one typed review candidate per weaker fact",
+    factTransitionReview.includes('action: "z_supersede"') &&
+      factTransitionReview.includes('_kind: "fact_transition"') &&
+      factTransitionReview.includes("for (const weaker of review.weaker)") &&
+      operationalReview.includes("scanFactTransitionReviewCandidates") &&
+      operationalReview.includes("scanMetabolismReviewCandidates") &&
+      fs.readFileSync("src/index.ts", "utf8").includes("scanOperationalReviewCandidates"),
+  ],
+  [
+    "Z/M: one admin skeleton dispatches approve reject and rollback by proposal action",
+    operationalReviewActions.includes('action === "z_supersede"') &&
+      operationalReviewActions.includes("approveMetabolismCandidate") &&
+      operationalReviewActions.includes("approveFactTransitionCandidate") &&
+      adminBoard.includes("approveOperationalReviewCandidate") &&
+      adminBoard.includes("rejectOperationalReviewCandidate") &&
+      adminBoard.includes("rollbackOperationalReviewCandidate") &&
+      metabolismView.includes("renderFactTransitionCandidate") &&
+      metabolismView.includes('/admin/memories/m-review/approve') &&
+      metabolismView.includes('/admin/memories/m-review/reject') &&
+      metabolismView.includes('/admin/memories/m-review/rollback') &&
+      !adminBoard.includes("/admin/memories/z-review/"),
+  ],
+  [
+    "Z: approval revalidates current ranking, snapshots, supersedes, and rollback resyncs",
+    factTransitionActions.includes("listFactKeyConflictsForReview") &&
+      factTransitionActions.includes("fact_transition_candidate_is_stale") &&
+      factTransitionActions.includes('eventType: "z_snapshot"') &&
+    factTransitionActions.includes("markMemorySupersededSynced") &&
+      memoryState.includes('expectedStatus: "active"') &&
+      memoryState.includes("requireUnpinned: true") &&
+      factTransitionActions.includes('status: "active"') &&
+      factTransitionActions.includes("syncMemoryVector") &&
+      factTransitionActions.includes('eventType: "z_rollback"'),
+  ],
+  [
+    "Z: compatibility debug approval delegates to the same candidate use case",
+    files.debug.includes("scanFactTransitionReviewCandidates") &&
+      files.debug.includes("approveFactTransitionCandidate") &&
+      !files.debug.includes("markMemorySupersededSynced"),
   ],
   [
     "M: repeated patrols advance past relations already reviewed or queued",

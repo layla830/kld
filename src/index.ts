@@ -21,7 +21,7 @@ import { runXyzemNightlyMaintenance } from "./memory/xyzem";
 import { runNarrativeTimeline, runTimelineSweep } from "./memory/narrativeTimeline";
 import { retryStaleVectorSyncs } from "./memory/state";
 import { getCoordinateBackfillControl, recordCoordinateBackfillRun } from "./memory/coordinateBackfillControl";
-import { scanMetabolismReviewCandidates } from "./memory/metabolismReview";
+import { scanOperationalReviewCandidates } from "./memory/operationalReview";
 import { handleQueueMessage } from "./queue/consumer";
 import { enqueueMissedDiarySplits } from "./queue/producer";
 import type { Env, QueueMessage } from "./types";
@@ -254,7 +254,7 @@ export default {
           xyzem: isFiveAxisEnabled(env)
             ? await runXyzemNightlyMaintenance(env, namespace, { dryRun: isFiveAxisDryRun(env) }).then(async (result) => ({
                 ...result,
-                metabolismReview: await scanMetabolismReviewCandidates(env, namespace)
+                operationalReview: await scanOperationalReviewCandidates(env, namespace)
               }))
             : { skipped: "five_axis_disabled" as const },
           narrative: isDreamEnabled(env)

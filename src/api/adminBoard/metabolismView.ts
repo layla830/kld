@@ -180,11 +180,32 @@ function renderRelationCandidate(candidate: MemoryCandidateRecord, payload: Reco
   return `<article class="memory-card review-card ${issue.code === "unknown" ? "muted" : ""}"><div class="message-header"><strong>Y 关系清理 · M 巡检</strong><div class="m-review-status">${batchSelector}<span class="tag-pill">${approved ? "已执行，可回滚" : "等待审核"}</span></div></div><div class="memory-meta"><span class="score-pill">问题类型：${htmlEscape(issue.label)}</span><span class="score-pill">关系：${htmlEscape(typeInfo.label)}</span><span class="tag-pill">${htmlEscape(typeInfo.direction)}</span>${strength === null ? "" : `<span class="tag-pill">强度 ${strength.toFixed(2)}</span>`}</div><div class="lmc-explain"><p><strong>这条线表示：</strong>${htmlEscape(typeInfo.meaning)}</p><p><strong>为什么建议删：</strong>${htmlEscape(issue.explanation)}</p><p><strong>审核建议：</strong>${htmlEscape(issue.recommendation)}</p><p><strong>批准影响：</strong>${htmlEscape(effect)}</p></div>${renderRelationEndpoints(candidate, before)}<section class="review-diff"><div class="review-section-title">批准前后</div><div class="review-diff-row"><div class="review-before"><strong>批准前</strong><p>A 和 B 之间保存着这条关系边。</p></div><div class="review-arrow">→</div><div class="review-after"><strong>批准后</strong><p>只移除这条边；A、B 两条记忆仍原样保留。</p></div></div></section><details class="memory-detail"><summary>查看技术快照与巡检原始原因</summary><p class="char-count">${htmlEscape(rawReason || "没有原始原因")}</p><pre style="white-space:pre-wrap;overflow-wrap:anywhere">${htmlEscape(JSON.stringify(before, null, 2))}</pre></details><div class="actions review-actions">${actionButtons}</div><div class="char-count">relation：${htmlEscape(readString(before, "id") || "未知")} · candidate：${htmlEscape(candidate.id)}</div></article>`;
 }
 
+function renderFactMemory(label: string, value: unknown, state: string): string {
+  const memory = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  const importance = readNumber(memory, "importance");
+  const confidence = readNumber(memory, "confidence");
+  return `<div class="review-before"><strong>${htmlEscape(label)}</strong><div class="memory-meta"><span class="score-pill">${htmlEscape(readString(memory, "type") || "unknown")}</span><span class="tag-pill">${htmlEscape(state)}</span>${importance === null ? "" : `<span class="tag-pill">重要度 ${importance.toFixed(2)}</span>`}${confidence === null ? "" : `<span class="tag-pill">置信度 ${confidence.toFixed(2)}</span>`}</div><p>${htmlEscape(short(readString(memory, "content") || "（正文缺失）", 420))}</p><div class="char-count">ID：${htmlEscape(readString(memory, "id") || "未知")}</div></div>`;
+}
+
+function renderFactTransitionCandidate(candidate: MemoryCandidateRecord, payload: Record<string, unknown>, approved: boolean): string {
+  const factKey = readString(payload, "fact_key") || "未标记";
+  const best = payload.best;
+  const weaker = payload.weaker;
+  const effect = "保留上方事实为 active；下方较弱版本改为 superseded 并退出召回。两条正文都不会被删除。";
+  const actionButtons = approved
+    ? `<form method="POST" action="/admin/memories/m-review/rollback" onsubmit="return confirm('恢复被取代的旧事实，让它重新参与召回？')"><input type="hidden" name="id" value="${attr(candidate.id)}"><button class="action-btn approve-review">回滚这次取代</button></form>`
+    : `<form method="POST" action="/admin/memories/m-review/approve" onsubmit="return confirm('${attr(effect)}')"><input type="hidden" name="id" value="${attr(candidate.id)}"><button class="action-btn approve-review">确认取代旧事实</button></form><form method="POST" action="/admin/memories/m-review/reject" onsubmit="return confirm('保留两条 active 事实，不执行取代？')"><input type="hidden" name="id" value="${attr(candidate.id)}"><button class="action-btn delete">两条都保留</button></form>`;
+  return `<article class="memory-card review-card"><div class="message-header"><strong>Z 事实状态 · 取代候选</strong><span class="tag-pill">${approved ? "已执行，可回滚" : "等待审核"}</span></div><div class="memory-meta"><span class="score-pill">fact：${htmlEscape(factKey)}</span></div><div class="lmc-explain"><p><strong>为什么出现：</strong>${htmlEscape(readString(payload, "reason") || "同一事实槽存在多个 active 版本")}</p><p><strong>批准影响：</strong>${htmlEscape(effect)}</p></div><section class="review-diff"><div class="review-section-title">核对保留版本与被取代版本</div><div class="review-diff-row">${renderFactMemory("保留 · 当前最佳事实", best, "继续 active")}<div class="review-arrow">→</div>${renderFactMemory("取代 · 较弱旧事实", weaker, approved ? "当前 superseded" : "将变为 superseded")}</div></section><section class="review-diff"><div class="review-section-title">批准前后</div><div class="review-diff-row"><div class="review-before"><strong>批准前</strong><p>两条记忆都以 active 状态参与召回，可能互相冲突。</p></div><div class="review-arrow">→</div><div class="review-after"><strong>批准后</strong><p>只保留最佳版本参与召回；旧版本保留正文和审计记录，可从这里回滚。</p></div></div></section><details class="memory-detail"><summary>查看 Z proposal 技术快照</summary><pre style="white-space:pre-wrap;overflow-wrap:anywhere">${htmlEscape(JSON.stringify(payload, null, 2))}</pre></details><div class="actions review-actions">${actionButtons}</div><div class="char-count">candidate：${htmlEscape(candidate.id)}</div></article>`;
+}
+
 export function renderMetabolismCandidate(candidate: MemoryCandidateRecord): string {
   const payload = payloadOf(candidate.payload_json);
   const before = beforeOf(payload);
   const approved = candidate.status === "approved";
+  if (candidate.action === "z_supersede") return renderFactTransitionCandidate(candidate, payload, approved);
   return candidate.action === "m_archive"
     ? renderArchiveCandidate(candidate, payload, before, approved)
     : renderRelationCandidate(candidate, payload, before, approved);
 }
+
+export const renderOperationalReviewCandidate = renderMetabolismCandidate;

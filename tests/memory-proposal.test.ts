@@ -17,6 +17,7 @@ describe("typed proposal mapper", () => {
     expect(proposalFromCandidate(candidate("timeline_date")).axis).toBe("X");
     expect(proposalFromCandidate(candidate("relation")).axis).toBe("Y");
     expect(proposalFromCandidate(candidate("fact_group")).axis).toBe("Z");
+    expect(proposalFromCandidate(candidate("z_supersede", { _kind: "fact_transition" })).axis).toBe("Z");
     expect(proposalFromCandidate(candidate("update", { _kind: "coordinate_backfill" })).axis).toBe("E");
     expect(proposalFromCandidate(candidate("m_archive")).axis).toBe("M");
   });

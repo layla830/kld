@@ -132,6 +132,8 @@ export async function markMemorySupersededSynced(
     namespace,
     id,
     patch: { status: "superseded" },
+    expectedStatus: "active",
+    requireUnpinned: true,
   });
   if (!superseded) return null;
 

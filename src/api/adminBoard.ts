@@ -6,13 +6,15 @@ import { fetchHeatmap, fetchLmc5Dashboard, fetchMemories, fetchQuoteCategories, 
 import { fetchDreamReviewMemories } from "./adminBoard/reviewData";
 import { inputFromUrl, noticeUrl, PAGE_SIZE, qs, readFormText } from "./adminBoard/utils";
 import { renderPage } from "./adminBoard/view";
-import { countMemoryCandidatesByAction, countPendingMetabolismCandidates, listMemoryCandidates, listMemoryCandidatesByAction, listMetabolismCandidates } from "../db/memoryCandidates";
+import { countMemoryCandidatesByAction, countPendingOperationalReviewCandidates, listMemoryCandidates, listMemoryCandidatesByAction, listOperationalReviewCandidates, listRecentApprovedOperationalReviewCandidates } from "../db/memoryCandidates";
 import { approveCandidate, batchRejectLowQualityCandidates, batchReviewDiaryFactCandidates, rejectCandidate, repairCandidateEvidence } from "./adminBoard/candidateActions";
 import { getCoordinateBackfillStatus, setCoordinateBackfillEnabled } from "../memory/coordinateBackfillControl";
 import { approveTimelineCandidate, rejectTimelineCandidate } from "./adminBoard/timelineActions";
 import { getTimelineBackfillStatus, scanTimelineBackfillPage } from "../memory/timelineBackfill";
-import { scanMetabolismReviewCandidates } from "../memory/metabolismReview";
-import { approveMetabolismCandidate, batchReviewMetabolismCandidates, rejectMetabolismCandidate, rollbackMetabolismCandidate } from "./adminBoard/metabolismActions";
+import { scanOperationalReviewCandidates } from "../memory/operationalReview";
+import { batchReviewMetabolismCandidates } from "./adminBoard/metabolismActions";
+import { approveOperationalReviewCandidate, rejectOperationalReviewCandidate, rollbackOperationalReviewCandidate } from "./adminBoard/operationalReviewActions";
+import type { MemoryCandidateRecord } from "../db/memoryCandidates";
 
 export async function handleAdminBoard(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   if (!isAuthorized(request, env)) return unauthorized();
@@ -185,7 +187,7 @@ export async function handleAdminBoard(request: Request, env: Env, ctx: Executio
 
   if (request.method === "POST" && url.pathname === "/admin/memories/m-review/scan") {
     try {
-      await scanMetabolismReviewCandidates(env, "default");
+      await scanOperationalReviewCandidates(env, "default");
       return Response.redirect(`${url.origin}/admin/memories?tab=m-review&notice=m-scanned`, 303);
     } catch (error) {
       console.error("admin metabolism scan failed", error);
@@ -196,9 +198,9 @@ export async function handleAdminBoard(request: Request, env: Env, ctx: Executio
   if (request.method === "POST" && url.pathname === "/admin/memories/m-review/approve") {
     const ref = request.headers.get("referer") || `${url.origin}/admin/memories?tab=m-review`;
     try {
-      const result = await approveMetabolismCandidate(env, await request.formData());
-      if (result?.memory) scheduleVectorSync(result.memory);
-      return Response.redirect(`${url.origin}${noticeUrl(ref, result ? "m-approved" : "empty")}`, 303);
+      const result = await approveOperationalReviewCandidate(env, await request.formData());
+      if (result?.memories.length) scheduleVectorSync(...result.memories);
+      return Response.redirect(`${url.origin}${noticeUrl(ref, result ? "approved" : "empty")}`, 303);
     } catch (error) {
       console.error("admin metabolism approve failed", error);
       return Response.redirect(`${url.origin}${noticeUrl(ref, "error")}`, 303);
@@ -208,8 +210,8 @@ export async function handleAdminBoard(request: Request, env: Env, ctx: Executio
   if (request.method === "POST" && url.pathname === "/admin/memories/m-review/reject") {
     const ref = request.headers.get("referer") || `${url.origin}/admin/memories?tab=m-review`;
     try {
-      const rejected = await rejectMetabolismCandidate(env, await request.formData());
-      return Response.redirect(`${url.origin}${noticeUrl(ref, rejected ? "m-rejected" : "empty")}`, 303);
+      const rejected = await rejectOperationalReviewCandidate(env, await request.formData());
+      return Response.redirect(`${url.origin}${noticeUrl(ref, rejected ? "rejected" : "empty")}`, 303);
     } catch (error) {
       console.error("admin metabolism reject failed", error);
       return Response.redirect(`${url.origin}${noticeUrl(ref, "error")}`, 303);
@@ -235,8 +237,8 @@ export async function handleAdminBoard(request: Request, env: Env, ctx: Executio
   if (request.method === "POST" && url.pathname === "/admin/memories/m-review/rollback") {
     const ref = request.headers.get("referer") || `${url.origin}/admin/memories?tab=m-review`;
     try {
-      const result = await rollbackMetabolismCandidate(env, await request.formData());
-      if (result?.memory) scheduleVectorSync(result.memory);
+      const result = await rollbackOperationalReviewCandidate(env, await request.formData());
+      if (result?.memories.length) scheduleVectorSync(...result.memories);
       return Response.redirect(`${url.origin}${noticeUrl(ref, result ? "m-rolled-back" : "empty")}`, 303);
     } catch (error) {
       console.error("admin metabolism rollback failed", error);
@@ -259,7 +261,8 @@ export async function handleAdminBoard(request: Request, env: Env, ctx: Executio
   ]);
 
   let candidateTotal = 0;
-  let metabolismPending = 0;
+  let operationalPending = 0;
+  let resolvedCandidates: MemoryCandidateRecord[] = [];
   let candidates = input.tab === "review" ? await listMemoryCandidates(env.DB, "default", 100) : [];
   if (input.tab === "x-review") {
     [candidateTotal, candidates] = await Promise.all([
@@ -268,15 +271,16 @@ export async function handleAdminBoard(request: Request, env: Env, ctx: Executio
     ]);
   }
   if (input.tab === "m-review") {
-    [metabolismPending, candidates] = await Promise.all([
-      countPendingMetabolismCandidates(env.DB, "default"),
-      listMetabolismCandidates(env.DB, "default", 30)
+    [operationalPending, candidates, resolvedCandidates] = await Promise.all([
+      countPendingOperationalReviewCandidates(env.DB, "default"),
+      listOperationalReviewCandidates(env.DB, "default", 30),
+      listRecentApprovedOperationalReviewCandidates(env.DB, "default", 12)
     ]);
     candidateTotal = candidates.length;
   }
   const coordinateBackfill = input.tab === "lmc5" ? await getCoordinateBackfillStatus(env, "default") : null;
   const timelineBackfill = input.tab === "x-review" ? await getTimelineBackfillStatus(env, "default") : null;
-  return new Response(renderPage(input, { stats, types, quoteCategories, total: input.tab === "x-review" || input.tab === "m-review" ? candidateTotal : memories.total, records: memories.records, candidates, heatmap, timelineDates, lmc5, coordinateBackfill, timelineBackfill, metabolismPending }), {
+  return new Response(renderPage(input, { stats, types, quoteCategories, total: input.tab === "x-review" || input.tab === "m-review" ? candidateTotal : memories.total, records: memories.records, candidates, resolvedCandidates, heatmap, timelineDates, lmc5, coordinateBackfill, timelineBackfill, operationalPending }), {
     headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" }
   });
 }
