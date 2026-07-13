@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy --keep-vars",
+    "types:generate": "wrangler types src/generated/worker-configuration.d.ts --env-interface CloudflareBindings --include-runtime false --strict-vars false",
+    "types:check": "wrangler types src/generated/worker-configuration.d.ts --env-interface CloudflareBindings --include-runtime false --strict-vars false --check",
     "setup:cloudflare": "node scripts/setup-cloudflare.mjs",
     "memory:fact-key-audit": "node scripts/fact-key-audit.mjs",
     "memory:relations-audit": "node scripts/memory-relations-audit.mjs",

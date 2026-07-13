@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import fixtures from "../fixtures/recall-ownership.json";
-import { analyzeRecallNeed } from "../src/memory/recallIntent";
+import { analyzeRecallNeed } from "../src/recall/intent";
 
 interface RecallOwnershipFixture {
   name: string;

@@ -1,6 +1,6 @@
 import type { Env } from "../types";
 import { loadRecallConfig } from "../config/runtime";
-import { factKeysForQueryHint } from "./queryHints";
+import { factKeysForQueryHint } from "../memory/queryHints";
 
 const MAX_PROMPT_CHARS = 1_200;
 const DEFAULT_RECALL_TOP_K = 3;

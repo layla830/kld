@@ -1,5 +1,5 @@
 import type { MemoryCandidateRecord } from "../db/memoryCandidates";
-import { proposalFromCandidate } from "../domain/memoryProposal";
+import { proposalFromCandidate } from "./proposal";
 
 export type CandidateQualityLabel = "pass" | "needs_review" | "reject_suggested";
 

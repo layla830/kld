@@ -1,7 +1,7 @@
 import { dismissPendingMemoryCandidateByExternalKey, upsertMemoryCandidate } from "../db/memoryCandidates";
 import { listMemories, updateMemory } from "../db/memories";
 import type { Env, MemoryRecord } from "../types";
-import { systemClock } from "../config/runtime";
+import { loadModelConfig, systemClock } from "../config/runtime";
 import {
   normalizeArousal,
   normalizeResponsePosture,
@@ -10,7 +10,7 @@ import {
   normalizeThread,
   normalizeUrgencyLevel,
   normalizeValence
-} from "../memory/coordinates";
+} from "./coordinates";
 
 export const COORDINATE_BACKFILL_BATCH_SIZE = 5;
 
@@ -45,6 +45,19 @@ export interface CoordinateBackfillResult {
     before: Record<string, unknown>;
     proposed: Record<string, unknown>;
   }>;
+}
+
+export async function runScheduledCoordinateBackfill(
+  env: Env,
+  namespace: string,
+  labelBatch: CoordinateLabeler
+): Promise<CoordinateBackfillResult> {
+  return runCoordinateBackfill(env, {
+    namespace,
+    apply: true,
+    limit: COORDINATE_BACKFILL_BATCH_SIZE,
+    offset: 0
+  }, labelBatch);
 }
 
 const THREAD_SLUG = /^[a-z0-9]+(?:[._-][a-z0-9]+)*$/;
@@ -89,7 +102,7 @@ export async function runCoordinateBackfill(
   const apply = command.apply;
   const limit = Math.min(Math.max(Math.floor(command.limit ?? COORDINATE_BACKFILL_BATCH_SIZE), 1), COORDINATE_BACKFILL_BATCH_SIZE);
   const offset = Math.min(Math.max(Math.floor(command.offset ?? 0), 0), 1_000);
-  const model = env.MEMORY_MODEL || env.DREAM_MODEL || env.MEMORY_EXTRACT_MODEL;
+  const model = loadModelConfig(env).coordinate;
   if (!model) throw new Error("missing_model");
 
   const allMemories = await listMemories(env.DB, { namespace, status: "active", limit: 1000 });

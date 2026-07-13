@@ -1,27 +1,35 @@
+import { loadEAxisConfig, systemClock } from "../config/runtime";
+
 export interface ShadowState {
   configured: boolean;
   startedAt: string | null;
   shadowDays: number;
+  rankingEnabled: boolean;
+  readyForPromotion: boolean;
   inShadow: boolean;
   daysElapsed: number;
   daysRemaining: number;
 }
 
-const DEFAULT_SHADOW_DAYS = 30;
-
-function readPositiveInt(value: unknown, fallback: number): number {
-  const parsed = typeof value === "string" ? Number(value) : typeof value === "number" ? value : fallback;
-  const numeric = Number.isFinite(parsed) ? parsed : fallback;
-  return Math.min(Math.max(Math.floor(numeric), 0), 365);
-}
-
-export function readShadowState(env: { E_AXIS_STARTED_AT?: string; E_AXIS_SHADOW_DAYS?: string }, now = Date.now()): ShadowState {
-  const startedAtRaw = typeof env.E_AXIS_STARTED_AT === "string" ? env.E_AXIS_STARTED_AT.trim() : "";
-  const startedAt = startedAtRaw ? Date.parse(startedAtRaw) : NaN;
-  const shadowDays = readPositiveInt(env.E_AXIS_SHADOW_DAYS, DEFAULT_SHADOW_DAYS);
+export function readShadowState(
+  env: { E_AXIS_STARTED_AT?: string; E_AXIS_SHADOW_DAYS?: string; E_AXIS_RANKING_ENABLED?: string },
+  now = systemClock.nowMs()
+): ShadowState {
+  const config = loadEAxisConfig(env);
+  const startedAt = config.startedAt ? Date.parse(config.startedAt) : NaN;
+  const { shadowDays } = config;
 
   if (!Number.isFinite(startedAt)) {
-    return { configured: false, startedAt: null, shadowDays, inShadow: true, daysElapsed: 0, daysRemaining: shadowDays };
+    return {
+      configured: false,
+      startedAt: null,
+      shadowDays,
+      rankingEnabled: config.rankingEnabled,
+      readyForPromotion: false,
+      inShadow: true,
+      daysElapsed: 0,
+      daysRemaining: shadowDays
+    };
   }
 
   const elapsedMs = Math.max(0, now - startedAt);
@@ -31,12 +39,17 @@ export function readShadowState(env: { E_AXIS_STARTED_AT?: string; E_AXIS_SHADOW
     configured: true,
     startedAt: new Date(startedAt).toISOString(),
     shadowDays,
+    rankingEnabled: config.rankingEnabled,
+    readyForPromotion: !inShadow,
     inShadow,
     daysElapsed,
     daysRemaining: Math.max(0, shadowDays - daysElapsed)
   };
 }
 
-export function shouldApplyEAxisToRanking(env: { E_AXIS_STARTED_AT?: string; E_AXIS_SHADOW_DAYS?: string }): boolean {
-  return !readShadowState(env).inShadow;
+export function shouldApplyEAxisToRanking(
+  env: { E_AXIS_STARTED_AT?: string; E_AXIS_SHADOW_DAYS?: string; E_AXIS_RANKING_ENABLED?: string }
+): boolean {
+  const state = readShadowState(env);
+  return state.rankingEnabled && state.readyForPromotion;
 }

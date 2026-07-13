@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { proposalFromCandidate } from "../src/domain/memoryProposal";
+import { proposalFromCandidate } from "../src/memory/proposal";
 import type { MemoryCandidateRecord } from "../src/db/memoryCandidates";
 
 function candidate(action: string, payload: Record<string, unknown> = {}): MemoryCandidateRecord {

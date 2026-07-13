@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildRecallQueryPlan } from "../src/memory/recallQueryPlan";
+import { buildRecallQueryPlan } from "../src/recall/queryPlan";
 
 describe("recall query planning", () => {
   it("classifies explicit dates as a hard range", () => {

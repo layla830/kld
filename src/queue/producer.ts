@@ -2,12 +2,10 @@ import { listUnprocessedChunkMessages } from "../db/messages";
 import type { Env, MemoryRecord, QueueMessage } from "../types";
 import { handleQueueMessage } from "./consumer";
 import { dateFromDiary } from "../memory/diarySplit";
-
-const DEFAULT_CHUNK_THRESHOLD = 10;
-const DEFAULT_CHUNK_MAX_MESSAGES = 80;
+import { loadChunkingConfig, loadMemoryConfig, systemClock } from "../config/runtime";
 
 function allowQueueFallback(env: Env): boolean {
-  return env.ALLOW_QUEUE_FALLBACK === "true";
+  return loadChunkingConfig(env).queueFallbackEnabled;
 }
 
 /**
@@ -31,17 +29,12 @@ async function sendQueueMessage(env: Env, message: QueueMessage): Promise<void> 
   });
 }
 
-function readPositiveInteger(value: string | undefined, fallback: number): number {
-  const parsed = Number(value || fallback);
-  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
-}
-
 function chunkThreshold(env: Env): number {
-  return readPositiveInteger(env.AUTO_CHUNK_MIN_MESSAGES, DEFAULT_CHUNK_THRESHOLD);
+  return loadChunkingConfig(env).minMessages;
 }
 
 function chunkWindowLimit(env: Env, threshold: number): number {
-  return Math.max(threshold, readPositiveInteger(env.AUTO_CHUNK_MAX_MESSAGES, DEFAULT_CHUNK_MAX_MESSAGES));
+  return Math.max(threshold, loadChunkingConfig(env).maxMessages);
 }
 
 function keyPart(value: string | number | undefined): string {
@@ -96,8 +89,8 @@ export async function enqueueMemoryMaintenanceIfNeeded(
     source: string;
   }
 ): Promise<void> {
-  if (env.ENABLE_AUTO_MEMORY === "false") return;
-  if ((env.MEMORY_MODE || "external") === "none") return;
+  const config = loadMemoryConfig(env);
+  if (!config.autoMemoryEnabled || config.mode === "none") return;
   if (!input.fromMessageId) return;
 
   const message: QueueMessage = {
@@ -132,8 +125,8 @@ export async function enqueueConversationChunkingIfNeeded(
     force?: boolean;
   }
 ): Promise<void> {
-  if (env.ENABLE_AUTO_MEMORY === "false") return;
-  if ((env.MEMORY_MODE || "external") === "none") return;
+  const config = loadMemoryConfig(env);
+  if (!config.autoMemoryEnabled || config.mode === "none") return;
 
   const threshold = chunkThreshold(env);
   const candidates = await listUnprocessedChunkMessages(env.DB, {
@@ -169,7 +162,7 @@ export async function enqueueRetentionIfNeeded(
   env: Env,
   namespace: string
 ): Promise<void> {
-  const day = new Date().toISOString().slice(0, 10);
+  const day = systemClock.today("UTC");
   const message: QueueMessage = {
     type: "retention",
     namespace,
@@ -231,7 +224,7 @@ export async function enqueueMissedDiarySplits(env: Env, namespace: string, limi
        )
        AND NOT EXISTS (SELECT 1 FROM json_each(m.tags) WHERE value = 'has_timeline_split')
      ORDER BY m.created_at ASC LIMIT 25`
-  ).bind(namespace, new Date(Date.now() - 5 * 60_000).toISOString()).all<MemoryRecord>();
+  ).bind(namespace, new Date(systemClock.nowMs() - 5 * 60_000).toISOString()).all<MemoryRecord>();
   const eligible = (rows.results ?? []).filter((memory) => dateFromDiary(memory)).slice(0, boundedLimit);
   for (const memory of eligible) await enqueueDiarySplitIfNeeded(env, memory);
   return eligible.length;

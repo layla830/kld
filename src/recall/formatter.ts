@@ -1,5 +1,5 @@
 import type { MemoryApiRecord } from "../types";
-import { supportNeedles } from "./recallNeedles";
+import { supportNeedles } from "./vocabulary";
 
 const MAX_MEMORY_CHARS = 120;
 const EXCERPT_RADIUS = 48;

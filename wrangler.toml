@@ -57,6 +57,11 @@ CUSTOM_ANTHROPIC_MESSAGES_PATH = "messages"
 # Temporary legacy-memory coordinate backfill. The dedicated cron processes at
 # most five records per run and becomes a cheap no-op when the backlog is empty.
 COORDINATE_BACKFILL_ENABLED = "true"
+# E-axis shadow comparisons began with the first observability deployment.
+# Keep the gate explicit so an unset variable cannot mean indefinite shadow.
+E_AXIS_STARTED_AT = "2026-07-13T12:22:37.508657Z"
+E_AXIS_SHADOW_DAYS = "7"
+E_AXIS_RANKING_ENABLED = "false"
 
 # Private/account-specific variables live in the Cloudflare Dashboard:
 # UPSTREAM_BASE_URL, UPSTREAM_API_KEY, CHATBOX_API_KEY, MEMORY_MCP_API_KEY,

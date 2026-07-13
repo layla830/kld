@@ -4,11 +4,7 @@ import { getMessagesByIds } from "../db/messages";
 import type { ExtractedMemory } from "./extract";
 import { persistMemoryWithMerge } from "./merge";
 import type { Env, MemoryMaintenanceQueueMessage, MessageRecord } from "../types";
-
-function getMinImportance(env: Env): number {
-  const value = Number(env.MEMORY_MIN_IMPORTANCE || 0.55);
-  return Number.isFinite(value) ? value : 0.55;
-}
+import { loadMemoryConfig } from "../config/runtime";
 
 function normalizeText(value: string): string {
   return value.toLowerCase().replace(/\s+/g, "");
@@ -64,7 +60,7 @@ export async function runMemoryMaintenance(env: Env, message: MemoryMaintenanceQ
 
     const explicitMemories = buildExplicitMemoryFallback(sourceMessages);
     const memories = explicitMemories;
-    const minImportance = getMinImportance(env);
+    const minImportance = loadMemoryConfig(env).minImportance;
 
     for (const memory of memories) {
       if (memory.importance < minImportance) continue;

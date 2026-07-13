@@ -1,8 +1,8 @@
 import type { MemoryRecord } from "../types";
-import { computeDecayedWeight } from "./halfLife";
-import { lexicalTerms, recordHaystack, strongNeedles } from "./recallQueryPlan";
-import { recencyBoost, timeIntentScore, type TimeIntent } from "./recallTemporal";
-import type { ScoredMemoryRecord } from "./vectorStore";
+import { computeDecayedWeight } from "../memory/halfLife";
+import { lexicalTerms, recordHaystack, strongNeedles } from "./queryPlan";
+import { recencyBoost, timeIntentScore, type TimeIntent } from "./temporal";
+import type { ScoredMemoryRecord } from "../memory/vectorStore";
 
 const RRF_K = 60;
 const STRONG_KEYWORD_SCORE = 0.54;

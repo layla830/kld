@@ -252,3 +252,36 @@ Verification:
 
 No D1 schema, memory row, candidate resolution, relation, secret, Worker variable, VPS file, hook registration, or service definition was changed by the refactor. Worker rollback target is `bc2a780d-551c-4331-9179-70e3b646e030`.
 
+## 2026-07-13 A-tier architecture cleanup
+
+Status: local worktree verified; not committed, pushed, or deployed yet.
+
+This pass addresses the A-tier structural findings without changing recall scoring or five-axis review policy:
+
+- platform bindings are generated from `wrangler.toml` into `src/generated/worker-configuration.d.ts`; dashboard variables are grouped by concern in `src/config/variables.ts`, and business parsing is centralized in grouped `AppConfig` sections;
+- Dream, retention, Queue production, memory maintenance, scheduled orchestration, and E-axis shadow logic now consume the shared typed config and injectable `AppClock` instead of maintaining local parsers and direct `Date.now()` calls;
+- the Queue union was reduced from nine variants to five after confirming that `coordinate_backfill`, `relation_backfill`, `metabolism_scan`, and `diary_rescreen` had no producers; the first three already have scheduled/manual owners, while diary rescreen remains an authenticated bounded API operation;
+- scheduled coordinate backfill now calls the shared memory use case directly and receives `labelCoordinateBatch` from an LLM adapter; the HTTP debug interface no longer owns or exports the cron business operation;
+- all eleven recall modules now live under `src/recall/` and are named by one responsibility: service, intent, query plan, temporal parsing, vocabulary, candidate policy, fusion, output policy, formatting, trace, and emotion source;
+- the database-candidate mapper formerly stored as the only `src/domain/` file moved to `src/memory/proposal.ts`; coordinate backfill moved beside its memory control module while remaining a shared HTTP/cron use case, so neither placeholder `src/domain/` nor `src/application/` remains;
+- E-axis shadow rollout now has an explicit production start (`2026-07-13T12:22:37.508657Z`), seven-day duration, and separate `E_AXIS_RANKING_ENABLED=false` promotion switch in `wrangler.toml`; the window can finish without silently activating ranking before review.
+
+Literal acceptance matrix:
+
+- Queue `9 -> 4`: the old numeric target is not used as a blind invariant. Four producerless variants were removed, leaving five actively produced jobs; the fifth is the subsequently added automatic `diary_split` job. Every remaining variant has both a producer and consumer.
+- Remove placeholder `src/domain/` and `src/application/`: complete in the tracked tree; their real modules moved to feature owners without reintroducing HTTP-handler calls from cron.
+- Replace the flat hand-written `Env`: complete; Wrangler generates platform bindings, runtime variables are grouped by concern, and `AppConfig` owns normalized business settings.
+- Reclassify the eleven recall modules: complete; they now live under `src/recall/` with responsibility-based names.
+
+Verification:
+
+- `npm.cmd run typecheck`: passed.
+- `npm.cmd run types:check`: generated Cloudflare bindings are current for `wrangler.toml`.
+- `npm.cmd test`: 22/22 tests passed.
+- `npm.cmd run test:lmc5-circuits`: all checks passed after updating the architecture assertions to the new owners.
+- `npm.cmd run test:legacy-relations`: 17/17 checks passed.
+- `npx.cmd wrangler deploy --dry-run`: passed; D1, Vectorize, Queue, and AI resource bindings are unchanged, and the three explicit E-axis rollout variables are present.
+- The installed `@cloudflare/workers-types` package was not upgraded; platform binding drift is instead checked through Wrangler-generated types, matching current Cloudflare guidance without mixing a major dependency upgrade into this refactor.
+
+No D1 schema or row, memory/candidate/relation/vector state, secret, live Worker variable, VPS file, hook, service, or production deployment was changed. Rollback before deployment is to discard or revert this single local refactor change set; production remains 100% on Worker version `a11c0962-ceec-4e1a-9e32-d079d688568e`.
+

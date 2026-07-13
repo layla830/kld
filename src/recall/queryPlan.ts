@@ -1,6 +1,6 @@
-import { queryHintAliasGroups } from "./queryHints";
-import { chineseNgrams, normalizeQueryForMemorySearch, normalizeText } from "./query";
-import { parseTimeIntent, type TimeIntent } from "./recallTemporal";
+import { queryHintAliasGroups } from "../memory/queryHints";
+import { chineseNgrams, normalizeQueryForMemorySearch, normalizeText } from "../memory/query";
+import { parseTimeIntent, type TimeIntent } from "./temporal";
 
 const ALIAS_GROUPS = [
   ["sm", "s/m", "bdsm", "dom", "sub", "brat", "switch", "支配", "臣服", "主导", "被主导"],

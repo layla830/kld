@@ -3,17 +3,16 @@ import { requireScope } from "../auth/scopes";
 import { runDailyMemoryDigest } from "../memory/dailyDigest";
 import { listFactKeyConflictsForReview, runXyzemNightlyMaintenance, runZAudit } from "../memory/xyzem";
 import { listMemoryCandidatesByAction } from "../db/memoryCandidates";
-import { callOpenAICompat } from "../proxy/openaiAdapter";
-import { extractJsonObject } from "../utils/jsonHelpers";
 import { json, openAiError } from "../utils/json";
 import { readBody } from "./common";
-import type { Env, MemoryRecord, OpenAIChatRequest, OpenAIChatResponse } from "../types";
+import type { Env } from "../types";
 import { proposeFactGroups } from "../memory/factGroups";
 import { runTimelineBackfill } from "../memory/timelineBackfill";
 import { runLegacyRelationBackfill, parseLegacyRelationRequest, isLegacyRelationRequestError } from "../memory/legacyRelations";
-import { runCoordinateBackfill } from "../application/coordinateBackfill";
+import { runCoordinateBackfill } from "../memory/coordinateBackfill";
 import { scanFactTransitionReviewCandidates } from "../memory/factTransitionReview";
 import { approveFactTransitionCandidate } from "./adminBoard/factTransitionActions";
+import { labelCoordinateBatch } from "../adapters/llm/coordinateLabeler";
 
 interface CacheHealthRow {
   created_at: string;
@@ -281,86 +280,6 @@ export async function handleZAuditApprove(request: Request, env: Env): Promise<R
 }
 
 const BACKFILL_BATCH_SIZE = 5;
-const BACKFILL_MODEL_BATCH_SIZE = 5;
-
-type BackfillUpdate = Record<string, unknown> & { id: string };
-function readAssistantText(response: OpenAIChatResponse): string {
-  const content = (response.choices?.[0]?.message as { content?: unknown } | undefined)?.content;
-  if (typeof content === "string") return content.trim();
-  if (!Array.isArray(content)) return "";
-  return content
-    .map((part) => part && typeof part === "object" && typeof (part as { text?: unknown }).text === "string"
-      ? String((part as { text: string }).text)
-      : "")
-    .join("")
-    .trim();
-}
-
-async function labelBackfillBatch(env: Env, model: string, memories: MemoryRecord[]): Promise<BackfillUpdate[]> {
-  const basePrompt = buildBackfillPrompt(memories);
-
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    const llmRequest: OpenAIChatRequest = {
-      model,
-      messages: [
-        { role: "system", content: "你是严格的 JSON 生成器。只输出一个完整 JSON 对象，不要 markdown。" },
-        { role: "user", content: attempt === 0 ? basePrompt : `${basePrompt}\n\n上次输出无法解析。请缩短字段内容，并确保 JSON 完整闭合。` }
-      ],
-      temperature: 0,
-      max_tokens: 3000,
-      response_format: { type: "json_object" },
-      stream: false
-    };
-
-    const response = await callOpenAICompat(env, llmRequest);
-    if (!response.ok) {
-      if (attempt === 0 && response.status >= 500) continue;
-      throw new Error(`model_status_${response.status}`);
-    }
-
-    const parsed = (await response.json()) as OpenAIChatResponse;
-    const jsonResult = extractJsonObject(readAssistantText(parsed));
-    const updates = jsonResult && typeof jsonResult === "object"
-      ? (jsonResult as { updates?: unknown }).updates
-      : null;
-    if (!Array.isArray(updates)) continue;
-
-    return updates.filter((item): item is BackfillUpdate => Boolean(
-      item && typeof item === "object" && typeof (item as { id?: unknown }).id === "string"
-    ));
-  }
-
-  throw new Error("invalid_model_json_after_retry");
-}
-
-function buildBackfillPrompt(memories: MemoryRecord[]): string {
-  const items = memories.map((m) => ({ id: m.id, type: m.type, content: m.content.slice(0, 300), tags: m.tags }));
-  return [
-    "你是记忆坐标标注器。给每条记忆补上 LMC-5 坐标。",
-    "只输出 JSON，不要 markdown，不要解释。",
-    "",
-    "坐标说明：",
-    "- fact_key: 始终输出 null；旧记忆事实槽由独立的 Z 轴归并任务处理。",
-    "- thread: 主题线，如 kld、relationship.boundaries、safety。不确定就 null。",
-    "- risk_level: low/normal/medium/high",
-    "- urgency_level: low/normal/medium/high",
-    "- tension_score: 0-1，有过张力/冲突 >0.5",
-    "- valence: -1 到 1，正=愉悦，负=难受",
-    "- arousal: 0-1，越高越激动",
-    "- response_posture: 未来回应姿态，简短一句",
-    "",
-    "输出格式：",
-    JSON.stringify({
-      updates: [
-        { id: "mem_x", fact_key: "project:kld", thread: "kld", risk_level: "normal", urgency_level: "normal", tension_score: null, valence: null, arousal: null, response_posture: null }
-      ]
-    }),
-    "",
-    "记忆列表：",
-    JSON.stringify(items)
-  ].join("\n");
-}
-
 export async function handleBackfillCoordinates(
   request: Request,
   env: Env,
@@ -380,7 +299,7 @@ export async function handleBackfillCoordinates(
       apply: body?.apply === true,
       limit: typeof body?.limit === "number" ? body.limit : BACKFILL_BATCH_SIZE,
       offset: typeof body?.offset === "number" ? body.offset : 0
-    }, labelBackfillBatch));
+    }, labelCoordinateBatch));
   } catch (error) {
     console.error("backfill_coordinates failed", error);
     const detail = error instanceof Error ? error.message : String(error);
@@ -388,15 +307,6 @@ export async function handleBackfillCoordinates(
     const isModelError = detail.startsWith("model_status_") || detail === "invalid_model_json_after_retry";
     return json({ error: isModelError ? "model_output_error" : "backfill_failed", detail }, { status: isModelError ? 502 : 500 });
   }
-}
-
-export async function runScheduledCoordinateBackfill(env: Env, namespace: string): Promise<unknown> {
-  return runCoordinateBackfill(env, {
-    namespace,
-    apply: true,
-    limit: BACKFILL_BATCH_SIZE,
-    offset: 0
-  }, labelBackfillBatch);
 }
 
 export async function handleFactGroupProposals(request: Request, env: Env): Promise<Response> {

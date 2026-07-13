@@ -1,6 +1,6 @@
 import type { MemoryRecord } from "../types";
 import { systemClock } from "../config/runtime";
-import { normalizeText } from "./query";
+import { normalizeText } from "../memory/query";
 
 export type TimeIntentMode = "none" | "hard_range" | "soft_recent" | "past_reference";
 export interface TimeIntent { mode: TimeIntentMode; terms: string[]; after?: string; before?: string }

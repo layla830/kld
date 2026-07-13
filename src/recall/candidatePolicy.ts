@@ -1,7 +1,7 @@
 import type { Env, MemoryApiRecord, MemoryRecord } from "../types";
-import { toMemoryApiRecord } from "./search";
-import { BROAD_TIME_QUERY_RE } from "./recallIntent";
-import { dateNeedles, likeNeedle, matchesAnyNeedle, supportNeedles, topicNeedles } from "./recallNeedles";
+import { toMemoryApiRecord } from "../memory/search";
+import { BROAD_TIME_QUERY_RE } from "./intent";
+import { dateNeedles, likeNeedle, matchesAnyNeedle, supportNeedles, topicNeedles } from "./vocabulary";
 
 const BROAD_EVENT_QUESTION_RE = /说了什么|聊了什么|在聊什么|弄什么|做什么|干什么|怎么样|发生了什么|发生什么|怎么聊/;
 

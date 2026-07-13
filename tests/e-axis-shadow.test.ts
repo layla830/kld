@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { readShadowState, shouldApplyEAxisToRanking } from "../src/memory/eAxis";
-import { mergeSearchResults } from "../src/memory/recallFusion";
+import { mergeSearchResults } from "../src/recall/fusion";
 import type { ScoredMemoryRecord } from "../src/memory/vectorStore";
 
 function record(id: string, type: string, patch: Partial<ScoredMemoryRecord> = {}): ScoredMemoryRecord {
@@ -88,7 +88,17 @@ describe("E-axis shadow ranking", () => {
     expect(readShadowState({}, now)).toMatchObject({ configured: false, inShadow: true, daysRemaining: 30 });
     expect(readShadowState({ E_AXIS_STARTED_AT: "2026-07-10T00:00:00.000Z", E_AXIS_SHADOW_DAYS: "7" }, now))
       .toMatchObject({ configured: true, inShadow: true, daysElapsed: 3, daysRemaining: 4 });
-    expect(readShadowState({ E_AXIS_STARTED_AT: "2026-07-01T00:00:00.000Z", E_AXIS_SHADOW_DAYS: "7" }, now).inShadow).toBe(false);
+    expect(readShadowState({ E_AXIS_STARTED_AT: "2026-07-01T00:00:00.000Z", E_AXIS_SHADOW_DAYS: "7" }, now))
+      .toMatchObject({ inShadow: false, readyForPromotion: true, rankingEnabled: false });
     expect(shouldApplyEAxisToRanking({})).toBe(false);
+    expect(shouldApplyEAxisToRanking({
+      E_AXIS_STARTED_AT: "2026-07-01T00:00:00.000Z",
+      E_AXIS_SHADOW_DAYS: "7"
+    })).toBe(false);
+    expect(shouldApplyEAxisToRanking({
+      E_AXIS_STARTED_AT: "2026-07-01T00:00:00.000Z",
+      E_AXIS_SHADOW_DAYS: "7",
+      E_AXIS_RANKING_ENABLED: "true"
+    })).toBe(true);
   });
 });

@@ -8,10 +8,10 @@ import { toMemoryApiRecord } from "./mapper";
 import { applyLead, postProcessMemorySearchResults, pruneConflictingDateContext } from "./postProcess";
 import { expandQueryAngles, rerankMemories } from "./queryExpand";
 import { factKeysForQueryHint } from "./queryHints";
-import { searchEmotionMemories } from "./recallEmotionSource";
-import { mergeRelatedRecords, mergeSearchResults, type EAxisFusionTrace } from "./recallFusion";
-import { dedupeRecallOutput, isRecallEligible, keepHintedContext, keepRelatedContext, RECALL_EXCLUDED_TYPES } from "./recallOutputPolicy";
-import { buildRecallQueryPlan, recordHaystack } from "./recallQueryPlan";
+import { searchEmotionMemories } from "../recall/sources/emotion";
+import { mergeRelatedRecords, mergeSearchResults, type EAxisFusionTrace } from "../recall/fusion";
+import { dedupeRecallOutput, isRecallEligible, keepHintedContext, keepRelatedContext, RECALL_EXCLUDED_TYPES } from "../recall/outputPolicy";
+import { buildRecallQueryPlan, recordHaystack } from "../recall/queryPlan";
 import { searchVectorMemories, type ScoredMemoryRecord } from "./vectorStore";
 
 export { toMemoryApiRecord } from "./mapper";

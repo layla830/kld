@@ -252,12 +252,21 @@ function renderCoordinateBackfill(status: CoordinateBackfillStatus | null): stri
 
 function renderEAxisObservability(data: EAxisObservabilityData): string {
   const state = data.state;
-  const status = !state.inShadow ? "正式加权" : state.configured ? `shadow 第 ${state.daysElapsed + 1} 天` : "shadow 未开始计时";
-  const timing = !state.inShadow
+  const active = state.rankingEnabled && state.readyForPromotion;
+  const status = active
+    ? "正式加权"
+    : !state.configured
+      ? "shadow 未开始计时"
+      : state.inShadow
+        ? `shadow 第 ${state.daysElapsed + 1} 天`
+        : "shadow 完成 · 待放量";
+  const timing = active
     ? `E 轴 tension/risk 已进入正式排序；仍保留基线对照。`
-    : state.configured
-      ? `距离正式加权还剩 ${state.daysRemaining} 天。当前只比较排名，不改变召回结果。`
-      : `E_AXIS_STARTED_AT 尚未配置。当前只记录假设启用后的排名变化，不会自动结束 shadow。`;
+    : !state.configured
+      ? `E_AXIS_STARTED_AT 尚未配置。当前只记录假设启用后的排名变化，不会自动结束 shadow。`
+      : state.inShadow
+        ? `距离 shadow 观察完成还剩 ${state.daysRemaining} 天。当前只比较排名，不改变召回结果。`
+        : `观察窗口已完成，E_AXIS_RANKING_ENABLED 仍为 false。审核误召与排名偏移后再显式放量。`;
   const recent = data.recent.map((sample) => {
     const changes = sample.trace.changes.map((change) => {
       const name = change.fact_key || change.id;

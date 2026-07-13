@@ -1,5 +1,5 @@
 import type { MemoryApiRecord } from "../types";
-import type { EAxisFusionTrace } from "./recallFusion";
+import type { EAxisFusionTrace } from "./fusion";
 
 export type RecallLayerName = "authority" | "evidence" | "association" | "fallback";
 

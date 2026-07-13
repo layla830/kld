@@ -42,7 +42,7 @@ const memoriesApi = fs.readFileSync("src/api/memories.ts", "utf8");
 const mcpApi = fs.readFileSync("src/api/mcp.ts", "utf8");
 const memoriesDb = fs.readFileSync("src/db/memories.ts", "utf8");
 const startupContext = fs.readFileSync("src/memory/startupContext.ts", "utf8");
-const recallFormat = fs.readFileSync("src/memory/recallFormat.ts", "utf8");
+const recallFormat = fs.readFileSync("src/recall/formatter.ts", "utf8");
 const queueConsumer = fs.readFileSync("src/queue/consumer.ts", "utf8");
 const queueProducer = fs.readFileSync("src/queue/producer.ts", "utf8");
 const workerIndex = fs.readFileSync("src/index.ts", "utf8");
@@ -55,16 +55,22 @@ const candidateView = fs.readFileSync("src/api/adminBoard/candidateView.ts", "ut
 const adminBoard = fs.readFileSync("src/api/adminBoard.ts", "utf8");
 const adminView = fs.readFileSync("src/api/adminBoard/view.ts", "utf8");
 const candidateQuality = fs.readFileSync("src/memory/candidateQuality.ts", "utf8");
-const recallTrace = fs.readFileSync("src/memory/recallTrace.ts", "utf8");
+const recallTrace = fs.readFileSync("src/recall/trace.ts", "utf8");
 const recallApi = fs.readFileSync("src/api/recall.ts", "utf8");
-const recallContext = fs.readFileSync("src/memory/recall.ts", "utf8");
-const recallFilter = fs.readFileSync("src/memory/recallFilter.ts", "utf8");
+const recallContext = fs.readFileSync("src/recall/service.ts", "utf8");
+const recallFilter = fs.readFileSync("src/recall/candidatePolicy.ts", "utf8");
 const injection = fs.readFileSync("src/memory/inject.ts", "utf8");
-const coordinateBackfill = fs.readFileSync("src/application/coordinateBackfill.ts", "utf8");
-const recallFusion = fs.readFileSync("src/memory/recallFusion.ts", "utf8");
+const coordinateBackfill = fs.readFileSync("src/memory/coordinateBackfill.ts", "utf8");
+const recallFusion = fs.readFileSync("src/recall/fusion.ts", "utf8");
 const eAxisObservability = fs.readFileSync("src/memory/eAxisObservability.ts", "utf8");
-const recallOutputPolicy = fs.readFileSync("src/memory/recallOutputPolicy.ts", "utf8");
+const recallOutputPolicy = fs.readFileSync("src/recall/outputPolicy.ts", "utf8");
 const vpsDreamCandidate = fs.readFileSync("ops/vps/kld_dream_candidate_shadow.py", "utf8");
+const workerTypes = fs.readFileSync("src/types.ts", "utf8");
+const runtimeVariables = fs.readFileSync("src/config/variables.ts", "utf8");
+const generatedBindings = fs.readFileSync("src/generated/worker-configuration.d.ts", "utf8");
+const runtimeConfig = fs.readFileSync("src/config/runtime.ts", "utf8");
+const packageJson = fs.readFileSync("package.json", "utf8");
+const wranglerConfig = fs.readFileSync("wrangler.toml", "utf8");
 
 const checks = [
   [
@@ -277,8 +283,8 @@ const checks = [
   ],
   [
     "Five-axis: nightly XYZEM is independent from narrative Dream and Z/M stay review-first",
-    workerIndex.includes("isFiveAxisEnabled") &&
-      workerIndex.includes("FIVE_AXIS_DRY_RUN") &&
+    workerIndex.includes("config.fiveAxis.enabled") &&
+      workerIndex.includes("config.fiveAxis.dryRun") &&
       workerIndex.includes("scanOperationalReviewCandidates") &&
       workerIndex.includes('skipped: "five_axis_disabled"'),
   ],
@@ -304,12 +310,12 @@ const checks = [
       diarySplit.includes("vector_sync_status = 'pending'"),
   ],
   [
-    "Diary rescreen: queue supports authenticated dry-run and bounded apply jobs",
-    queueConsumer.includes('case "diary_rescreen"') &&
-      queueConsumer.includes("hasCompletedDiaryRescreenJob") &&
-      queueConsumer.includes("diaryIds.slice(0, 3)") &&
-      queueConsumer.includes('"diary_rescreen_dry_run"') &&
-      queueConsumer.includes('"diary_rescreen_applied"'),
+    "Diary rescreen: authenticated bounded API replaces the producerless Queue variant",
+    memoriesApi.includes("async function handleSplitDiaryMemories") &&
+      memoriesApi.includes('requireScope(profile, "memory:write")') &&
+      memoriesApi.includes("replace_importer") &&
+      !queueConsumer.includes('case "diary_rescreen"') &&
+      !workerTypes.includes('type: "diary_rescreen"'),
   ],
   [
     "Vector sync: canonical and legacy status fields change together",
@@ -330,24 +336,78 @@ const checks = [
       fs.readFileSync("src/index.ts", "utf8").includes("scheduled five-minute maintenance"),
   ],
   [
-    "Coordinate backfill: queue reuses the review-first scheduled path",
-    queueConsumer.includes('case "coordinate_backfill"') &&
-      queueConsumer.includes("runScheduledCoordinateBackfill") &&
-      queueConsumer.includes('eventType: "coordinate_backfill_complete"'),
+    "Coordinate backfill: scheduled use case is not duplicated in Queue",
+    !queueConsumer.includes('case "coordinate_backfill"') &&
+      !workerTypes.includes('type: "coordinate_backfill"') &&
+      workerIndex.includes("runScheduledCoordinateBackfill") &&
+      coordinateBackfill.includes("export async function runScheduledCoordinateBackfill"),
   ],
   [
-    "Y: relation backfill can be scoped to one tagged import batch",
+    "Y: legacy relation backfill stays explicitly scoped and manual",
     legacyRelations.includes("requiredTag") &&
       legacyRelations.includes("json_each(memories.tags)") &&
-      queueConsumer.includes('case "relation_backfill"') &&
-      queueConsumer.includes('["origin_split"]') &&
-      queueConsumer.includes('eventType: "relation_backfill_complete"'),
+      files.debug.includes("handleLegacyRelationBackfill") &&
+      workerIndex.includes('/v1/debug/legacy_relation_backfill') &&
+      !queueConsumer.includes('case "relation_backfill"') &&
+      !workerTypes.includes('type: "relation_backfill"'),
   ],
   [
-    "M: queue patrol remains review-first",
-    queueConsumer.includes('case "metabolism_scan"') &&
-      queueConsumer.includes("scanMetabolismReviewCandidates") &&
-      queueConsumer.includes('eventType: "metabolism_scan_complete"'),
+    "M: scheduled patrol remains review-first without a dead Queue variant",
+    !queueConsumer.includes('case "metabolism_scan"') &&
+      !workerTypes.includes('type: "metabolism_scan"') &&
+      operationalReview.includes("scanMetabolismReviewCandidates") &&
+      workerIndex.includes("scanOperationalReviewCandidates"),
+  ],
+  [
+    "Architecture: Queue contract contains only five actively produced background jobs",
+    workerTypes.includes('type: "memory_maintenance"') &&
+      workerTypes.includes('type: "conversation_chunk"') &&
+      workerTypes.includes('type: "retention"') &&
+      workerTypes.includes('type: "diary_split"') &&
+      workerTypes.includes('type: "memory_vector_sync"') &&
+      queueProducer.includes('type: "memory_maintenance"') &&
+      queueProducer.includes('type: "conversation_chunk"') &&
+      queueProducer.includes('type: "retention"') &&
+      queueProducer.includes('type: "diary_split"') &&
+      queueProducer.includes('type: "memory_vector_sync"') &&
+      !workerTypes.includes('type: "diary_rescreen"') &&
+      !workerTypes.includes('type: "coordinate_backfill"') &&
+      !workerTypes.includes('type: "relation_backfill"') &&
+      !workerTypes.includes('type: "metabolism_scan"'),
+  ],
+  [
+    "Architecture: generated bindings and grouped runtime variables replace a flat hand-written Env",
+    workerTypes.includes('Pick<CloudflareBindings, "DB">') &&
+      workerTypes.includes("extends GeneratedPlatformBindings, RuntimeVariables") &&
+      runtimeVariables.includes("export interface AuthVariables") &&
+      runtimeVariables.includes("export interface RecallVariables") &&
+      runtimeVariables.includes("export interface FiveAxisVariables") &&
+      generatedBindings.includes("interface CloudflareBindings extends Cloudflare.Env") &&
+      packageJson.includes('"types:check"') &&
+      runtimeConfig.includes("export interface AppConfig"),
+  ],
+  [
+    "Architecture: recall modules have one owner and no placeholder DDD directories remain",
+    fs.existsSync("src/recall/service.ts") &&
+      fs.existsSync("src/recall/sources/emotion.ts") &&
+      !fs.existsSync("src/memory/recall.ts") &&
+      !fs.existsSync("src/memory/recallFusion.ts") &&
+      !fs.existsSync("src/domain/memoryProposal.ts") &&
+      !fs.existsSync("src/application/coordinateBackfill.ts") &&
+      coordinateBackfill.includes("export async function runCoordinateBackfill") &&
+      coordinateBackfill.includes("export async function runScheduledCoordinateBackfill") &&
+      files.debug.includes("runCoordinateBackfill") &&
+      workerIndex.includes("runScheduledCoordinateBackfill"),
+  ],
+  [
+    "E: production shadow window is explicit and promotion remains manual",
+    wranglerConfig.includes('E_AXIS_STARTED_AT = "2026-07-13T12:22:37.508657Z"') &&
+      wranglerConfig.includes('E_AXIS_SHADOW_DAYS = "7"') &&
+      wranglerConfig.includes('E_AXIS_RANKING_ENABLED = "false"') &&
+      generatedBindings.includes("E_AXIS_STARTED_AT: string") &&
+      generatedBindings.includes("E_AXIS_SHADOW_DAYS: string") &&
+      generatedBindings.includes("E_AXIS_RANKING_ENABLED: string") &&
+      runtimeConfig.includes("rankingEnabled: strictFlag(env.E_AXIS_RANKING_ENABLED)"),
   ],
   [
     "Recall: fact-intent rule memories lead before milestone context",
@@ -444,6 +504,8 @@ const checks = [
     "E: existing LMC-5 admin renders read-only shadow evidence",
     adminView.includes("E shadow 观测") &&
       adminView.includes("不会自动结束 shadow") &&
+      adminView.includes("shadow 完成 · 待放量") &&
+      adminView.includes("E_AXIS_RANKING_ENABLED 仍为 false") &&
       !adminView.includes("E_AXIS_STARTED_AT\" value="),
   ],
   [
@@ -469,10 +531,10 @@ const checks = [
   ],
   [
     "Cron: coordinate backfill is isolated from daily maintenance",
-    files.debug.includes("runScheduledCoordinateBackfill") &&
-      fs
-        .readFileSync("src/index.ts", "utf8")
-        .includes('controller.cron === "*/5 * * * *"'),
+    coordinateBackfill.includes("runScheduledCoordinateBackfill") &&
+      workerIndex.includes("labelCoordinateBatch") &&
+      workerIndex.includes('controller.cron === "*/5 * * * *"') &&
+      !files.debug.includes("export async function runScheduledCoordinateBackfill"),
   ],
   [
     "Cron: coordinate backfill has persisted pause control",

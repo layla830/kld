@@ -1,7 +1,7 @@
 import { createMemoryEvent } from "../db/memoryEvents";
 import type { Env } from "../types";
 import { readShadowState, type ShadowState } from "./eAxis";
-import type { EAxisFusionTrace, EAxisRankChange } from "./recallFusion";
+import type { EAxisFusionTrace, EAxisRankChange } from "../recall/fusion";
 
 export interface EAxisObservationSample {
   createdAt: string;

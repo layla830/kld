@@ -1,5 +1,5 @@
 import type { MemoryApiRecord } from "../types";
-import { chineseNgrams, normalizeQueryForMemorySearch } from "./query";
+import { chineseNgrams, normalizeQueryForMemorySearch } from "../memory/query";
 
 const SHANGHAI_OFFSET_MS = 8 * 60 * 60 * 1000;
 

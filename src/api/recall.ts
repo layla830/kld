@@ -2,7 +2,7 @@ import { authenticate } from "../auth/apiKey";
 import { requireScope } from "../auth/scopes";
 import { markMemoriesRecalled } from "../db/memories";
 import { createMemoryEvent } from "../db/memoryEvents";
-import { buildRecallContext } from "../memory/recall";
+import { buildRecallContext } from "../recall/service";
 import { hashRecallQuery } from "../memory/eAxisObservability";
 import type { Env, KeyProfile } from "../types";
 import { json, openAiError } from "../utils/json";

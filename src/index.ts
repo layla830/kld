@@ -1,6 +1,6 @@
 import { handleHealth } from "./api/health";
 import { handleCache } from "./api/cache";
-import { handleCacheHealth, handleDreamDryRun, handleZAuditApprove, handleZAuditPending, handleZAuditScan, handleXyzemMaintenance, handleBackfillCoordinates, handleFactGroupProposals, handleTimelineBackfill, handleLegacyRelationBackfill, runScheduledCoordinateBackfill } from "./api/debug";
+import { handleCacheHealth, handleDreamDryRun, handleZAuditApprove, handleZAuditPending, handleZAuditScan, handleXyzemMaintenance, handleBackfillCoordinates, handleFactGroupProposals, handleTimelineBackfill, handleLegacyRelationBackfill } from "./api/debug";
 import { handleChatCompletions } from "./api/chatCompletions";
 import { handleGuideDogChatCompletions } from "./api/guideDog";
 import { handleAdminBoard } from "./api/adminBoard";
@@ -26,40 +26,13 @@ import { handleQueueMessage } from "./queue/consumer";
 import { enqueueMissedDiarySplits } from "./queue/producer";
 import type { Env, QueueMessage } from "./types";
 import { openAiError } from "./utils/json";
+import { loadAppConfig, loadGatewayConfig, type DreamConfig } from "./config/runtime";
+import { runScheduledCoordinateBackfill } from "./memory/coordinateBackfill";
+import { labelCoordinateBatch } from "./adapters/llm/coordinateLabeler";
 
-function getDreamNamespace(env: Env): string {
-  const value = env.DREAM_NAMESPACE?.trim();
-  return value || "default";
-}
-
-function getDreamMaxRuns(env: Env): number {
-  const parsed = Number(env.DREAM_MAX_RUNS || 10);
-  if (!Number.isFinite(parsed)) return 10;
-  return Math.min(Math.max(Math.floor(parsed), 1), 10);
-}
-
-function isDreamEnabled(env: Env): boolean {
-  const flag = env.ENABLE_DREAM?.trim();
-  return flag ? flag !== "false" : false;
-}
-
-function isFiveAxisEnabled(env: Env): boolean {
-  return env.ENABLE_FIVE_AXIS?.trim() !== "false";
-}
-
-function isFiveAxisDryRun(env: Env): boolean {
-  return env.FIVE_AXIS_DRY_RUN?.trim() === "true";
-}
-
-function isDreamDryRun(env: Env): boolean {
-  const flag = env.DREAM_DRY_RUN?.trim();
-  return flag ? flag !== "false" : true;
-}
-
-async function runDreamBatches(env: Env, namespace: string): Promise<unknown[]> {
+async function runDreamBatches(env: Env, namespace: string, config: DreamConfig): Promise<unknown[]> {
   const results: unknown[] = [];
-  const maxRuns = getDreamMaxRuns(env);
-  for (let i = 0; i < maxRuns; i += 1) {
+  for (let i = 0; i < config.maxRuns; i += 1) {
     const result = await runDailyMemoryDigest(env, namespace);
     results.push(result);
     if (!result.ran || !result.stats?.hasMore) break;
@@ -126,7 +99,7 @@ export default {
     }
 
     if (request.method === "POST" && url.pathname === "/v1/chat/completions") {
-      if (env.ENABLE_CHAT_GATEWAY !== "true") {
+      if (!loadGatewayConfig(env).enabled) {
         return openAiError("Chat gateway is disabled", 404);
       }
 
@@ -224,14 +197,15 @@ export default {
   },
 
   async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
-    const namespace = getDreamNamespace(env);
+    const config = loadAppConfig(env);
+    const namespace = config.dream.namespace;
     if (controller.cron === "*/5 * * * *") {
       ctx.waitUntil(
         Promise.all([
-          env.COORDINATE_BACKFILL_ENABLED === "true"
+          config.fiveAxis.coordinateBackfillEnabled
             ? getCoordinateBackfillControl(env, namespace).then(async (control) => {
                 if (!control.enabled) return { skipped: "paused" as const };
-                const result = await runScheduledCoordinateBackfill(env, namespace);
+                const result = await runScheduledCoordinateBackfill(env, namespace, labelCoordinateBatch);
                 await recordCoordinateBackfillRun(env, namespace, result);
                 return result;
               })
@@ -249,19 +223,19 @@ export default {
     }
     ctx.waitUntil(
       Promise.all([
-        runDreamBatches(env, namespace).then(async (digest) => ({
+        runDreamBatches(env, namespace, config.dream).then(async (digest) => ({
           digest,
-          xyzem: isFiveAxisEnabled(env)
-            ? await runXyzemNightlyMaintenance(env, namespace, { dryRun: isFiveAxisDryRun(env) }).then(async (result) => ({
+          xyzem: config.fiveAxis.enabled
+            ? await runXyzemNightlyMaintenance(env, namespace, { dryRun: config.fiveAxis.dryRun }).then(async (result) => ({
                 ...result,
                 operationalReview: await scanOperationalReviewCandidates(env, namespace)
               }))
             : { skipped: "five_axis_disabled" as const },
-          narrative: isDreamEnabled(env)
+          narrative: config.dream.enabled
             ? await runNarrativeTimeline(env, namespace)
             : { skipped: "dream_disabled" as const },
-          timelineSweep: isDreamEnabled(env)
-            ? await runTimelineSweep(env, namespace, { threads: env.TIMELINE_THREADS?.split(",").map((t) => t.trim()).filter(Boolean) ?? [] })
+          timelineSweep: config.dream.enabled
+            ? await runTimelineSweep(env, namespace, { threads: config.fiveAxis.timelineThreads })
             : { skipped: "dream_disabled" as const }
         })),
         runMemoryRetention(env, namespace),

@@ -1,17 +1,17 @@
 import { listActiveMemoriesByFactKeys, searchMemoriesByText } from "../db/memories";
 import type { Env, MemoryApiRecord } from "../types";
-import { normalizeQueryForMemorySearch } from "./query";
-import { searchMemories, toMemoryApiRecord } from "./search";
-import { addDatedTimelineCandidates, filterUnsupportedRecallMemories } from "./recallFilter";
-import { topicNeedles } from "./recallNeedles";
-import { formatRecallBlock } from "./recallFormat";
-import { analyzeRecallNeed, getRecallTopK } from "./recallIntent";
-import { factKeysForQueryHint } from "./queryHints";
-import { buildRecallTrace, type RecallTrace } from "./recallTrace";
-import type { EAxisFusionTrace } from "./recallFusion";
+import { normalizeQueryForMemorySearch } from "../memory/query";
+import { searchMemories, toMemoryApiRecord } from "../memory/search";
+import { addDatedTimelineCandidates, filterUnsupportedRecallMemories } from "./candidatePolicy";
+import { topicNeedles } from "./vocabulary";
+import { formatRecallBlock } from "./formatter";
+import { analyzeRecallNeed, getRecallTopK } from "./intent";
+import { factKeysForQueryHint } from "../memory/queryHints";
+import { buildRecallTrace, type RecallTrace } from "./trace";
+import type { EAxisFusionTrace } from "./fusion";
 
-export { formatRecallBlock } from "./recallFormat";
-export { analyzeRecallNeed } from "./recallIntent";
+export { formatRecallBlock } from "./formatter";
+export { analyzeRecallNeed } from "./intent";
 
 export interface RecallContextResult {
   should_recall: boolean;

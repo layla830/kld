@@ -1,6 +1,6 @@
-import type { Env, MemoryRecord } from "../types";
-import { normalizeText } from "./query";
-import type { ScoredMemoryRecord } from "./vectorStore";
+import type { Env, MemoryRecord } from "../../types";
+import { normalizeText } from "../../memory/query";
+import type { ScoredMemoryRecord } from "../../memory/vectorStore";
 
 interface EmotionCoord { valence: number; arousal: number }
 

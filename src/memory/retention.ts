@@ -13,62 +13,18 @@ import { finishIdempotentTask, tryStartIdempotentTask } from "../db/idempotency"
 import { upsertMemoryEmbedding } from "./embedding";
 import type { Env, MemoryRecord } from "../types";
 import { pruneProcessedCcConnectMessages } from "./ccConnectRetention";
-
-// ---------------------------------------------------------------------------
-// Default retention policy. Environment variables can override the day/hour
-// windows without changing code; invalid values fall back to these defaults.
-// ---------------------------------------------------------------------------
-
-export const RETENTION_POLICY = {
-  activeMemoryAutoExpiry: false,
-  messagesDays: 14,
-  usageLogsDays: 30,
-  memoryEventsDays: 30,
-  idempotencyKeysDays: 7,
-  terminalMemoryHardDeleteDays: 30,
-  throttleHours: 24,
-} as const;
-
-interface ResolvedRetentionPolicy {
-  activeMemoryAutoExpiry: false;
-  messagesDays: number;
-  usageLogsDays: number;
-  memoryEventsDays: number;
-  idempotencyKeysDays: number;
-  terminalMemoryHardDeleteDays: number;
-  throttleHours: number;
-}
+import { loadRetentionConfig, systemClock, type AppClock } from "../config/runtime";
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-function readPositiveInteger(value: string | undefined, fallback: number): number {
-  const parsed = Number(value || fallback);
-  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+function daysAgo(clock: AppClock, days: number): string {
+  return new Date(clock.nowMs() - days * 86_400_000).toISOString();
 }
 
-function retentionPolicy(env: Env): ResolvedRetentionPolicy {
-  return {
-    activeMemoryAutoExpiry: false,
-    messagesDays: readPositiveInteger(env.MEMORY_RETENTION_MESSAGES_DAYS, RETENTION_POLICY.messagesDays),
-    usageLogsDays: readPositiveInteger(env.MEMORY_RETENTION_USAGE_LOGS_DAYS, RETENTION_POLICY.usageLogsDays),
-    memoryEventsDays: readPositiveInteger(env.MEMORY_RETENTION_EVENTS_DAYS, RETENTION_POLICY.memoryEventsDays),
-    idempotencyKeysDays: readPositiveInteger(env.MEMORY_RETENTION_IDEMPOTENCY_DAYS, RETENTION_POLICY.idempotencyKeysDays),
-    terminalMemoryHardDeleteDays: readPositiveInteger(
-      env.MEMORY_RETENTION_TERMINAL_MEMORY_DAYS,
-      RETENTION_POLICY.terminalMemoryHardDeleteDays
-    ),
-    throttleHours: readPositiveInteger(env.MEMORY_RETENTION_THROTTLE_HOURS, RETENTION_POLICY.throttleHours),
-  };
-}
-
-function daysAgo(days: number): string {
-  return new Date(Date.now() - days * 86_400_000).toISOString();
-}
-
-function hoursAgoMs(hours: number): number {
-  return Date.now() - hours * 3_600_000;
+function hoursAgoMs(clock: AppClock, hours: number): number {
+  return clock.nowMs() - hours * 3_600_000;
 }
 
 /**
@@ -130,34 +86,35 @@ async function resyncUnsyncedVectors(env: Env, namespace: string): Promise<numbe
 
 async function runMemoryRetentionInner(
   env: Env,
-  namespace: string
+  namespace: string,
+  clock: AppClock
 ): Promise<{ ran: boolean; stats?: Record<string, number> }> {
-  const policy = retentionPolicy(env);
+  const policy = loadRetentionConfig(env);
   const cursorName = `retention:${namespace}`;
   const lastRun = await readCursor(env.DB, cursorName);
 
   if (lastRun) {
     const lastRunMs = new Date(lastRun).getTime();
-    if (lastRunMs > hoursAgoMs(policy.throttleHours)) {
+    if (lastRunMs > hoursAgoMs(clock, policy.throttleHours)) {
       return { ran: false };
     }
   }
 
-  const now = new Date().toISOString();
+  const now = clock.iso();
   const stats: Record<string, number> = {};
 
-  stats.messages = await deleteOldMessages(env.DB, namespace, daysAgo(policy.messagesDays));
-  stats.ccConnectProcessedMessages = await pruneProcessedCcConnectMessages(env, namespace);
-  stats.usageLogs = await deleteOldUsageLogs(env.DB, namespace, daysAgo(policy.usageLogsDays));
-  stats.memoryEvents = await deleteOldMemoryEvents(env.DB, namespace, daysAgo(policy.memoryEventsDays));
-  stats.idempotencyKeys = await deleteOldIdempotencyKeys(env.DB, daysAgo(policy.idempotencyKeysDays));
+  stats.messages = await deleteOldMessages(env.DB, namespace, daysAgo(clock, policy.messagesDays));
+  stats.ccConnectProcessedMessages = await pruneProcessedCcConnectMessages(env, namespace, clock);
+  stats.usageLogs = await deleteOldUsageLogs(env.DB, namespace, daysAgo(clock, policy.usageLogsDays));
+  stats.memoryEvents = await deleteOldMemoryEvents(env.DB, namespace, daysAgo(clock, policy.memoryEventsDays));
+  stats.idempotencyKeys = await deleteOldIdempotencyKeys(env.DB, daysAgo(clock, policy.idempotencyKeysDays));
   stats.vectorResynced = await resyncUnsyncedVectors(env, namespace);
 
   // Active long-term memories do not expire automatically. Manual deletes still
   // become hard-deletable after the terminal-memory retention window.
   stats.expiredMemories = 0;
 
-  const hardCutoff = daysAgo(policy.terminalMemoryHardDeleteDays);
+  const hardCutoff = daysAgo(clock, policy.terminalMemoryHardDeleteDays);
   const deletable = await listHardDeletableMemories(env.DB, namespace, hardCutoff);
 
   if (deletable.length > 0) {
@@ -202,9 +159,10 @@ async function runMemoryRetentionInner(
 export async function runMemoryRetention(
   env: Env,
   namespace: string,
-  idempotencyKey?: string
+  idempotencyKey?: string,
+  clock: AppClock = systemClock
 ): Promise<{ ran: boolean; stats?: Record<string, number> }> {
-  if (!idempotencyKey) return runMemoryRetentionInner(env, namespace);
+  if (!idempotencyKey) return runMemoryRetentionInner(env, namespace, clock);
 
   const started = await tryStartIdempotentTask(env.DB, {
     key: idempotencyKey,
@@ -213,7 +171,7 @@ export async function runMemoryRetention(
   if (!started) return { ran: false };
 
   try {
-    const result = await runMemoryRetentionInner(env, namespace);
+    const result = await runMemoryRetentionInner(env, namespace, clock);
     await finishIdempotentTask(env.DB, { key: idempotencyKey, status: "done" });
     return result;
   } catch (error) {
