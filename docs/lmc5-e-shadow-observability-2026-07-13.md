@@ -47,3 +47,15 @@ If the evidence is acceptable, set `E_AXIS_STARTED_AT` deliberately and retain a
 - `npm test`
 - `npm run test:lmc5-circuits`
 - `git diff --check`
+
+## Production record
+
+- Code commit: `19273c0 Observe E-axis shadow ranking`
+- Worker deployment: `87d787a1-0806-42c0-842f-c01bae4ae3fd`
+- Worker version: `f305293e-1293-46b3-9e7e-7ec0fe5b01cc` at 100% traffic
+- Health: `/health` returned `ok: true` after deployment
+- Gate: `E_AXIS_STARTED_AT` remains unset, so production remains in indefinite shadow mode
+- MCP smoke: success; the response body was not printed
+- D1 evidence: one `recall_search_observed` event with `mode=shadow`, 30 compared candidates, 19 boosted candidates, 4 observed rank changes, and a changed top-five candidate window
+
+Previous production version for rollback: `7b50b312-fa9c-4ea6-9f65-835824d1d5b9`. Rolling back code does not require a D1 repair because this change added no migration and shadow observations are append-only events.
