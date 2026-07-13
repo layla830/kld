@@ -127,4 +127,30 @@ describe("per-memory five-axis projection", () => {
       projectionKey: "five-axis:2:v1"
     }, dependencies)).resolves.toBeNull();
   });
+
+  it("fails the projection when Y cannot produce a valid result", async () => {
+    const initial = memory({ fact_key: null, thread: "kld", valence: 0.2 });
+    const dependencies: MemoryFiveAxisProjectionDependencies = {
+      getMemory: async () => initial,
+      projectTimeline: async () => ({ scanned: 1, outcome: "already_dated", dates: [], queued: 0 }),
+      projectCoordinates: async () => ({ skipped: "coordinates_present" }),
+      syncVector: async () => "synced",
+      projectRelations: async () => ({
+        scanned: 1,
+        inserted: 0,
+        review: 0,
+        proposed: 0,
+        candidates: 2,
+        error: "invalid_json"
+      }),
+      projectFacts: async () => ({ conflicts: 0, candidates: 0 }),
+      projectMetabolism: async () => ({ archive: 0, relations: 0 })
+    };
+
+    await expect(projectMemoryIntoFiveAxes({} as Env, {
+      namespace: "default",
+      memoryId: initial.id,
+      projectionKey: "five-axis:3:v1"
+    }, dependencies)).rejects.toThrow("y_relation_projection_failed:invalid_json");
+  });
 });

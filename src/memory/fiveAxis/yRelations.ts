@@ -130,9 +130,10 @@ async function proposeRelationsViaLlm(
     const response = await callOpenAICompat(env, request);
     if (!response.ok) return { hints: [], error: `model_status_${response.status}` };
     const parsed = (await response.json()) as OpenAIChatResponse;
-    const message = parsed.choices?.[0]?.message as ({ content?: unknown }) | undefined;
+    const message = parsed.choices?.[0]?.message as ({ content?: unknown; reasoning_content?: unknown }) | undefined;
     const content = typeof message?.content === "string" ? message.content.trim() : "";
-    const json = extractJsonObject(content);
+    const reasoning = typeof message?.reasoning_content === "string" ? message.reasoning_content.trim() : "";
+    const json = extractJsonObject(content) ?? extractJsonObject(reasoning);
     if (!json) return { hints: [], error: "invalid_json" };
     const rawHints = (json as { hints?: unknown }).hints;
     if (!Array.isArray(rawHints)) return { hints: [], error: "no_hints_array" };

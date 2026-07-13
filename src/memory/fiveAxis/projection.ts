@@ -77,6 +77,7 @@ export async function projectMemoryIntoFiveAxes(
     memoryIds: [input.memoryId],
     projectionKey: input.projectionKey
   });
+  if (y.error) throw new Error(`y_relation_projection_failed:${y.error}`);
   const z = current.fact_key
     ? await dependencies.projectFacts(env, input.namespace, { factKeys: [current.fact_key] })
     : { conflicts: 0, candidates: 0 };

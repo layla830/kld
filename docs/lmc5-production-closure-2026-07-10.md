@@ -319,6 +319,12 @@ Axis behavior remains production-safe:
 
 Raw `diary`, `layla_diary`, `auto_diary`, and `dream_review` rows are excluded from the trigger. Searchable memories created by diary splitting are ordinary active memories and therefore enter the pipeline automatically.
 
+Operational guarantees:
+
+- Y relation JSON is accepted from either `message.content` or provider-specific `message.reasoning_content`.
+- A Y model or parse error fails the whole projection job so the outbox can retry; it must never be recorded as `completed` with a silently missing axis.
+- GitHub version uploads do not apply changed cron configuration. After editing `[triggers]`, run `wrangler triggers deploy` and verify the returned schedules; ordinary code-only version uploads preserve the already attached schedules.
+
 Deployment order:
 
 1. Apply `20260713_memory_five_axis_outbox.sql` to D1.
