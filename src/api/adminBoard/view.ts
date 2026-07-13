@@ -1,6 +1,7 @@
 import type { MemoryRecord } from "../../types";
 import { ADMIN_BOARD_CSS } from "./styles";
 import type { BoardStats, HeatDay, Lmc5DashboardData, Lmc5MemoryNode, Lmc5NodeLink, Lmc5RelationEdge } from "./data";
+import type { EAxisObservabilityData } from "../../memory/eAxisObservability";
 import { renderDreamReviewMemory } from "./reviewView";
 import type { DreamReviewMemoryRecord } from "./reviewData";
 import type { MemoryCandidateRecord } from "../../db/memoryCandidates";
@@ -249,11 +250,32 @@ function renderCoordinateBackfill(status: CoordinateBackfillStatus | null): stri
   return `<section class="card lmc-panel"><div class="header-row"><span class="section-title">旧记忆坐标回补</span><div class="divider"></div><span class="score-pill">${status.enabled ? "运行中" : "已暂停"}</span></div><div class="lmc-stat-grid"><div class="stat-item"><span class="stat-value">${status.completed}</span><span class="stat-label">已有坐标</span></div><div class="stat-item"><span class="stat-value">${status.remaining}</span><span class="stat-label">剩余</span></div><div class="stat-item"><span class="stat-value">${status.progressPercent}%</span><span class="stat-label">完成度</span></div><div class="stat-item"><span class="stat-value">${status.pendingReview}</span><span class="stat-label">异常待审</span></div></div><div style="height:10px;border-radius:999px;background:#f3e5e8;overflow:hidden;margin:14px 0"><div style="height:100%;width:${Math.max(0, Math.min(100, status.progressPercent))}%;background:#cf8e9b"></div></div><div class="lmc-help">每 5 分钟最多处理 5 条 · 预计 ${htmlEscape(eta)} · 上次运行 ${htmlEscape(lastRun)}</div><form method="POST" action="/admin/memories/coordinate-backfill/toggle"><input type="hidden" name="enabled" value="${nextEnabled}"><button class="small-btn" type="submit">${button}</button></form></section>`;
 }
 
+function renderEAxisObservability(data: EAxisObservabilityData): string {
+  const state = data.state;
+  const status = !state.inShadow ? "正式加权" : state.configured ? `shadow 第 ${state.daysElapsed + 1} 天` : "shadow 未开始计时";
+  const timing = !state.inShadow
+    ? `E 轴 tension/risk 已进入正式排序；仍保留基线对照。`
+    : state.configured
+      ? `距离正式加权还剩 ${state.daysRemaining} 天。当前只比较排名，不改变召回结果。`
+      : `E_AXIS_STARTED_AT 尚未配置。当前只记录假设启用后的排名变化，不会自动结束 shadow。`;
+  const recent = data.recent.map((sample) => {
+    const changes = sample.trace.changes.map((change) => {
+      const name = change.fact_key || change.id;
+      const before = change.baseline_rank === null ? "窗口外" : `#${change.baseline_rank}`;
+      const after = change.e_axis_rank === null ? "窗口外" : `#${change.e_axis_rank}`;
+      return `<div class="lmc-duplicate"><span>${htmlEscape(name)}</span><span>${htmlEscape(before)} → ${htmlEscape(after)} · +${Number(change.boost).toFixed(3)}</span></div>`;
+    }).join("");
+    return `<details class="memory-detail"><summary>${htmlEscape(formatTime(sample.createdAt))} · ${sample.source === "mcp_retrieve" ? "MCP 手动召回" : "自动召回"} · ${htmlEscape(sample.queryHash)} · 提权 ${sample.trace.boosted_count} 条${sample.trace.top_k_changed ? " · 候选窗口变化" : ""}</summary><div class="lmc-duplicates">${changes || '<div class="empty">分数有变化，当前观察窗口内名次未变化</div>'}</div></details>`;
+  }).join("");
+  return `<section class="card lmc-panel"><div class="header-row"><span class="section-title">E shadow 观测</span><div class="divider"></div><span class="score-pill">${htmlEscape(status)}</span></div><div class="lmc-explain"><p><strong>现在会做什么：</strong>${htmlEscape(timing)}</p><p><strong>口径：</strong>同一批融合候选分别计算无 E 分数与假设启用 E 分数；不会重复向量检索，也不会把原始查询写进事件，只保存查询哈希和记忆 ID。</p></div><div class="lmc-stat-grid"><div class="stat-item"><span class="stat-value">${data.samples}</span><span class="stat-label">近 ${data.windowDays} 天样本</span></div><div class="stat-item"><span class="stat-value">${data.changedQueries}</span><span class="stat-label">候选窗口变化</span></div><div class="stat-item"><span class="stat-value">${data.changedRate}%</span><span class="stat-label">变化率</span></div><div class="stat-item"><span class="stat-value">${data.averageBoosted}</span><span class="stat-label">平均提权条数</span></div></div>${recent || '<div class="empty">还没有新格式样本。部署后，自动召回和 MCP retrieve_memory 会开始积累。</div>'}</section>`;
+}
+
 function renderLmc5Dashboard(data: Lmc5DashboardData | null): string {
   if (!data) return '<div class="empty">LMC-5 面板没有加载出来</div>';
   return [
     renderLmc5Guide(),
     renderLmc5StatGrid(data),
+    renderEAxisObservability(data.eAxisObservability),
     renderLmc5Clusters(data),
     renderLmc5Nodes("核心节点", data.highValueNodes, "没有核心节点", true),
     renderLmc5Nodes("P2 阅读命名队列", data.reviewQueue, "当前没有待命名项"),

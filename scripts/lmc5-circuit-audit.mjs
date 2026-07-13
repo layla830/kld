@@ -62,6 +62,7 @@ const recallFilter = fs.readFileSync("src/memory/recallFilter.ts", "utf8");
 const injection = fs.readFileSync("src/memory/inject.ts", "utf8");
 const coordinateBackfill = fs.readFileSync("src/application/coordinateBackfill.ts", "utf8");
 const recallFusion = fs.readFileSync("src/memory/recallFusion.ts", "utf8");
+const eAxisObservability = fs.readFileSync("src/memory/eAxisObservability.ts", "utf8");
 const recallOutputPolicy = fs.readFileSync("src/memory/recallOutputPolicy.ts", "utf8");
 const vpsDreamCandidate = fs.readFileSync("ops/vps/kld_dream_candidate_shadow.py", "utf8");
 
@@ -422,6 +423,28 @@ const checks = [
     "E: shadow gate controls ranking",
     files.search.includes("shouldApplyEAxisToRanking(env)") &&
       recallFusion.includes("applyEAxis ? eAxisBoost(record) : 0"),
+  ],
+  [
+    "E: shadow observability compares one candidate set without changing baseline output",
+    recallFusion.includes("baselineRanked") &&
+      recallFusion.includes("eAxisRanked") &&
+      files.search.includes("fusion.records") &&
+      files.search.includes("onEAxisTrace"),
+  ],
+  [
+    "E: automatic and MCP recall persist privacy-bounded observations off the response path",
+    recallApi.includes("trace: result.trace") &&
+      mcpApi.includes("recordRecallSearchObservation") &&
+      mcpApi.includes("ctx.waitUntil") &&
+      eAxisObservability.includes('eventType: "recall_search_observed"') &&
+      eAxisObservability.includes("hashRecallQuery") &&
+      !eAxisObservability.includes("raw_query"),
+  ],
+  [
+    "E: existing LMC-5 admin renders read-only shadow evidence",
+    adminView.includes("E shadow 观测") &&
+      adminView.includes("不会自动结束 shadow") &&
+      !adminView.includes("E_AXIS_STARTED_AT\" value="),
   ],
   [
     "Night: Y runs before Z and M",

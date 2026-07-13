@@ -1,4 +1,5 @@
 import type { MemoryApiRecord } from "../types";
+import type { EAxisFusionTrace } from "./recallFusion";
 
 export type RecallLayerName = "authority" | "evidence" | "association" | "fallback";
 
@@ -11,6 +12,7 @@ export interface RecallLayerTrace {
 export interface RecallTrace {
   strategy: "deterministic_fast_path" | "hybrid_search";
   layers: Record<RecallLayerName, RecallLayerTrace>;
+  e_axis?: EAxisFusionTrace;
 }
 
 const AUTHORITY_TYPES = new Set(["rule", "lesson", "core", "preference", "identity", "project_state", "timeline_day"]);
@@ -24,7 +26,11 @@ function layerOf(memory: MemoryApiRecord): RecallLayerName {
   return "fallback";
 }
 
-export function buildRecallTrace(memories: MemoryApiRecord[], strategy: RecallTrace["strategy"]): RecallTrace {
+export function buildRecallTrace(
+  memories: MemoryApiRecord[],
+  strategy: RecallTrace["strategy"],
+  eAxis?: EAxisFusionTrace
+): RecallTrace {
   const buckets: Record<RecallLayerName, MemoryApiRecord[]> = {
     authority: [], evidence: [], association: [], fallback: []
   };
@@ -40,5 +46,5 @@ export function buildRecallTrace(memories: MemoryApiRecord[], strategy: RecallTr
       }
     ])
   ) as Record<RecallLayerName, RecallLayerTrace>;
-  return { strategy, layers };
+  return { strategy, layers, ...(eAxis ? { e_axis: eAxis } : {}) };
 }

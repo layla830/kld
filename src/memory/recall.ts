@@ -8,6 +8,7 @@ import { formatRecallBlock } from "./recallFormat";
 import { analyzeRecallNeed, getRecallTopK } from "./recallIntent";
 import { factKeysForQueryHint } from "./queryHints";
 import { buildRecallTrace, type RecallTrace } from "./recallTrace";
+import type { EAxisFusionTrace } from "./recallFusion";
 
 export { formatRecallBlock } from "./recallFormat";
 export { analyzeRecallNeed } from "./recallIntent";
@@ -110,12 +111,14 @@ export async function buildRecallContext(
     }
   }
 
+  let eAxisTrace: EAxisFusionTrace | undefined;
   const memories = await searchMemories(env, {
     namespace: input.namespace,
     query: searchQuery,
     rawQuery: analysis.query,
     topK,
-    includeMessages: true
+    includeMessages: true,
+    onEAxisTrace: (trace) => { eAxisTrace = trace; }
   });
   const withDatedCandidates = await addDatedTimelineCandidates(env, {
     namespace: input.namespace,
@@ -142,6 +145,6 @@ export async function buildRecallContext(
     query: searchQuery,
     memories: supportedMemories,
     recall,
-    trace: buildRecallTrace(supportedMemories, "hybrid_search")
+    trace: buildRecallTrace(supportedMemories, "hybrid_search", eAxisTrace)
   };
 }

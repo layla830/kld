@@ -2,6 +2,7 @@ import { authenticate } from "../auth/apiKey";
 import { createMemory, listMemories, searchMemoriesByText, softDeleteMemory, updateMemory } from "../db/memories";
 import { deleteMemoryEmbedding, upsertMemoryEmbedding } from "../memory/embedding";
 import { searchMemories, toMemoryApiRecord } from "../memory/search";
+import { recordRecallSearchObservation } from "../memory/eAxisObservability";
 import { buildStartupContext } from "../memory/startupContext";
 import { enqueueDiarySplitIfNeeded } from "../queue/producer";
 import {
@@ -448,7 +449,25 @@ async function callTool(env: Env, ctx: ExecutionContext, profile: KeyProfile, pa
     if (!hasScope(profile, "memory:read")) return toolError("Missing memory:read scope");
     const query = readString(args.query);
     if (!query) return toolError("query is required");
-    const data = await searchMemories(env, { namespace: resolveNamespace(profile, args.namespace), query, topK: readNumber(args.top_k, readNumber(args.n_results, Number(env.MEMORY_TOP_K || 8))), types: readStringArray(args.types) });
+    const namespace = resolveNamespace(profile, args.namespace);
+    let eAxisTrace: Parameters<typeof recordRecallSearchObservation>[1]["eAxis"] | undefined;
+    const data = await searchMemories(env, {
+      namespace,
+      query,
+      topK: readNumber(args.top_k, readNumber(args.n_results, Number(env.MEMORY_TOP_K || 8))),
+      types: readStringArray(args.types),
+      onEAxisTrace: (trace) => { eAxisTrace = trace; }
+    });
+    if (eAxisTrace) {
+      const trace = eAxisTrace;
+      ctx.waitUntil(recordRecallSearchObservation(env, {
+        namespace,
+        query,
+        source: "mcp_retrieve",
+        resultIds: data.map((record) => record.id),
+        eAxis: trace
+      }).catch((error) => console.error("MCP recall observation write failed", error)));
+    }
     return textToolResult({ data });
   }
 

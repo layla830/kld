@@ -3,6 +3,7 @@ import { requireScope } from "../auth/scopes";
 import { markMemoriesRecalled } from "../db/memories";
 import { createMemoryEvent } from "../db/memoryEvents";
 import { buildRecallContext } from "../memory/recall";
+import { hashRecallQuery } from "../memory/eAxisObservability";
 import type { Env, KeyProfile } from "../types";
 import { json, openAiError } from "../utils/json";
 
@@ -31,11 +32,6 @@ async function readBody(request: Request): Promise<Record<string, unknown> | nul
   }
 }
 
-async function promptHash(prompt: string): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(prompt));
-  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("").slice(0, 16);
-}
-
 export async function handleRecall(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   const auth = await authenticate(request, env);
   if (!auth.ok) return openAiError("Unauthorized", 401, "authentication_error");
@@ -61,7 +57,7 @@ export async function handleRecall(request: Request, env: Env, ctx: ExecutionCon
   if (result.should_recall) {
     const memoryIds = result.memories.map((memory) => memory.id).filter((id) => !id.startsWith("msg_"));
     ctx.waitUntil((async () => {
-      const queryHash = await promptHash(prompt);
+      const queryHash = await hashRecallQuery(prompt);
       await Promise.all([
         markMemoriesRecalled(env.DB, { namespace, ids: memoryIds }),
         createMemoryEvent(env.DB, {

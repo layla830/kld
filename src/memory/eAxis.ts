@@ -1,4 +1,7 @@
-interface ShadowState {
+export interface ShadowState {
+  configured: boolean;
+  startedAt: string | null;
+  shadowDays: number;
   inShadow: boolean;
   daysElapsed: number;
   daysRemaining: number;
@@ -18,13 +21,16 @@ export function readShadowState(env: { E_AXIS_STARTED_AT?: string; E_AXIS_SHADOW
   const shadowDays = readPositiveInt(env.E_AXIS_SHADOW_DAYS, DEFAULT_SHADOW_DAYS);
 
   if (!Number.isFinite(startedAt)) {
-    return { inShadow: true, daysElapsed: 0, daysRemaining: shadowDays };
+    return { configured: false, startedAt: null, shadowDays, inShadow: true, daysElapsed: 0, daysRemaining: shadowDays };
   }
 
   const elapsedMs = Math.max(0, now - startedAt);
   const daysElapsed = Math.floor(elapsedMs / (24 * 60 * 60 * 1000));
   const inShadow = daysElapsed < shadowDays;
   return {
+    configured: true,
+    startedAt: new Date(startedAt).toISOString(),
+    shadowDays,
     inShadow,
     daysElapsed,
     daysRemaining: Math.max(0, shadowDays - daysElapsed)

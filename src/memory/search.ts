@@ -9,7 +9,7 @@ import { applyLead, postProcessMemorySearchResults, pruneConflictingDateContext 
 import { expandQueryAngles, rerankMemories } from "./queryExpand";
 import { factKeysForQueryHint } from "./queryHints";
 import { searchEmotionMemories } from "./recallEmotionSource";
-import { mergeRelatedRecords, mergeSearchResults } from "./recallFusion";
+import { mergeRelatedRecords, mergeSearchResults, type EAxisFusionTrace } from "./recallFusion";
 import { dedupeRecallOutput, isRecallEligible, keepHintedContext, keepRelatedContext, RECALL_EXCLUDED_TYPES } from "./recallOutputPolicy";
 import { buildRecallQueryPlan, recordHaystack } from "./recallQueryPlan";
 import { searchVectorMemories, type ScoredMemoryRecord } from "./vectorStore";
@@ -24,6 +24,7 @@ export interface SearchMemoriesInput {
   topK?: number;
   includeMessages?: boolean;
   recordRecall?: boolean;
+  onEAxisTrace?: (trace: EAxisFusionTrace) => void;
 }
 
 const QUERY_HINT_SCORE = 1.35;
@@ -93,7 +94,7 @@ export async function searchMemories(env: Env, input: SearchMemoriesInput): Prom
     .map((record) => ({ ...record, score: Math.max(record.score, 0.82), keywordScore: Math.max(record.score, 0.82) })) : [];
 
   const emotionRecords = (await searchEmotionMemories(env, input.namespace, plan.rawQuery)).filter(isRecallEligible);
-  const fused = mergeSearchResults(vectorRecords, [
+  const fusion = mergeSearchResults(vectorRecords, [
     ...keywordRecords,
     ...hintedRecords.map((record) => ({ ...record, score: QUERY_HINT_SCORE, keywordScore: QUERY_HINT_SCORE })),
     ...guidanceRecords.map((record) => ({
@@ -103,8 +104,10 @@ export async function searchMemories(env: Env, input: SearchMemoriesInput): Prom
     ...messageRecords, ...literalRecords, ...emotionRecords
   ], {
     query: plan.searchQuery, expandedQuery: plan.expandedQuery, limit,
-    timeIntent: plan.timeIntent, applyEAxis: shouldApplyEAxisToRanking(env)
+    timeIntent: plan.timeIntent, applyEAxis: shouldApplyEAxisToRanking(env), observeTopK: topK
   });
+  input.onEAxisTrace?.(fusion.eAxis);
+  const fused = fusion.records;
 
   const related = (await listRelationExpandedMemories(env.DB, {
     namespace: input.namespace, baseIds: fused.map((record) => record.id), limit: Math.max(topK, Math.ceil(limit / 3))

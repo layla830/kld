@@ -1,4 +1,5 @@
 import { searchMemories } from "../../memory/search";
+import { fetchEAxisObservability, type EAxisObservabilityData } from "../../memory/eAxisObservability";
 import type { Env, MemoryApiRecord, MemoryRecord } from "../../types";
 import {
   formatShanghaiDateKey,
@@ -75,6 +76,7 @@ export interface Lmc5MemoryNode {
 
 export interface Lmc5DashboardData {
   stats: Lmc5Stats;
+  eAxisObservability: EAxisObservabilityData;
   relationTypes: Array<{ relation_type: string; count: number }>;
   clusters: Array<{ title: string; factKeys: string[]; edges: Lmc5RelationEdge[] }>;
   highValueNodes: Lmc5MemoryNode[];
@@ -326,8 +328,9 @@ async function fetchLmc5DuplicateFactKeys(env: Env): Promise<Array<{ fact_key: s
 }
 
 export async function fetchLmc5Dashboard(env: Env): Promise<Lmc5DashboardData> {
-  const [stats, relationTypes, presenceEdges, selfShapeEdges, intimacyEdges, rawHighValueNodes, reviewQueue, duplicateFactKeys] = await Promise.all([
+  const [stats, eAxisObservability, relationTypes, presenceEdges, selfShapeEdges, intimacyEdges, rawHighValueNodes, reviewQueue, duplicateFactKeys] = await Promise.all([
     fetchLmc5Stats(env),
+    fetchEAxisObservability(env),
     fetchLmc5RelationTypes(env),
     fetchLmc5Edges(env, LMC5_CLUSTER_FACT_KEYS.presence),
     fetchLmc5Edges(env, LMC5_CLUSTER_FACT_KEYS.selfShape),
@@ -340,6 +343,7 @@ export async function fetchLmc5Dashboard(env: Env): Promise<Lmc5DashboardData> {
 
   return {
     stats,
+    eAxisObservability,
     relationTypes,
     clusters: [
       { title: "冲突 / 在场", factKeys: LMC5_CLUSTER_FACT_KEYS.presence, edges: presenceEdges },
