@@ -23,6 +23,19 @@ interface RelationHint {
   reason?: string;
 }
 
+export function selectActiveD1RelationNeighbors(
+  neighbors: Array<Pick<MemoryRecord, "id"> & { score: number }>,
+  records: MemoryRecord[]
+): Array<{ memory: MemoryRecord; vectorScore: number }> {
+  const scores = new Map<string, number>();
+  for (const neighbor of neighbors) {
+    scores.set(neighbor.id, Math.max(scores.get(neighbor.id) ?? 0, neighbor.score));
+  }
+  return records
+    .filter((record) => record.status === "active" && scores.has(record.id))
+    .map((memory) => ({ memory, vectorScore: scores.get(memory.id) ?? 0 }));
+}
+
 const RELATION_NEIGHBOR_TOP_K = 6;
 const RELATION_NEIGHBOR_MIN_SCORE = 0.5;
 const RELATION_MAX_SCAN = 500;
@@ -48,9 +61,13 @@ async function findRelationCandidates(
       topK: RELATION_NEIGHBOR_TOP_K
     });
     if (!neighbors) continue;
-    for (const neighbor of neighbors) {
+    const d1Neighbors = await fetchMemoriesByIds(env.DB, {
+      namespace,
+      ids: [...new Set(neighbors.map((neighbor) => neighbor.id))]
+    });
+    for (const { memory: neighbor, vectorScore } of selectActiveD1RelationNeighbors(neighbors, d1Neighbors)) {
       if (neighbor.id === memory.id) continue;
-      if (neighbor.score < RELATION_NEIGHBOR_MIN_SCORE) continue;
+      if (vectorScore < RELATION_NEIGHBOR_MIN_SCORE) continue;
       const key = [memory.id, neighbor.id].sort().join("|");
       if (seen.has(key)) continue;
       seen.add(key);
@@ -58,7 +75,7 @@ async function findRelationCandidates(
         pairId: `p${candidates.length}`,
         source: memory,
         target: neighbor,
-        vectorScore: neighbor.score
+        vectorScore
       });
     }
   }

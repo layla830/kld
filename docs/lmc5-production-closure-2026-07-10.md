@@ -322,6 +322,7 @@ Raw `diary`, `layla_diary`, `auto_diary`, and `dream_review` rows are excluded f
 Operational guarantees:
 
 - Y relation JSON is accepted from either `message.content` or provider-specific `message.reasoning_content`.
+- Y relation candidates must exist as active D1 memories; Vectorize-only legacy or stale matches can still support recall but cannot become graph endpoints.
 - A Y model or parse error fails the whole projection job so the outbox can retry; it must never be recorded as `completed` with a silently missing axis.
 - GitHub version uploads do not apply changed cron configuration. After editing `[triggers]`, run `wrangler triggers deploy` and verify the returned schedules; ordinary code-only version uploads preserve the already attached schedules.
 
