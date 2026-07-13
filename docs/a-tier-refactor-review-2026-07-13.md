@@ -3,11 +3,10 @@
 ## Review boundary
 
 - Repository: `layla830/kld`
-- Local branch: `codex/recall-noise-fix`
-- Base commit and current `origin/main`: `1af5d2f`
-- State: local worktree only; not committed, pushed, or deployed
-- Production remains 100% on Worker version `a11c0962-ceec-4e1a-9e32-d079d688568e`
-- No D1 schema/data, Vectorize data, Queue data, secret, VPS file, hook, or service was mutated
+- Landed commit: `c3682ad`
+- State: merged to `main` and deployed through the existing Cloudflare Git integration
+- First verified production version: `b46434e8-1d1d-421d-b2f3-8a71b612e506` at 100% traffic
+- No D1 schema/data, Vectorize data, Queue data, secret, VPS file, hook, or service was mutated by the refactor
 
 This packet deliberately distinguishes architectural closure from a literal file-count target. Review the evidence below rather than relying on the phrase "done".
 
@@ -96,7 +95,7 @@ Then inspect:
 
 - No Wrangler or `@cloudflare/workers-types` major-version upgrade.
 - No conversion from existing `wrangler.toml` to `wrangler.jsonc`.
-- No production deployment or E-axis ranking promotion.
+- No E-axis ranking promotion; `E_AXIS_RANKING_ENABLED` remains an explicit manual gate.
 - No D1/Vectorize migration or behavior change to Z/M review-first policy.
 
-Rollback before deployment is to discard or revert this single local change set. After a future deployment, roll back the Worker version and restore the prior variables together; do not roll back only code while leaving an incompatible rollout switch behind.
+Rollback is to route production to the preceding Worker version and revert `c3682ad`; keep the E-axis code and its rollout variables in sync rather than rolling back only one side.

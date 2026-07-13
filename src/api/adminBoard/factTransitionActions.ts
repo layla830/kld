@@ -1,7 +1,7 @@
 import { createMemoryEvent } from "../../db/memoryEvents";
 import { getMemoryCandidate, resolveMemoryCandidate } from "../../db/memoryCandidates";
 import { getMemoryById, updateMemory } from "../../db/memories";
-import { listFactKeyConflictsForReview } from "../../memory/xyzem";
+import { listFactKeyConflictsForReview } from "../../memory/fiveAxis/zFacts";
 import { markMemorySupersededSynced, syncMemoryVector } from "../../memory/state";
 import type { Env, MemoryRecord } from "../../types";
 import { nowIso } from "../../utils/time";

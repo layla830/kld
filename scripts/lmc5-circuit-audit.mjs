@@ -5,7 +5,6 @@ const files = {
   digest: fs.readFileSync("src/memory/dailyDigest.ts", "utf8"),
   relations: fs.readFileSync("src/db/memoryRelations.ts", "utf8"),
   search: fs.readFileSync("src/memory/search.ts", "utf8"),
-  xyzem: fs.readFileSync("src/memory/xyzem.ts", "utf8"),
   debug: fs.readFileSync("src/api/debug.ts", "utf8"),
   narrative: fs.readFileSync("src/memory/narrativeTimeline.ts", "utf8"),
 };
@@ -71,6 +70,10 @@ const generatedBindings = fs.readFileSync("src/generated/worker-configuration.d.
 const runtimeConfig = fs.readFileSync("src/config/runtime.ts", "utf8");
 const packageJson = fs.readFileSync("package.json", "utf8");
 const wranglerConfig = fs.readFileSync("wrangler.toml", "utf8");
+const fiveAxisRelations = fs.readFileSync("src/memory/fiveAxis/yRelations.ts", "utf8");
+const fiveAxisFacts = fs.readFileSync("src/memory/fiveAxis/zFacts.ts", "utf8");
+const fiveAxisMetabolism = fs.readFileSync("src/memory/fiveAxis/mMetabolism.ts", "utf8");
+const fiveAxisNightly = fs.readFileSync("src/memory/fiveAxis/nightly.ts", "utf8");
 
 const checks = [
   [
@@ -282,7 +285,7 @@ const checks = [
       memoriesApi.includes("enqueueDiarySplitIfNeeded(env, memory)"),
   ],
   [
-    "Five-axis: nightly XYZEM is independent from narrative Dream and Z/M stay review-first",
+    "Five-axis: nightly Y/Z/M is independent from narrative Dream and Z/M stay review-first",
     workerIndex.includes("config.fiveAxis.enabled") &&
       workerIndex.includes("config.fiveAxis.dryRun") &&
       workerIndex.includes("scanOperationalReviewCandidates") &&
@@ -400,6 +403,15 @@ const checks = [
       workerIndex.includes("runScheduledCoordinateBackfill"),
   ],
   [
+    "Architecture: five-axis Y Z M projectors and nightly orchestration have separate owners",
+    !fs.existsSync("src/memory/xyzem.ts") &&
+      fiveAxisRelations.includes("export async function runRelationBuild") &&
+      fiveAxisFacts.includes("export async function runZAudit") &&
+      fiveAxisMetabolism.includes("export async function runMetabolismPatrol") &&
+      fiveAxisNightly.includes("export async function runFiveAxisNightlyMaintenance") &&
+      workerIndex.includes('from "./memory/fiveAxis/nightly"'),
+  ],
+  [
     "E: production shadow window is explicit and promotion remains manual",
     wranglerConfig.includes('E_AXIS_STARTED_AT = "2026-07-13T12:22:37.508657Z"') &&
       wranglerConfig.includes('E_AXIS_SHADOW_DAYS = "7"') &&
@@ -510,10 +522,10 @@ const checks = [
   ],
   [
     "Night: Y runs before Z and M",
-    files.xyzem.indexOf("const relations = await runRelationBuild") <
-      files.xyzem.indexOf("const zAudit = await runZAudit") &&
-      files.xyzem.indexOf("const zAudit = await runZAudit") <
-        files.xyzem.indexOf("const patrol = await runMetabolismPatrol"),
+    fiveAxisNightly.indexOf("const relations = await dependencies.runRelations") <
+      fiveAxisNightly.indexOf("const zAudit = await dependencies.runFactAudit") &&
+      fiveAxisNightly.indexOf("const zAudit = await dependencies.runFactAudit") <
+        fiveAxisNightly.indexOf("const patrol = await dependencies.runMetabolism"),
   ],
   [
     "Safety: coordinate backfill apply=false is read-only",
@@ -546,21 +558,21 @@ const checks = [
         .includes("coordinate-backfill/toggle"),
   ],
   [
-    "Safety: XYZEM dry-run does not persist audit events",
-    files.xyzem.includes(
-      "runZAudit(env, namespace, { dryRun: options.dryRun })",
+    "Safety: five-axis dry-run does not persist audit events",
+    fiveAxisNightly.includes(
+      "dependencies.runFactAudit(env, namespace, { dryRun: options.dryRun })",
     ) &&
-      files.xyzem.includes(
-        "runMetabolismPatrol(env, namespace, { dryRun: options.dryRun })",
+      fiveAxisNightly.includes(
+        "dependencies.runMetabolism(env, namespace, { dryRun: options.dryRun })",
       ),
   ],
   [
     "Y: nightly relation build auto-creates safe edges and queues risky edges",
-    files.xyzem.includes("const relations = await runRelationBuild") &&
-      files.xyzem.includes("SAFE_RELATION_TYPES.has(relationType)") &&
-      files.xyzem.includes("await createMemoryRelation") &&
-      files.xyzem.includes("REVIEW_RELATION_TYPES.has(relationType)") &&
-      files.xyzem.includes('eventType: "y_relation_review"'),
+    fiveAxisNightly.includes("runRelations: runRelationBuild") &&
+      fiveAxisRelations.includes("SAFE_RELATION_TYPES.has(relationType)") &&
+      fiveAxisRelations.includes("await createMemoryRelation") &&
+      fiveAxisRelations.includes("REVIEW_RELATION_TYPES.has(relationType)") &&
+      fiveAxisRelations.includes('eventType: "y_relation_review"'),
   ],
   [
     "M: patrol findings become explicit review candidates",

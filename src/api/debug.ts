@@ -1,7 +1,8 @@
 import { authenticate } from "../auth/apiKey";
 import { requireScope } from "../auth/scopes";
 import { runDailyMemoryDigest } from "../memory/dailyDigest";
-import { listFactKeyConflictsForReview, runXyzemNightlyMaintenance, runZAudit } from "../memory/xyzem";
+import { runFiveAxisNightlyMaintenance } from "../memory/fiveAxis/nightly";
+import { listFactKeyConflictsForReview, runZAudit } from "../memory/fiveAxis/zFacts";
 import { listMemoryCandidatesByAction } from "../db/memoryCandidates";
 import { json, openAiError } from "../utils/json";
 import { readBody } from "./common";
@@ -191,7 +192,7 @@ export async function handleZAuditScan(request: Request, env: Env): Promise<Resp
   }
 }
 
-export async function handleXyzemMaintenance(request: Request, env: Env): Promise<Response> {
+export async function handleFiveAxisMaintenance(request: Request, env: Env): Promise<Response> {
   const auth = await authenticate(request, env);
   if (!auth.ok) return openAiError("Unauthorized", 401, "authentication_error");
 
@@ -204,7 +205,7 @@ export async function handleXyzemMaintenance(request: Request, env: Env): Promis
   const sinceIso = typeof body?.sinceIso === "string" ? String(body.sinceIso) : undefined;
 
   try {
-    const result = await runXyzemNightlyMaintenance(env, namespace, { dryRun, sinceIso });
+    const result = await runFiveAxisNightlyMaintenance(env, namespace, { dryRun, sinceIso });
     return json({ ok: true, mode: dryRun ? "dry_run" : "apply", result });
   } catch (error) {
     console.error("xyzem_maintenance failed", error);

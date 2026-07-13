@@ -1,6 +1,6 @@
 import { handleHealth } from "./api/health";
 import { handleCache } from "./api/cache";
-import { handleCacheHealth, handleDreamDryRun, handleZAuditApprove, handleZAuditPending, handleZAuditScan, handleXyzemMaintenance, handleBackfillCoordinates, handleFactGroupProposals, handleTimelineBackfill, handleLegacyRelationBackfill } from "./api/debug";
+import { handleCacheHealth, handleDreamDryRun, handleZAuditApprove, handleZAuditPending, handleZAuditScan, handleFiveAxisMaintenance, handleBackfillCoordinates, handleFactGroupProposals, handleTimelineBackfill, handleLegacyRelationBackfill } from "./api/debug";
 import { handleChatCompletions } from "./api/chatCompletions";
 import { handleGuideDogChatCompletions } from "./api/guideDog";
 import { handleAdminBoard } from "./api/adminBoard";
@@ -17,7 +17,7 @@ import { handleModels } from "./api/models";
 import { handleRecall } from "./api/recall";
 import { runDailyMemoryDigest } from "./memory/dailyDigest";
 import { runMemoryRetention } from "./memory/retention";
-import { runXyzemNightlyMaintenance } from "./memory/xyzem";
+import { runFiveAxisNightlyMaintenance } from "./memory/fiveAxis/nightly";
 import { runNarrativeTimeline, runTimelineSweep } from "./memory/narrativeTimeline";
 import { retryStaleVectorSyncs } from "./memory/state";
 import { getCoordinateBackfillControl, recordCoordinateBackfillRun } from "./memory/coordinateBackfillControl";
@@ -162,7 +162,7 @@ export default {
     }
 
     if (request.method === "POST" && url.pathname === "/v1/debug/xyzem_maintenance") {
-      return handleXyzemMaintenance(request, env);
+      return handleFiveAxisMaintenance(request, env);
     }
 
     if (request.method === "POST" && url.pathname === "/v1/debug/backfill_coordinates") {
@@ -226,7 +226,7 @@ export default {
         runDreamBatches(env, namespace, config.dream).then(async (digest) => ({
           digest,
           xyzem: config.fiveAxis.enabled
-            ? await runXyzemNightlyMaintenance(env, namespace, { dryRun: config.fiveAxis.dryRun }).then(async (result) => ({
+            ? await runFiveAxisNightlyMaintenance(env, namespace, { dryRun: config.fiveAxis.dryRun }).then(async (result) => ({
                 ...result,
                 operationalReview: await scanOperationalReviewCandidates(env, namespace)
               }))

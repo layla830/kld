@@ -1,6 +1,6 @@
 import { upsertMemoryCandidate } from "../db/memoryCandidates";
 import type { Env, MemoryRecord } from "../types";
-import { listFactKeyConflictsForReview } from "./xyzem";
+import { listFactKeyConflictsForReview } from "./fiveAxis/zFacts";
 
 export interface FactTransitionSnapshot {
   id: string;

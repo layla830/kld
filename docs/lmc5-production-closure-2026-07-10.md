@@ -285,3 +285,16 @@ Verification:
 
 No D1 schema or row, memory/candidate/relation/vector state, secret, live Worker variable, VPS file, hook, service, or production deployment was changed. Rollback before deployment is to discard or revert this single local refactor change set; production remains 100% on Worker version `a11c0962-ceec-4e1a-9e32-d079d688568e`.
 
+## 2026-07-13 five-axis module ownership split
+
+The 509-line `src/memory/xyzem.ts` mixed Y relation building, Z fact-conflict audits, M metabolism patrols, and nightly orchestration. It was removed and replaced with four feature-owned modules:
+
+- `src/memory/fiveAxis/yRelations.ts`: vector-neighbor discovery, LLM relation proposals, safe-edge creation, and review-only relation events;
+- `src/memory/fiveAxis/zFacts.ts`: deterministic fact-key conflict ranking and review-first Z audit events;
+- `src/memory/fiveAxis/mMetabolism.ts`: read-only patrol queries and review suggestions;
+- `src/memory/fiveAxis/nightly.ts`: the ordered Y -> Z -> M orchestration only.
+
+The compatibility route `/v1/debug/xyzem_maintenance` remains available, but it delegates to the new nightly owner. A focused unit test locks the Y -> Z -> M sequence and verifies that `dryRun` and `sinceIso` reach the correct projector. The architecture audit now fails if `src/memory/xyzem.ts` reappears or if any of the four owners is missing.
+
+Behavioral boundaries remain unchanged: safe Y relation types may be created automatically; risky Y relations, Z fact transitions, and M maintenance actions remain review-first. No schema, D1 row, Vectorize record, Queue payload, secret, E-axis gate, or VPS runtime is changed by this split. The pre-split rollback target is Worker version `b46434e8-1d1d-421d-b2f3-8a71b612e506`.
+
