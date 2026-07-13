@@ -19,16 +19,23 @@ function dateKey(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
-async function queueArchiveCandidates(env: { DB: D1Database }, namespace: string): Promise<number> {
+async function queueArchiveCandidates(
+  env: { DB: D1Database },
+  namespace: string,
+  memoryIds: string[] = []
+): Promise<number> {
   const now = new Date().toISOString();
+  const ids = [...new Set(memoryIds.map((id) => id.trim()).filter(Boolean))].slice(0, 20);
+  const idClause = ids.length > 0 ? ` AND id IN (${ids.map(() => "?").join(", ")})` : "";
   const rows = await env.DB
     .prepare(
       `SELECT * FROM memories
        WHERE namespace = ? AND status = 'active' AND pinned = 0
          AND type = 'project_state' AND expires_at IS NOT NULL AND expires_at < ?
+         ${idClause}
        ORDER BY expires_at ASC LIMIT 50`
     )
-    .bind(namespace, now)
+    .bind(namespace, now, ...ids)
     .all<MemoryRecord>();
   let queued = 0;
   for (const memory of rows.results ?? []) {
@@ -51,20 +58,32 @@ async function queueArchiveCandidates(env: { DB: D1Database }, namespace: string
   return queued;
 }
 
-async function relationCleanupRows(env: { DB: D1Database }, namespace: string): Promise<Array<{ issue: string; relation: RelationSnapshot }>> {
+async function relationCleanupRows(
+  env: { DB: D1Database },
+  namespace: string,
+  memoryIds: string[] = []
+): Promise<Array<{ issue: string; relation: RelationSnapshot }>> {
   const symmetricTypes = [...SYMMETRIC_RELATION_TYPES];
   const symmetricPlaceholders = symmetricTypes.map(() => "?").join(", ");
+  const ids = [...new Set(memoryIds.map((id) => id.trim()).filter(Boolean))].slice(0, 20);
+  const relationFilter = ids.length > 0
+    ? ` AND (r.source_memory_id IN (${ids.map(() => "?").join(", ")}) OR r.target_memory_id IN (${ids.map(() => "?").join(", ")}))`
+    : "";
+  const symmetricFilter = ids.length > 0
+    ? ` AND (a.source_memory_id IN (${ids.map(() => "?").join(", ")}) OR a.target_memory_id IN (${ids.map(() => "?").join(", ")}))`
+    : "";
   const [selfLoops, orphans, symmetricDuplicates] = await Promise.all([
     env.DB.prepare(
       `SELECT r.* FROM memory_relations r
        WHERE r.namespace = ? AND r.source_memory_id = r.target_memory_id
+         ${relationFilter}
          AND NOT EXISTS (
            SELECT 1 FROM memory_candidates c
            WHERE c.namespace = r.namespace
              AND c.external_key = 'm-review:relation:' || r.id
          )
        LIMIT 50`
-    ).bind(namespace).all<RelationSnapshot>(),
+    ).bind(namespace, ...ids, ...ids).all<RelationSnapshot>(),
     env.DB.prepare(
       `SELECT r.* FROM memory_relations r
        LEFT JOIN memories m1 ON m1.namespace = r.namespace AND m1.id = r.source_memory_id
@@ -73,13 +92,14 @@ async function relationCleanupRows(env: { DB: D1Database }, namespace: string): 
          m1.id IS NULL OR m2.id IS NULL
          OR m1.status NOT IN ('active','review') OR m2.status NOT IN ('active','review')
        )
+         ${relationFilter}
          AND NOT EXISTS (
            SELECT 1 FROM memory_candidates c
            WHERE c.namespace = r.namespace
              AND c.external_key = 'm-review:relation:' || r.id
          )
        LIMIT 50`
-    ).bind(namespace).all<RelationSnapshot>(),
+    ).bind(namespace, ...ids, ...ids).all<RelationSnapshot>(),
     env.DB.prepare(
       `SELECT b.* FROM memory_relations a
        JOIN memory_relations b
@@ -87,13 +107,14 @@ async function relationCleanupRows(env: { DB: D1Database }, namespace: string): 
         AND b.source_memory_id = a.target_memory_id AND b.target_memory_id = a.source_memory_id
         AND b.id > a.id
        WHERE a.namespace = ? AND a.relation_type IN (${symmetricPlaceholders})
+         ${symmetricFilter}
          AND NOT EXISTS (
            SELECT 1 FROM memory_candidates c
            WHERE c.namespace = b.namespace
              AND c.external_key = 'm-review:relation:' || b.id
          )
        LIMIT 50`
-    ).bind(namespace, ...symmetricTypes).all<RelationSnapshot>()
+    ).bind(namespace, ...symmetricTypes, ...ids, ...ids).all<RelationSnapshot>()
   ]);
 
   const byId = new Map<string, { issue: string; relation: RelationSnapshot }>();
@@ -105,8 +126,12 @@ async function relationCleanupRows(env: { DB: D1Database }, namespace: string): 
   return [...byId.values()].slice(0, 100);
 }
 
-async function queueRelationCandidates(env: { DB: D1Database }, namespace: string): Promise<number> {
-  const rows = await relationCleanupRows(env, namespace);
+async function queueRelationCandidates(
+  env: { DB: D1Database },
+  namespace: string,
+  memoryIds: string[] = []
+): Promise<number> {
+  const rows = await relationCleanupRows(env, namespace, memoryIds);
   for (const row of rows) {
     await upsertMemoryCandidate(env.DB, namespace, {
       externalKey: `m-review:relation:${row.relation.id}`,
@@ -123,11 +148,12 @@ async function queueRelationCandidates(env: { DB: D1Database }, namespace: strin
 
 export async function scanMetabolismReviewCandidates(
   env: { DB: D1Database },
-  namespace = "default"
+  namespace = "default",
+  options: { memoryIds?: string[] } = {}
 ): Promise<{ archive: number; relations: number }> {
   const [archive, relations] = await Promise.all([
-    queueArchiveCandidates(env, namespace),
-    queueRelationCandidates(env, namespace)
+    queueArchiveCandidates(env, namespace, options.memoryIds),
+    queueRelationCandidates(env, namespace, options.memoryIds)
   ]);
   return { archive, relations };
 }

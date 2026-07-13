@@ -1,5 +1,5 @@
 import { dismissPendingMemoryCandidateByExternalKey, upsertMemoryCandidate } from "../db/memoryCandidates";
-import { listMemories, updateMemory } from "../db/memories";
+import { fetchMemoriesByIds, listMemories, updateMemory } from "../db/memories";
 import type { Env, MemoryRecord } from "../types";
 import { loadModelConfig, systemClock } from "../config/runtime";
 import {
@@ -23,6 +23,7 @@ export interface CoordinateBackfillCommand {
   apply: boolean;
   limit?: number;
   offset?: number;
+  ids?: string[];
 }
 
 export interface CoordinateBackfillResult {
@@ -105,7 +106,10 @@ export async function runCoordinateBackfill(
   const model = loadModelConfig(env).coordinate;
   if (!model) throw new Error("missing_model");
 
-  const allMemories = await listMemories(env.DB, { namespace, status: "active", limit: 1000 });
+  const requestedIds = [...new Set((command.ids ?? []).map((id) => id.trim()).filter(Boolean))].slice(0, COORDINATE_BACKFILL_BATCH_SIZE);
+  const allMemories = requestedIds.length > 0
+    ? (await fetchMemoriesByIds(env.DB, { namespace, ids: requestedIds })).filter((memory) => memory.status === "active")
+    : await listMemories(env.DB, { namespace, status: "active", limit: 1000 });
   const needBackfill = allMemories.filter((memory) =>
     !memory.fact_key && !memory.thread && memory.risk_level === null && memory.valence === null
   );

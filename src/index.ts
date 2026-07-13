@@ -23,7 +23,7 @@ import { retryStaleVectorSyncs } from "./memory/state";
 import { getCoordinateBackfillControl, recordCoordinateBackfillRun } from "./memory/coordinateBackfillControl";
 import { scanOperationalReviewCandidates } from "./memory/operationalReview";
 import { handleQueueMessage } from "./queue/consumer";
-import { enqueueMissedDiarySplits } from "./queue/producer";
+import { enqueueMissedDiarySplits, enqueuePendingFiveAxisProjections } from "./queue/producer";
 import type { Env, QueueMessage } from "./types";
 import { openAiError } from "./utils/json";
 import { loadAppConfig, loadGatewayConfig, type DreamConfig } from "./config/runtime";
@@ -211,9 +211,12 @@ export default {
               })
             : Promise.resolve({ skipped: "disabled" as const }),
           retryStaleVectorSyncs(env, namespace, 12),
-          enqueueMissedDiarySplits(env, namespace, 2)
+          enqueueMissedDiarySplits(env, namespace, 2),
+          enqueuePendingFiveAxisProjections(env, 5)
         ])
-          .then(([coordinate, vectorSync, diarySplits]) => console.log("scheduled five-minute maintenance", { namespace, coordinate, vectorSync, diarySplits }))
+          .then(([coordinate, vectorSync, diarySplits, fiveAxisProjections]) => console.log("scheduled five-minute maintenance", {
+            namespace, coordinate, vectorSync, diarySplits, fiveAxisProjections
+          }))
           .catch((error) => {
             console.error("scheduled five-minute maintenance failed", { namespace, error: error instanceof Error ? error.message : String(error) });
             throw error;

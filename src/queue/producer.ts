@@ -3,6 +3,7 @@ import type { Env, MemoryRecord, QueueMessage } from "../types";
 import { handleQueueMessage } from "./consumer";
 import { dateFromDiary } from "../memory/diarySplit";
 import { loadChunkingConfig, loadMemoryConfig, systemClock } from "../config/runtime";
+import { listDueFiveAxisOutbox, markFiveAxisOutboxQueued } from "../db/memoryFiveAxisOutbox";
 
 function allowQueueFallback(env: Env): boolean {
   return loadChunkingConfig(env).queueFallbackEnabled;
@@ -12,21 +13,22 @@ function allowQueueFallback(env: Env): boolean {
  * Send a queue message. Uses real Cloudflare Queue when MEMORY_QUEUE binding
  * is available. Direct handling is only allowed by explicit local/dev opt-in.
  */
-async function sendQueueMessage(env: Env, message: QueueMessage): Promise<void> {
+async function sendQueueMessage(env: Env, message: QueueMessage): Promise<boolean> {
   if (env.MEMORY_QUEUE) {
     await env.MEMORY_QUEUE.send(message);
-    return;
+    return true;
   }
 
   if (allowQueueFallback(env)) {
     await handleQueueMessage(message, env);
-    return;
+    return true;
   }
 
   console.warn("MEMORY_QUEUE binding missing; skipped background queue message", {
     type: message.type,
     namespace: message.namespace
   });
+  return false;
 }
 
 function chunkThreshold(env: Env): number {
@@ -228,4 +230,23 @@ export async function enqueueMissedDiarySplits(env: Env, namespace: string, limi
   const eligible = (rows.results ?? []).filter((memory) => dateFromDiary(memory)).slice(0, boundedLimit);
   for (const memory of eligible) await enqueueDiarySplitIfNeeded(env, memory);
   return eligible.length;
+}
+
+export async function enqueuePendingFiveAxisProjections(env: Env, limit = 5): Promise<number> {
+  const due = await listDueFiveAxisOutbox(env.DB, limit);
+  let queued = 0;
+  for (const item of due) {
+    const message: QueueMessage = {
+      type: "memory_five_axis_projection",
+      namespace: item.namespace,
+      memoryId: item.memory_id,
+      memoryUpdatedAt: item.memory_updated_at,
+      outboxId: item.id,
+      idempotencyKey: `five-axis:${item.id}:${item.memory_updated_at}`
+    };
+    if (!(await sendQueueMessage(env, message))) continue;
+    await markFiveAxisOutboxQueued(env.DB, item.id);
+    queued += 1;
+  }
+  return queued;
 }

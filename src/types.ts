@@ -51,12 +51,22 @@ export interface MemoryVectorSyncQueueMessage {
   jobId: string;
 }
 
+export interface MemoryFiveAxisProjectionQueueMessage {
+  type: "memory_five_axis_projection";
+  namespace: string;
+  memoryId: string;
+  memoryUpdatedAt: string;
+  outboxId: number;
+  idempotencyKey: string;
+}
+
 export type QueueMessage =
   | MemoryMaintenanceQueueMessage
   | ConversationChunkQueueMessage
   | RetentionQueueMessage
   | DiarySplitQueueMessage
-  | MemoryVectorSyncQueueMessage;
+  | MemoryVectorSyncQueueMessage
+  | MemoryFiveAxisProjectionQueueMessage;
 
 export type Scope =
   | "chat:proxy"

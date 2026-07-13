@@ -7,6 +7,9 @@ import { splitDiaryMemories } from "../memory/diarySplit";
 import { createMemoryEvent } from "../db/memoryEvents";
 import { fetchMemoriesByIds } from "../db/memories";
 import { syncMemoryVector } from "../memory/state";
+import { getFiveAxisOutbox, markFiveAxisOutboxCompleted, markFiveAxisOutboxFailed } from "../db/memoryFiveAxisOutbox";
+import { getMemoryById } from "../db/memories";
+import { projectMemoryIntoFiveAxes } from "../memory/fiveAxis/projection";
 
 async function hasCompletedDiarySplit(env: Env, namespace: string, diaryId: string): Promise<boolean> {
   const row = await env.DB.prepare(
@@ -69,6 +72,31 @@ export async function handleQueueMessage(message: QueueMessage, env: Env): Promi
         memoryId: message.memoryIds[0] ?? null,
         payload: { job_id: message.jobId, memory_ids: message.memoryIds, results }
       });
+      return;
+    }
+    case "memory_five_axis_projection": {
+      const outbox = await getFiveAxisOutbox(env.DB, message.outboxId);
+      if (!outbox || outbox.status === "completed" || outbox.status === "skipped") return;
+      const memory = await getMemoryById(env.DB, { namespace: message.namespace, id: message.memoryId });
+      if (!memory || memory.status !== "active") {
+        await markFiveAxisOutboxCompleted(env.DB, message.outboxId, "skipped", {
+          reason: memory ? "memory_not_active" : "memory_not_found"
+        });
+        return;
+      }
+      try {
+        const result = await projectMemoryIntoFiveAxes(env, {
+          namespace: message.namespace,
+          memoryId: message.memoryId,
+          projectionKey: message.idempotencyKey
+        });
+        await markFiveAxisOutboxCompleted(env.DB, message.outboxId, result ? "completed" : "skipped", result ?? {
+          reason: "memory_not_projectable"
+        });
+      } catch (error) {
+        await markFiveAxisOutboxFailed(env.DB, message.outboxId, error);
+        throw error;
+      }
       return;
     }
   }

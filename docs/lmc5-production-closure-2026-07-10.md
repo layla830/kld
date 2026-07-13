@@ -260,7 +260,7 @@ This pass addresses the A-tier structural findings without changing recall scori
 
 - platform bindings are generated from `wrangler.toml` into `src/generated/worker-configuration.d.ts`; dashboard variables are grouped by concern in `src/config/variables.ts`, and business parsing is centralized in grouped `AppConfig` sections;
 - Dream, retention, Queue production, memory maintenance, scheduled orchestration, and E-axis shadow logic now consume the shared typed config and injectable `AppClock` instead of maintaining local parsers and direct `Date.now()` calls;
-- the Queue union was reduced from nine variants to five after confirming that `coordinate_backfill`, `relation_backfill`, `metabolism_scan`, and `diary_rescreen` had no producers; the first three already have scheduled/manual owners, while diary rescreen remains an authenticated bounded API operation;
+- the Queue union was reduced from nine variants to five after confirming that `coordinate_backfill`, `relation_backfill`, `metabolism_scan`, and `diary_rescreen` had no producers; the later automatic per-memory projection adds one real produced/consumed job, so the current total is six;
 - scheduled coordinate backfill now calls the shared memory use case directly and receives `labelCoordinateBatch` from an LLM adapter; the HTTP debug interface no longer owns or exports the cron business operation;
 - all eleven recall modules now live under `src/recall/` and are named by one responsibility: service, intent, query plan, temporal parsing, vocabulary, candidate policy, fusion, output policy, formatting, trace, and emotion source;
 - the database-candidate mapper formerly stored as the only `src/domain/` file moved to `src/memory/proposal.ts`; coordinate backfill moved beside its memory control module while remaining a shared HTTP/cron use case, so neither placeholder `src/domain/` nor `src/application/` remains;
@@ -268,7 +268,7 @@ This pass addresses the A-tier structural findings without changing recall scori
 
 Literal acceptance matrix:
 
-- Queue `9 -> 4`: the old numeric target is not used as a blind invariant. Four producerless variants were removed, leaving five actively produced jobs; the fifth is the subsequently added automatic `diary_split` job. Every remaining variant has both a producer and consumer.
+- Queue `9 -> 4`: the old numeric target is not used as a blind invariant. Four producerless variants were removed, leaving five active jobs at that point; automatic per-memory five-axis projection later added a sixth real job. Every current variant has both a producer and consumer.
 - Remove placeholder `src/domain/` and `src/application/`: complete in the tracked tree; their real modules moved to feature owners without reintroducing HTTP-handler calls from cron.
 - Replace the flat hand-written `Env`: complete; Wrangler generates platform bindings, runtime variables are grouped by concern, and `AppConfig` owns normalized business settings.
 - Reclassify the eleven recall modules: complete; they now live under `src/recall/` with responsibility-based names.
@@ -297,4 +297,35 @@ The 509-line `src/memory/xyzem.ts` mixed Y relation building, Z fact-conflict au
 The compatibility route `/v1/debug/xyzem_maintenance` remains available, but it delegates to the new nightly owner. A focused unit test locks the Y -> Z -> M sequence and verifies that `dryRun` and `sinceIso` reach the correct projector. The architecture audit now fails if `src/memory/xyzem.ts` reappears or if any of the four owners is missing.
 
 Behavioral boundaries remain unchanged: safe Y relation types may be created automatically; risky Y relations, Z fact transitions, and M maintenance actions remain review-first. No schema, D1 row, Vectorize record, Queue payload, secret, E-axis gate, or VPS runtime is changed by this split. The pre-split rollback target is Worker version `b46434e8-1d1d-421d-b2f3-8a71b612e506`.
+
+## 2026-07-13 automatic per-memory five-axis projection
+
+New active memories now enter the five-axis pipeline automatically through a durable D1 outbox and the existing Cloudflare Queue.
+
+Flow:
+
+1. D1 triggers create one `memory_five_axis_outbox` row after an active memory is inserted or materially updated.
+2. The five-minute maintenance cron sends due outbox rows to Queue in bounded batches of five.
+3. The Queue consumer projects one memory through X, E, Y, Z, and M in one ordered job.
+4. The outbox records `completed`, `skipped`, or `failed`, bounded to five enqueue attempts with delayed retry.
+
+Axis behavior remains production-safe:
+
+- X: an unambiguous explicit date becomes a review candidate; text is not rewritten.
+- E: missing coordinate bundles are labeled and safe fields are applied; Vectorize metadata is resynced afterward.
+- Y: safe relation types are inserted idempotently; risky relations remain review events.
+- Z: only the new memory's `fact_key` is scanned and supersede proposals remain review-first.
+- M: only maintenance findings touching the new memory are turned into review candidates.
+
+Raw `diary`, `layla_diary`, `auto_diary`, and `dream_review` rows are excluded from the trigger. Searchable memories created by diary splitting are ordinary active memories and therefore enter the pipeline automatically.
+
+Deployment order:
+
+1. Apply `20260713_memory_five_axis_outbox.sql` to D1.
+2. Deploy the Worker code that drains and consumes the outbox.
+
+Rollback:
+
+- Worker rollback target before this feature: commit `6063dc7`.
+- If ingestion must be stopped without deleting audit state, drop only `trg_memories_five_axis_after_insert` and `trg_memories_five_axis_after_material_update`; keep the outbox table for inspection.
 

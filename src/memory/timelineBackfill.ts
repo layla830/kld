@@ -34,6 +34,13 @@ export interface TimelineBackfillStatus {
   lastRunAt: string | null;
 }
 
+export interface TimelineMemoryProjectionResult {
+  scanned: 1;
+  outcome: "already_dated" | "no_explicit_date" | "ambiguous" | "queued";
+  dates: string[];
+  queued: number;
+}
+
 function parseTags(value: string | null): string[] {
   try {
     const parsed = JSON.parse(value || "[]");
@@ -60,6 +67,41 @@ export function extractExplicitDates(text: string): string[] {
     if (date) dates.add(date);
   }
   return [...dates].sort();
+}
+
+export async function queueTimelineCandidateForMemory(
+  env: Env,
+  memory: MemoryRecord
+): Promise<TimelineMemoryProjectionResult> {
+  const beforeTags = parseTags(memory.tags);
+  if (beforeTags.some((tag) => tag.startsWith("date:"))) {
+    return { scanned: 1, outcome: "already_dated", dates: [], queued: 0 };
+  }
+  const dates = extractExplicitDates(memory.content);
+  if (dates.length === 0) return { scanned: 1, outcome: "no_explicit_date", dates, queued: 0 };
+  if (dates.length > 1) return { scanned: 1, outcome: "ambiguous", dates, queued: 0 };
+
+  const date = dates[0];
+  const tags = [...new Set([...beforeTags, `date:${date}`, "timeline"])];
+  await upsertMemoryCandidate(env.DB, memory.namespace, {
+    externalKey: `timeline-date:${memory.id}:${date}`,
+    dreamDate: new Date().toISOString().slice(0, 10),
+    action: "timeline_date",
+    subject: "memory_timeline",
+    targetId: memory.id,
+    payload: {
+      _kind: "timeline_date",
+      date,
+      thread: memory.thread,
+      fact_key: memory.fact_key,
+      before_tags: beforeTags,
+      tags
+    },
+    sourceChunkIds: [],
+    sourceChunks: [],
+    status: "pending"
+  });
+  return { scanned: 1, outcome: "queued", dates, queued: 1 };
 }
 
 export async function runTimelineBackfill(env: Env, namespace: string, options: { cursor?: string | null; limit?: number } = {}): Promise<{

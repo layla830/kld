@@ -541,9 +541,11 @@ export async function markMemoriesRecalled(
 
 export async function listFactKeyConflicts(
   db: D1Database,
-  input: { namespace: string; limit: number }
+  input: { namespace: string; limit: number; factKeys?: string[] }
 ): Promise<Array<{ fact_key: string; ids: string; count: number }>> {
   const limit = Math.min(Math.max(Math.floor(input.limit), 1), 500);
+  const factKeys = [...new Set((input.factKeys ?? []).map((key) => key.trim()).filter(Boolean))].slice(0, D1_BIND_LIMIT - 2);
+  const factKeyClause = factKeys.length > 0 ? ` AND fact_key IN (${factKeys.map(() => "?").join(", ")})` : "";
   const result = await db
     .prepare(
       `SELECT fact_key, GROUP_CONCAT(id) AS ids, COUNT(*) AS count
@@ -551,12 +553,13 @@ export async function listFactKeyConflicts(
        WHERE namespace = ?
          AND fact_key IS NOT NULL AND fact_key != ''
          AND status IN ('active', 'review')
+         ${factKeyClause}
        GROUP BY fact_key
        HAVING count > 1
        ORDER BY count DESC
        LIMIT ?`
     )
-    .bind(input.namespace, limit)
+    .bind(input.namespace, ...factKeys, limit)
     .all<{ fact_key: string; ids: string; count: number }>();
   return result.results ?? [];
 }

@@ -14,9 +14,10 @@ export interface FactKeyConflictReview {
 export async function listFactKeyConflictsForReview(
   env: Env,
   namespace: string,
-  limit = 200
+  limit = 200,
+  factKeys: string[] = []
 ): Promise<FactKeyConflictReview[]> {
-  const conflicts = await listFactKeyConflicts(env.DB, { namespace, limit });
+  const conflicts = await listFactKeyConflicts(env.DB, { namespace, limit, factKeys });
   const reviews: FactKeyConflictReview[] = [];
 
   for (const conflict of conflicts) {

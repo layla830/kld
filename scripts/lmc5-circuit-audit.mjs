@@ -74,6 +74,9 @@ const fiveAxisRelations = fs.readFileSync("src/memory/fiveAxis/yRelations.ts", "
 const fiveAxisFacts = fs.readFileSync("src/memory/fiveAxis/zFacts.ts", "utf8");
 const fiveAxisMetabolism = fs.readFileSync("src/memory/fiveAxis/mMetabolism.ts", "utf8");
 const fiveAxisNightly = fs.readFileSync("src/memory/fiveAxis/nightly.ts", "utf8");
+const fiveAxisProjection = fs.readFileSync("src/memory/fiveAxis/projection.ts", "utf8");
+const fiveAxisOutbox = fs.readFileSync("src/db/memoryFiveAxisOutbox.ts", "utf8");
+const fiveAxisOutboxMigration = fs.readFileSync("migrations/20260713_memory_five_axis_outbox.sql", "utf8");
 
 const checks = [
   [
@@ -362,17 +365,19 @@ const checks = [
       workerIndex.includes("scanOperationalReviewCandidates"),
   ],
   [
-    "Architecture: Queue contract contains only five actively produced background jobs",
+    "Architecture: Queue contract contains only six actively produced background jobs",
     workerTypes.includes('type: "memory_maintenance"') &&
       workerTypes.includes('type: "conversation_chunk"') &&
       workerTypes.includes('type: "retention"') &&
       workerTypes.includes('type: "diary_split"') &&
       workerTypes.includes('type: "memory_vector_sync"') &&
+      workerTypes.includes('type: "memory_five_axis_projection"') &&
       queueProducer.includes('type: "memory_maintenance"') &&
       queueProducer.includes('type: "conversation_chunk"') &&
       queueProducer.includes('type: "retention"') &&
       queueProducer.includes('type: "diary_split"') &&
       queueProducer.includes('type: "memory_vector_sync"') &&
+      queueProducer.includes('type: "memory_five_axis_projection"') &&
       !workerTypes.includes('type: "diary_rescreen"') &&
       !workerTypes.includes('type: "coordinate_backfill"') &&
       !workerTypes.includes('type: "relation_backfill"') &&
@@ -410,6 +415,34 @@ const checks = [
       fiveAxisMetabolism.includes("export async function runMetabolismPatrol") &&
       fiveAxisNightly.includes("export async function runFiveAxisNightlyMaintenance") &&
       workerIndex.includes('from "./memory/fiveAxis/nightly"'),
+  ],
+  [
+    "Ingest: every active non-diary memory write creates a durable five-axis outbox job",
+    fiveAxisOutboxMigration.includes("trg_memories_five_axis_after_insert") &&
+      fiveAxisOutboxMigration.includes("trg_memories_five_axis_after_material_update") &&
+      fiveAxisOutboxMigration.includes("memory_five_axis_outbox") &&
+      fiveAxisOutboxMigration.includes("NEW.type NOT IN ('diary', 'layla_diary', 'auto_diary', 'dream_review')"),
+  ],
+  [
+    "Ingest: five-minute maintenance drains five-axis outbox through Queue",
+    queueProducer.includes("enqueuePendingFiveAxisProjections") &&
+      queueProducer.includes('type: "memory_five_axis_projection"') &&
+      queueConsumer.includes('case "memory_five_axis_projection"') &&
+      workerIndex.includes("enqueuePendingFiveAxisProjections(env, 5)") &&
+      fiveAxisOutbox.includes("attempts < 5") &&
+      fiveAxisOutbox.includes("status = 'queued'") &&
+      fiveAxisOutbox.includes("status = 'failed'"),
+  ],
+  [
+    "Ingest: per-memory projection feeds X E Y Z M without bypassing review",
+    fiveAxisProjection.includes("projectTimeline") &&
+      fiveAxisProjection.includes("projectCoordinates") &&
+      fiveAxisProjection.includes("projectRelations") &&
+      fiveAxisProjection.includes("projectFacts") &&
+      fiveAxisProjection.includes("projectMetabolism") &&
+      fiveAxisProjection.includes("dryRun: false") &&
+      factTransitionReview.includes('action: "z_supersede"') &&
+      metabolismReview.includes('action: "m_archive"'),
   ],
   [
     "E: production shadow window is explicit and promotion remains manual",

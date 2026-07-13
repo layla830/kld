@@ -38,9 +38,10 @@ function externalKey(factKey: string, best: MemoryRecord, weaker: MemoryRecord):
 
 export async function scanFactTransitionReviewCandidates(
   env: Env,
-  namespace = "default"
+  namespace = "default",
+  options: { factKeys?: string[] } = {}
 ): Promise<{ conflicts: number; candidates: number }> {
-  const reviews = await listFactKeyConflictsForReview(env, namespace, 200);
+  const reviews = await listFactKeyConflictsForReview(env, namespace, 200, options.factKeys);
   let candidates = 0;
   for (const review of reviews) {
     if (review.reason !== "pending_supersede_review" || !review.best) continue;

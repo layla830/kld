@@ -1,6 +1,6 @@
 import { createMemoryEvent } from "../../db/memoryEvents";
 import { createMemoryRelation, normalizeRelationType, REVIEW_RELATION_TYPES, SAFE_RELATION_TYPES } from "../../db/memoryRelations";
-import { listMemoriesSince } from "../../db/memories";
+import { fetchMemoriesByIds, listMemoriesSince } from "../../db/memories";
 import { callOpenAICompat } from "../../proxy/openaiAdapter";
 import type { Env, MemoryRecord, OpenAIChatRequest, OpenAIChatResponse } from "../../types";
 import { extractJsonObject } from "../../utils/jsonHelpers";
@@ -159,14 +159,17 @@ async function proposeRelationsViaLlm(
 export async function runRelationBuild(
   env: Env,
   namespace: string,
-  options: { sinceIso?: string; dryRun?: boolean } = {}
+  options: { sinceIso?: string; dryRun?: boolean; memoryIds?: string[]; projectionKey?: string } = {}
 ): Promise<{ scanned: number; inserted: number; review: number; proposed: number; candidates: number; error?: string }> {
   const dryRun = options.dryRun ?? true;
-  const memories = await listMemoriesSince(env.DB, {
-    namespace,
-    since: options.sinceIso ?? dayAgoIso(),
-    limit: RELATION_MAX_SCAN
-  });
+  const memoryIds = [...new Set((options.memoryIds ?? []).map((id) => id.trim()).filter(Boolean))].slice(0, 10);
+  const memories = memoryIds.length > 0
+    ? (await fetchMemoriesByIds(env.DB, { namespace, ids: memoryIds })).filter((memory) => memory.status === "active")
+    : await listMemoriesSince(env.DB, {
+        namespace,
+        since: options.sinceIso ?? dayAgoIso(),
+        limit: RELATION_MAX_SCAN
+      });
   let inserted = 0;
   let review = 0;
   let proposed = 0;
@@ -195,17 +198,29 @@ export async function runRelationBuild(
         inserted += 1;
       }
     } else if (REVIEW_RELATION_TYPES.has(relationType)) {
-      if (!dryRun) await createMemoryEvent(env.DB, {
-        namespace,
-        eventType: "y_relation_review",
-        payload: {
-          relation_type: relationType,
-          source_id: candidate.source.id,
-          target_id: candidate.target.id,
-          strength: hint.strength,
-          reason: hint.reason ?? null
-        }
-      });
+      if (!dryRun) {
+        const projectionKey = options.projectionKey
+          ? `${options.projectionKey}:relation:${relationType}:${[candidate.source.id, candidate.target.id].sort().join(":")}`
+          : null;
+        const existing = projectionKey
+          ? await env.DB.prepare(
+              "SELECT id FROM memory_events WHERE namespace = ? AND event_type = 'y_relation_review' AND payload_json LIKE ? LIMIT 1"
+            ).bind(namespace, `%\"projection_key\":\"${projectionKey}\"%`).first<{ id: string }>()
+          : null;
+        if (!existing?.id) await createMemoryEvent(env.DB, {
+          namespace,
+          eventType: "y_relation_review",
+          memoryId: candidate.source.id,
+          payload: {
+            projection_key: projectionKey,
+            relation_type: relationType,
+            source_id: candidate.source.id,
+            target_id: candidate.target.id,
+            strength: hint.strength,
+            reason: hint.reason ?? null
+          }
+        });
+      }
       review += 1;
     }
   }
@@ -217,16 +232,26 @@ export async function runRelationBuild(
   }
   for (const [factKey, ids] of factGroups.entries()) {
     if (ids.length <= 1) continue;
-    if (!dryRun) await createMemoryEvent(env.DB, {
-      namespace,
-      eventType: "y_relation_review",
-      payload: {
-        relation_type: "contradicts",
-        fact_key: factKey,
-        memory_ids: ids,
-        reason: "multiple new memories share fact_key; needs human or Z-axis review"
-      }
-    });
+    if (!dryRun) {
+      const projectionKey = options.projectionKey ? `${options.projectionKey}:fact:${factKey}` : null;
+      const existing = projectionKey
+        ? await env.DB.prepare(
+            "SELECT id FROM memory_events WHERE namespace = ? AND event_type = 'y_relation_review' AND payload_json LIKE ? LIMIT 1"
+          ).bind(namespace, `%\"projection_key\":\"${projectionKey}\"%`).first<{ id: string }>()
+        : null;
+      if (!existing?.id) await createMemoryEvent(env.DB, {
+        namespace,
+        eventType: "y_relation_review",
+        memoryId: ids[0] ?? null,
+        payload: {
+          projection_key: projectionKey,
+          relation_type: "contradicts",
+          fact_key: factKey,
+          memory_ids: ids,
+          reason: "multiple new memories share fact_key; needs human or Z-axis review"
+        }
+      });
+    }
     review += 1;
   }
 
