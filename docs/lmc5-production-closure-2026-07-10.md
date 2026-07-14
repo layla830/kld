@@ -346,3 +346,15 @@ Rollback:
 
 Rollback is one Worker code rollback. No D1 migration or VPS service change is involved.
 
+## 2026-07-14 field-level E completion for new-memory projection
+
+Production D1 verification showed that automatic ingestion and diary splitting were connected, but partial coordinate bundles could be reported as `coordinates_present`. The old gate skipped E whenever a memory already had any thread, fact key, risk, or valence value, leaving other E fields empty.
+
+- Per-memory five-axis jobs now select `missing_fields`: any missing thread, risk, urgency, tension, response posture, valence, or arousal field invokes the coordinate labeler.
+- Coordinate patches are merge-only. Existing non-null values supplied by MCP, Dream, diary splitting, or an editor cannot be overwritten by this completion pass.
+- The broad scheduled legacy backfill retains its previous conservative `empty_bundle` selection, avoiding an unbounded production-wide model sweep.
+- The labeler is asked for explicit neutral numeric values and an actionable posture so a new-memory projection can finish a complete bundle instead of repeatedly returning nulls.
+- Raw diaries remain intentionally outside five-axis projection. Their active searchable split memories enter the normal outbox automatically.
+
+No schema, trigger, Queue payload, existing memory row, candidate, relation, or VPS service changes are required. Roll back by reverting the Worker commit and redeploying; existing coordinates remain valid because the patch never clears or replaces supplied values.
+

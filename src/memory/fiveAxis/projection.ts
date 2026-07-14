@@ -1,7 +1,7 @@
 import { labelCoordinateBatch } from "../../adapters/llm/coordinateLabeler";
 import { getMemoryById } from "../../db/memories";
 import type { Env, MemoryRecord } from "../../types";
-import { runCoordinateBackfill, type CoordinateBackfillResult } from "../coordinateBackfill";
+import { needsCoordinateBackfill, runCoordinateBackfill, type CoordinateBackfillResult } from "../coordinateBackfill";
 import { scanFactTransitionReviewCandidates } from "../factTransitionReview";
 import { scanMetabolismReviewCandidates } from "../metabolismReview";
 import { syncMemoryVector } from "../state";
@@ -33,19 +33,16 @@ export interface MemoryFiveAxisProjectionDependencies {
   projectMetabolism: typeof scanMetabolismReviewCandidates;
 }
 
-function needsCoordinateProjection(memory: MemoryRecord): boolean {
-  return !memory.fact_key && !memory.thread && memory.risk_level === null && memory.valence === null;
-}
-
 const defaultDependencies: MemoryFiveAxisProjectionDependencies = {
   getMemory: (env, namespace, id) => getMemoryById(env.DB, { namespace, id }),
   projectTimeline: queueTimelineCandidateForMemory,
   projectCoordinates: async (env, memory) => {
-    if (!needsCoordinateProjection(memory)) return { skipped: "coordinates_present" };
+    if (!needsCoordinateBackfill(memory, "missing_fields")) return { skipped: "coordinates_present" };
     return runCoordinateBackfill(env, {
       namespace: memory.namespace,
       apply: true,
       ids: [memory.id],
+      selection: "missing_fields",
       limit: 1,
       offset: 0
     }, labelCoordinateBatch);

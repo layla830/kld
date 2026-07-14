@@ -466,6 +466,15 @@ const checks = [
       metabolismReview.includes('action: "m_archive"'),
   ],
   [
+    "E ingest: partial coordinate bundles are completed field-by-field without overwriting supplied values",
+    fiveAxisProjection.includes('needsCoordinateBackfill(memory, "missing_fields")') &&
+      fiveAxisProjection.includes('selection: "missing_fields"') &&
+      coordinateBackfill.includes("coordinatePatchForMissingFields") &&
+      coordinateBackfill.includes('selection === "empty_bundle"') &&
+      coordinateBackfill.includes("missingText(current.thread)") &&
+      coordinateBackfill.includes("current.valence === null"),
+  ],
+  [
     "E: production shadow window is explicit and promotion remains manual",
     wranglerConfig.includes('E_AXIS_STARTED_AT = "2026-07-13T12:22:37.508657Z"') &&
       wranglerConfig.includes('E_AXIS_SHADOW_DAYS = "7"') &&

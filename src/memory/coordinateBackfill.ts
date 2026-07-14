@@ -15,8 +15,9 @@ import {
 export const COORDINATE_BACKFILL_BATCH_SIZE = 5;
 
 type BackfillUpdate = Record<string, unknown> & { id: string };
-type CoordinatePatch = Parameters<typeof updateMemory>[1]["patch"];
+export type CoordinatePatch = Parameters<typeof updateMemory>[1]["patch"];
 export type CoordinateLabeler = (env: Env, model: string, memories: MemoryRecord[]) => Promise<BackfillUpdate[]>;
+export type CoordinateBackfillSelection = "empty_bundle" | "missing_fields";
 
 export interface CoordinateBackfillCommand {
   namespace: string;
@@ -24,6 +25,7 @@ export interface CoordinateBackfillCommand {
   limit?: number;
   offset?: number;
   ids?: string[];
+  selection?: CoordinateBackfillSelection;
 }
 
 export interface CoordinateBackfillResult {
@@ -62,6 +64,49 @@ export async function runScheduledCoordinateBackfill(
 }
 
 const THREAD_SLUG = /^[a-z0-9]+(?:[._-][a-z0-9]+)*$/;
+
+function missingText(value: string | null): boolean {
+  return value === null || !value.trim();
+}
+
+export function needsCoordinateBackfill(
+  memory: MemoryRecord,
+  selection: CoordinateBackfillSelection = "missing_fields"
+): boolean {
+  if (selection === "empty_bundle") {
+    return !memory.fact_key && !memory.thread && memory.risk_level === null && memory.valence === null;
+  }
+  return missingText(memory.thread)
+    || missingText(memory.risk_level)
+    || missingText(memory.urgency_level)
+    || memory.tension_score === null
+    || missingText(memory.response_posture)
+    || memory.valence === null
+    || memory.arousal === null;
+}
+
+export function coordinatePatchForMissingFields(
+  current: MemoryRecord,
+  record: Record<string, unknown>
+): CoordinatePatch {
+  const patch: CoordinatePatch = {};
+  const thread = normalizeThread(record.thread);
+  const riskLevel = normalizeRiskLevel(record.risk_level);
+  const urgencyLevel = normalizeUrgencyLevel(record.urgency_level);
+  const tensionScore = normalizeTensionScore(record.tension_score);
+  const responsePosture = normalizeResponsePosture(record.response_posture);
+  const valence = normalizeValence(record.valence);
+  const arousal = normalizeArousal(record.arousal);
+
+  if (missingText(current.thread) && thread !== null) patch.thread = thread;
+  if (missingText(current.risk_level) && riskLevel !== null) patch.riskLevel = riskLevel;
+  if (missingText(current.urgency_level) && urgencyLevel !== null) patch.urgencyLevel = urgencyLevel;
+  if (current.tension_score === null && tensionScore !== null) patch.tensionScore = tensionScore;
+  if (missingText(current.response_posture) && responsePosture !== null) patch.responsePosture = responsePosture;
+  if (current.valence === null && valence !== null) patch.valence = valence;
+  if (current.arousal === null && arousal !== null) patch.arousal = arousal;
+  return patch;
+}
 
 function coordinatePayload(patch: CoordinatePatch): Record<string, unknown> {
   return Object.fromEntries(Object.entries({
@@ -107,12 +152,11 @@ export async function runCoordinateBackfill(
   if (!model) throw new Error("missing_model");
 
   const requestedIds = [...new Set((command.ids ?? []).map((id) => id.trim()).filter(Boolean))].slice(0, COORDINATE_BACKFILL_BATCH_SIZE);
+  const selection = command.selection ?? "empty_bundle";
   const allMemories = requestedIds.length > 0
     ? (await fetchMemoriesByIds(env.DB, { namespace, ids: requestedIds })).filter((memory) => memory.status === "active")
     : await listMemories(env.DB, { namespace, status: "active", limit: 1000 });
-  const needBackfill = allMemories.filter((memory) =>
-    !memory.fact_key && !memory.thread && memory.risk_level === null && memory.valence === null
-  );
+  const needBackfill = allMemories.filter((memory) => needsCoordinateBackfill(memory, selection));
   const batch = needBackfill.slice(offset, offset + limit);
   const mode = apply ? "auto_apply_with_exception_review" : "dry_run";
 
@@ -135,14 +179,7 @@ export async function runCoordinateBackfill(
     const current = id ? byId.get(id) : null;
     if (!id || !current) continue;
 
-    const patch: CoordinatePatch = {};
-    if (record.thread !== undefined) patch.thread = normalizeThread(record.thread);
-    if (record.risk_level !== undefined) patch.riskLevel = normalizeRiskLevel(record.risk_level);
-    if (record.urgency_level !== undefined) patch.urgencyLevel = normalizeUrgencyLevel(record.urgency_level);
-    if (record.tension_score !== undefined) patch.tensionScore = normalizeTensionScore(record.tension_score);
-    if (record.response_posture !== undefined) patch.responsePosture = normalizeResponsePosture(record.response_posture);
-    if (record.valence !== undefined) patch.valence = normalizeValence(record.valence);
-    if (record.arousal !== undefined) patch.arousal = normalizeArousal(record.arousal);
+    const patch = coordinatePatchForMissingFields(current, record);
     if (Object.keys(patch).length === 0) continue;
 
     const before = {

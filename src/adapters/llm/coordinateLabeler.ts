@@ -22,9 +22,23 @@ function buildBackfillPrompt(memories: MemoryRecord[]): string {
     id: memory.id,
     type: memory.type,
     content: memory.content.slice(0, 300),
-    tags: memory.tags
+    tags: memory.tags,
+    existing_coordinates: {
+      thread: memory.thread,
+      risk_level: memory.risk_level,
+      urgency_level: memory.urgency_level,
+      tension_score: memory.tension_score,
+      response_posture: memory.response_posture,
+      valence: memory.valence,
+      arousal: memory.arousal
+    }
   }));
   return [
+    "Return a complete coordinate proposal for every memory. Existing non-null coordinates are context and must remain semantically consistent.",
+    "risk_level and urgency_level must always be low, normal, medium, or high.",
+    "tension_score and arousal must always be numbers from 0 to 1; use 0 for neutral.",
+    "valence must always be a number from -1 to 1; use 0 for neutral.",
+    "response_posture must always be one short actionable sentence. thread may be null only when no stable topic exists.",
     "你是记忆坐标标注器。给每条记忆补上 LMC-5 坐标。",
     "只输出 JSON，不要 markdown，不要解释。",
     "",
@@ -47,10 +61,10 @@ function buildBackfillPrompt(memories: MemoryRecord[]): string {
           thread: "kld",
           risk_level: "normal",
           urgency_level: "normal",
-          tension_score: null,
-          valence: null,
-          arousal: null,
-          response_posture: null
+          tension_score: 0,
+          valence: 0,
+          arousal: 0,
+          response_posture: "保持简洁、事实性的回应"
         }
       ]
     }),
