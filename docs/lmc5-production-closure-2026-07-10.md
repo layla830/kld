@@ -336,3 +336,13 @@ Rollback:
 - Worker rollback target before this feature: commit `6063dc7`.
 - If ingestion must be stopped without deleting audit state, drop only `trg_memories_five_axis_after_insert` and `trg_memories_five_axis_after_material_update`; keep the outbox table for inspection.
 
+## 2026-07-14 Dream chunk-summary ingress and reviewed override
+
+- The Worker now owns a reusable candidate-ingress policy instead of trusting every VPS Dream atom equally.
+- Standalone `excerpt` proposals are suppressed before they enter `memory_candidates`; their text remains inside the source chunk's `important_quotes`, while durable `add`/`update`/`delete` proposals must carry a substantive chunk summary or enter `needs_subject_review`.
+- Suppression returns a normal `202` response with `received`, `accepted`, `stored`, and `suppressed` counts, and writes one bounded `dream_candidates_suppressed` audit event without copying candidate content into the event. `accepted` remains the acknowledged batch size for compatibility with the existing VPS sync contract; `stored` is the number written into the review queue.
+- A blocked Dream mutation can now be executed from the existing candidate card with `人工确认并通过`. The endpoint accepts this only for `add`, `excerpt`, `update`, and `delete`, requires an explicit override form field, and records both requested and applied audit events. Relation, timeline, fact-group, diary-split, Z, and M safety boundaries are unchanged.
+- This changes future ingress only. Existing pending excerpt rows are not auto-rejected, and no existing candidate or memory is mutated by deployment.
+
+Rollback is one Worker code rollback. No D1 migration or VPS service change is involved.
+

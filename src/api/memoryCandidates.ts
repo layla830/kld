@@ -1,6 +1,8 @@
 import { authenticate } from "../auth/apiKey";
 import { requireScope } from "../auth/scopes";
 import { upsertMemoryCandidate, type CandidateInput } from "../db/memoryCandidates";
+import { createMemoryEvent } from "../db/memoryEvents";
+import { applyDreamCandidatePolicy } from "../memory/dreamCandidatePolicy";
 import type { Env } from "../types";
 import { json, openAiError } from "../utils/json";
 import { readBody, resolveNamespace } from "./common";
@@ -48,6 +50,36 @@ export async function handleMemoryCandidates(request: Request, env: Env): Promis
   const candidates = raw.map(candidateInput);
   if (candidates.some((item) => !item)) return openAiError("invalid candidate payload", 400);
   const namespace = resolveNamespace(auth.profile, body?.namespace);
-  for (const candidate of candidates as CandidateInput[]) await upsertMemoryCandidate(env.DB, namespace, candidate);
-  return json({ data: { accepted: candidates.length, namespace } }, { status: 202 });
+  const decisions = (candidates as CandidateInput[]).map(applyDreamCandidatePolicy);
+  const accepted = decisions.filter((decision) => decision.outcome === "accept");
+  const suppressed = decisions.filter((decision) => decision.outcome === "suppress");
+
+  for (const decision of accepted) await upsertMemoryCandidate(env.DB, namespace, decision.candidate);
+  if (suppressed.length > 0) {
+    await createMemoryEvent(env.DB, {
+      namespace,
+      eventType: "dream_candidates_suppressed",
+      payload: {
+        policy: "chunk_summary_first",
+        count: suppressed.length,
+        candidates: suppressed.slice(0, 100).map((decision) => ({
+          external_key: decision.candidate.externalKey,
+          dream_date: decision.candidate.dreamDate,
+          action: decision.candidate.action,
+          reason: decision.reason,
+          source_chunk_ids: decision.candidate.sourceChunkIds
+        }))
+      }
+    });
+  }
+
+  return json({
+    data: {
+      received: candidates.length,
+      accepted: candidates.length,
+      stored: accepted.length,
+      suppressed: suppressed.length,
+      namespace
+    }
+  }, { status: 202 });
 }

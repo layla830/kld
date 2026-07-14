@@ -5,6 +5,8 @@ import { readFormText } from "./utils";
 import { createMemoryRelation } from "../../db/memoryRelations";
 import { syncMemoryVector } from "../../memory/state";
 import { assessCandidateQuality } from "../../memory/candidateQuality";
+import { canOverrideCandidateValidation } from "../../memory/candidateOverride";
+import { createMemoryEvent } from "../../db/memoryEvents";
 
 function payloadOf(text: string): Record<string, unknown> {
   try { const value = JSON.parse(text); return value && typeof value === "object" ? value : {}; } catch { return {}; }
@@ -145,8 +147,24 @@ export async function approveCandidate(env: Env, form: FormData): Promise<Memory
   const id = readFormText(form, "id");
   if (!id) return null;
   const candidate = await getMemoryCandidate(env.DB, "default", id);
-  if (!candidate || candidate.status !== "pending" || candidate.action === "relation" || candidate.action === "timeline_date") return null;
+  if (!candidate || candidate.action === "relation" || candidate.action === "timeline_date") return null;
+  const overrideRequested = readFormText(form, "override_validation") === "1";
+  const validationOverride = overrideRequested && canOverrideCandidateValidation(candidate);
+  if (candidate.status !== "pending" && !validationOverride) return null;
   const payload = payloadOf(candidate.payload_json);
+  if (validationOverride) {
+    await createMemoryEvent(env.DB, {
+      namespace: "default",
+      eventType: "memory_candidate_validation_override_requested",
+      memoryId: candidate.target_id,
+      payload: {
+        candidate_id: candidate.id,
+        action: candidate.action,
+        validation_error: candidate.validation_error,
+        policy: "explicit_admin_override"
+      }
+    });
+  }
   let target: MemoryRecord | null = null;
   if (candidate.action === "add" || candidate.action === "excerpt") {
     const content = candidate.action === "excerpt"
@@ -159,7 +177,9 @@ export async function approveCandidate(env: Env, form: FormData): Promise<Memory
       riskLevel: text(payload.risk_level) ?? null, urgencyLevel: text(payload.urgency_level) ?? null,
       tensionScore: number(payload.tension_score), responsePosture: text(payload.response_posture) ?? null,
       importance: number(payload.importance) ?? 0.7, confidence: number(payload.confidence) ?? 0.82,
-      status: "active", pinned: false, tags: tags(payload.tags), source: "vps-dream-candidate", sourceMessageIds: [], expiresAt: null
+      status: "active", pinned: false, tags: tags(payload.tags),
+      source: validationOverride ? "vps-dream-candidate-override" : "vps-dream-candidate",
+      sourceMessageIds: [], expiresAt: null
     });
   } else if (candidate.action === "diary_split_fact") {
     const diaryId = text(payload.origin_diary_id);
@@ -210,5 +230,19 @@ export async function approveCandidate(env: Env, form: FormData): Promise<Memory
   }
   if (!target) return null;
   await resolveMemoryCandidate(env.DB, "default", id, "approved", target.id);
+  if (validationOverride) {
+    await createMemoryEvent(env.DB, {
+      namespace: "default",
+      eventType: "memory_candidate_validation_override_applied",
+      memoryId: target.id,
+      payload: {
+        candidate_id: candidate.id,
+        action: candidate.action,
+        validation_error: candidate.validation_error,
+        result_memory_id: target.id,
+        policy: "explicit_admin_override"
+      }
+    });
+  }
   return target;
 }

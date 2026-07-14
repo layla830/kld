@@ -54,6 +54,9 @@ const candidateView = fs.readFileSync("src/api/adminBoard/candidateView.ts", "ut
 const adminBoard = fs.readFileSync("src/api/adminBoard.ts", "utf8");
 const adminView = fs.readFileSync("src/api/adminBoard/view.ts", "utf8");
 const candidateQuality = fs.readFileSync("src/memory/candidateQuality.ts", "utf8");
+const dreamCandidatePolicy = fs.readFileSync("src/memory/dreamCandidatePolicy.ts", "utf8");
+const candidateOverride = fs.readFileSync("src/memory/candidateOverride.ts", "utf8");
+const candidateIngress = fs.readFileSync("src/api/memoryCandidates.ts", "utf8");
 const recallTrace = fs.readFileSync("src/recall/trace.ts", "utf8");
 const recallApi = fs.readFileSync("src/api/recall.ts", "utf8");
 const recallContext = fs.readFileSync("src/recall/service.ts", "utf8");
@@ -273,6 +276,24 @@ const checks = [
       vpsDreamCandidate.includes('action in {"add", "excerpt"} and len(source_message_ids) < 2') &&
       vpsDreamCandidate.includes("missing_durable_claim") &&
       candidateQuality.includes("single_message_support"),
+  ],
+  [
+    "Dream: VPS ingress keeps chunk-summary memories and suppresses standalone quote cards",
+    dreamCandidatePolicy.includes('candidate.action === "excerpt"') &&
+      dreamCandidatePolicy.includes('reason: "standalone_excerpt"') &&
+      dreamCandidatePolicy.includes("missing_chunk_summary") &&
+      candidateIngress.includes('eventType: "dream_candidates_suppressed"') &&
+      candidateIngress.includes('policy: "chunk_summary_first"') &&
+      candidateIngress.includes("accepted: candidates.length") &&
+      candidateIngress.includes("stored: accepted.length"),
+  ],
+  [
+    "Dream review: blocked memory candidates require an explicit audited human override",
+    candidateOverride.includes('candidate.status === "needs_subject_review"') &&
+      candidateActions.includes('readFormText(form, "override_validation") === "1"') &&
+      candidateActions.includes('eventType: "memory_candidate_validation_override_requested"') &&
+      candidateActions.includes('eventType: "memory_candidate_validation_override_applied"') &&
+      candidateView.includes("人工确认并通过"),
   ],
   [
     "Diary split: active formal diaries enqueue automatically and missed jobs self-heal",

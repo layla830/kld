@@ -1,5 +1,6 @@
 import type { MemoryCandidateRecord } from "../../db/memoryCandidates";
 import { assessCandidateQuality } from "../../memory/candidateQuality";
+import { canOverrideCandidateValidation } from "../../memory/candidateOverride";
 import { attr, htmlEscape } from "./utils";
 
 function parse(text: string): unknown { try { return JSON.parse(text); } catch { return text; } }
@@ -23,7 +24,8 @@ const ERRORS: Record<string, string> = {
   relationship_subjects_missing: "关系记忆没有同时明确写出用户（Layla）和 KLD。",
   missing_evidence: "候选缺少可核对的逐字证据。",
   evidence_too_long: "证据超过 80 字，请截取来源中的关键原话。",
-  evidence_not_verbatim_in_source_chunks: "候选正文可以保留，但引用证据不是来源关键原话中的逐字片段。"
+  evidence_not_verbatim_in_source_chunks: "候选正文可以保留，但引用证据不是来源关键原话中的逐字片段。",
+  missing_chunk_summary: "没有足够完整的对话块摘要支撑这条长期记忆，请核对来源后再决定。"
 };
 
 function sourceQuotes(value: unknown): string[] {
@@ -58,10 +60,12 @@ export function renderMemoryCandidate(candidate: MemoryCandidateRecord): string 
   const action = ACTIONS[candidate.action] || { title: "待审核候选", effect: "请核对内容和来源。", approve: "接受" };
   const quality = assessCandidateQuality(candidate);
   const blocked = candidate.status !== "pending";
-  const canApprove = !blocked && candidate.action !== "relation" && (!(candidate.action === "update" || candidate.action === "delete") || Boolean(candidate.target_content));
+  const targetAvailable = !(candidate.action === "update" || candidate.action === "delete") || Boolean(candidate.target_content);
+  const canApprove = !blocked && candidate.action !== "relation" && targetAvailable;
+  const canOverride = canOverrideCandidateValidation(candidate) && targetAvailable;
   const subject = candidate.subject ? `<span class="tag-pill">主体：${htmlEscape(candidate.subject)}</span>` : "";
   const sourceLabel = candidate.action === "diary_split_fact" ? "来自日记拆分" : "来自 VPS Dream";
-  const status = blocked ? '<span class="tag-pill">校验未通过，不能执行</span>' : '<span class="tag-pill">等待你决定</span>';
+  const status = blocked ? '<span class="tag-pill">校验未通过，等待人工决定</span>' : '<span class="tag-pill">等待你决定</span>';
   const qualityLabel = quality.label === "reject_suggested" ? "建议拒绝" : quality.label === "needs_review" ? "需要细看" : "原子质量通过";
   const qualityClass = quality.label === "pass" ? "" : " muted";
   const qualityPill = `<span class="tag-pill${qualityClass}">原子质量：${qualityLabel}</span>`;
@@ -83,6 +87,8 @@ export function renderMemoryCandidate(candidate: MemoryCandidateRecord): string 
     : "";
   const approve = canApprove
     ? `${batchChoice}<form method="POST" action="/admin/memories/candidates/approve" onsubmit="return confirm('${attr(action.effect)}')"><input type="hidden" name="id" value="${attr(candidate.id)}"><button class="action-btn approve-review">${htmlEscape(action.approve)}</button></form>`
-    : `<button class="action-btn" disabled>${candidate.action === "relation" ? "关联功能尚未开放" : blocked ? "需先处理校验问题" : "找不到旧记忆，不能执行"}</button>`;
+    : canOverride
+      ? `<form method="POST" action="/admin/memories/candidates/approve" onsubmit="return confirm('这条候选仍有校验警告。确认你已核对正文与来源，并以人工决定执行；系统会记录本次越过校验。')"><input type="hidden" name="id" value="${attr(candidate.id)}"><input type="hidden" name="override_validation" value="1"><button class="action-btn approve-review">人工确认并通过</button></form>`
+      : `<button class="action-btn" disabled>${candidate.action === "relation" ? "关联功能尚未开放" : blocked ? "此类校验不能人工越过" : "找不到旧记忆，不能执行"}</button>`;
   return `<article class="memory-card review-card ${blocked ? "muted" : ""}"><div class="message-header"><strong>${htmlEscape(action.title)}</strong></div><div class="memory-meta"><span class="score-pill">${htmlEscape(sourceLabel)}</span>${subject}${status}${qualityPill}</div><div class="lmc-explain"><p><strong>这条会做什么：</strong>${htmlEscape(action.effect)}</p></div><div class="message-content" style="white-space:pre-wrap">${htmlEscape(pretty(content))}</div>${candidate.action === "diary_split_fact" ? `<div class="review-warning"><strong>原文证据：</strong>${htmlEscape(pretty(payload.evidence || "（缺失）"))}</div>` : ""}${qualityWarning}${warning}${evidenceRepair}${comparison(candidate, content)}<details class="memory-detail"><summary>为什么生成这条？查看来源对话摘要</summary><div class="char-count">来源片段：${htmlEscape(pretty(sourceIds))}</div><pre style="white-space:pre-wrap;overflow-wrap:anywhere">${htmlEscape(pretty(chunks))}</pre><details><summary>查看技术载荷</summary><pre style="white-space:pre-wrap;overflow-wrap:anywhere">${htmlEscape(pretty(payload))}</pre></details></details><div class="actions review-actions">${qualityChoice}${approve}<form method="POST" action="/admin/memories/candidates/reject" onsubmit="return confirm('确认拒绝这条建议？不会修改任何记忆。')"><input type="hidden" name="id" value="${attr(candidate.id)}"><button class="action-btn delete">拒绝，不做改动</button></form></div><div class="char-count">${htmlEscape(candidate.dream_date)} · ${htmlEscape(candidate.id)}</div></article>`;
 }
