@@ -5,6 +5,7 @@ export interface MemoryFiveAxisOutboxRecord {
   namespace: string;
   memory_id: string;
   memory_updated_at: string;
+  memory_revision?: number;
   status: "pending" | "queued" | "failed" | "completed" | "skipped";
   attempts: number;
   queued_at: string | null;

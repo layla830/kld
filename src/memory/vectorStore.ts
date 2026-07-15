@@ -116,6 +116,7 @@ function toLegacyMemoryRecord(match: VectorizeMatch, input: { namespace: string 
     vector_synced: 1,
     last_recalled_at: null,
     recall_count: 0,
+    five_axis_revision: 1,
     created_at: readMetadataString(metadata, "created_at") || now,
     updated_at: readMetadataString(metadata, "updated_at") || now,
     expires_at: null,

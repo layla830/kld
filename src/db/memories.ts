@@ -47,6 +47,11 @@ export interface ListUnsyncedMemoryFilters {
   limit: number;
 }
 
+export interface MemoryKeysetCursor {
+  createdAt: string;
+  id: string;
+}
+
 export interface UpdateMemoryInput {
   type?: string;
   content?: string;
@@ -123,6 +128,7 @@ export async function createMemory(db: D1Database, input: CreateMemoryInput): Pr
     vector_synced: 0,
     last_recalled_at: null,
     recall_count: 0,
+    five_axis_revision: 1,
     created_at: now,
     updated_at: now,
     expires_at: input.expiresAt ?? null
@@ -199,6 +205,41 @@ export async function listMemories(db: D1Database, filters: ListMemoryFilters): 
   binds.push(filters.limit);
 
   const result = await db.prepare(sql).bind(...binds).all<MemoryRecord>();
+  return result.results ?? [];
+}
+
+export async function listCoordinateBackfillCandidates(
+  db: D1Database,
+  input: { namespace: string; limit: number; cursor: MemoryKeysetCursor | null }
+): Promise<MemoryRecord[]> {
+  const cursorClause = input.cursor
+    ? "AND (m.created_at > ? OR (m.created_at = ? AND m.id > ?))"
+    : "";
+  const binds: unknown[] = [input.namespace];
+  if (input.cursor) binds.push(input.cursor.createdAt, input.cursor.createdAt, input.cursor.id);
+  binds.push(Math.min(Math.max(Math.floor(input.limit), 1), 50));
+  const result = await db.prepare(
+    `SELECT m.* FROM memories m
+     WHERE m.namespace = ? AND m.status = 'active'
+       AND (
+         m.thread IS NULL OR trim(m.thread) = ''
+         OR m.risk_level IS NULL OR trim(m.risk_level) = ''
+         OR m.urgency_level IS NULL OR trim(m.urgency_level) = ''
+         OR m.tension_score IS NULL
+         OR m.response_posture IS NULL OR trim(m.response_posture) = ''
+         OR m.valence IS NULL
+         OR m.arousal IS NULL
+       )
+       AND NOT EXISTS (
+         SELECT 1 FROM memory_candidates c
+         WHERE c.namespace = m.namespace
+           AND c.external_key = 'coordinate-backfill:' || m.id
+           AND c.status IN ('pending','needs_subject_review')
+       )
+       ${cursorClause}
+     ORDER BY m.created_at ASC, m.id ASC
+     LIMIT ?`
+  ).bind(...binds).all<MemoryRecord>();
   return result.results ?? [];
 }
 

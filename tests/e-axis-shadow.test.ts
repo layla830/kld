@@ -31,6 +31,7 @@ function record(id: string, type: string, patch: Partial<ScoredMemoryRecord> = {
     vector_synced: 0,
     last_recalled_at: null,
     recall_count: 0,
+    five_axis_revision: 1,
     created_at: "2026-07-01T00:00:00.000Z",
     updated_at: "2026-07-01T00:00:00.000Z",
     expires_at: null,

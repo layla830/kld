@@ -460,6 +460,7 @@ function apiRecordToMemoryRecord(record: MemoryApiRecord): MemoryRecord {
     vector_synced: 0,
     last_recalled_at: record.last_recalled_at,
     recall_count: record.recall_count,
+    five_axis_revision: 1,
     created_at: record.created_at,
     updated_at: record.updated_at,
     expires_at: record.expires_at

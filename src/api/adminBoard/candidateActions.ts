@@ -13,13 +13,16 @@ function payloadOf(text: string): Record<string, unknown> {
 }
 
 function text(value: unknown): string | undefined { return typeof value === "string" && value.trim() ? value.trim() : undefined; }
-function number(value: unknown): number | undefined { const n = Number(value); return Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : undefined; }
+function number(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : undefined;
+}
 function coordinateNumber(value: unknown, min = 0): number | null | undefined {
   if (value === null) return null;
-  const n = Number(value);
-  return Number.isFinite(n) ? Math.max(min, Math.min(1, n)) : undefined;
+  return typeof value === "number" && Number.isFinite(value) ? Math.max(min, Math.min(1, value)) : undefined;
 }
-function tags(value: unknown): string[] { return Array.isArray(value) ? value.map(String).map((item) => item.trim()).filter(Boolean) : []; }
+function tags(value: unknown): string[] | undefined {
+  return Array.isArray(value) ? value.map(String).map((item) => item.trim()).filter(Boolean) : undefined;
+}
 
 function hasOwn(payload: Record<string, unknown>, key: string): boolean {
   return Object.prototype.hasOwnProperty.call(payload, key);
@@ -27,7 +30,8 @@ function hasOwn(payload: Record<string, unknown>, key: string): boolean {
 
 function nullableTextPatch(payload: Record<string, unknown>, key: string): string | null | undefined {
   if (!hasOwn(payload, key)) return undefined;
-  return text(payload[key]) ?? null;
+  if (payload[key] === null) return null;
+  return text(payload[key]);
 }
 
 function nullableCoordinatePatch(
@@ -226,7 +230,7 @@ export async function approveCandidate(env: Env, form: FormData): Promise<Memory
         confidence: number(payload.confidence) ?? 0.82,
         status: "active",
         pinned: false,
-        tags: [...new Set([...tags(payload.tags), `origin:${diary.id}`, `split_item:${itemKey}`, "split_version:v2"])],
+        tags: [...new Set([...(tags(payload.tags) ?? []), `origin:${diary.id}`, `split_item:${itemKey}`, "split_version:v2"])],
         source: "timeline_split",
         sourceMessageIds: [diary.id],
         expiresAt: null

@@ -84,17 +84,28 @@ export async function handleQueueMessage(message: QueueMessage, env: Env): Promi
       if (!loadFiveAxisConfig(env).enabled) return;
       const outbox = await getFiveAxisOutbox(env.DB, message.outboxId);
       if (!outbox || outbox.status === "completed" || outbox.status === "skipped") return;
-      if (outbox.memory_updated_at !== message.memoryUpdatedAt) {
+      const outboxRevision = outbox.memory_revision ?? 1;
+      const messageRevision = message.memoryRevision ?? outboxRevision;
+      if (
+        outbox.namespace !== message.namespace
+        || outbox.memory_id !== message.memoryId
+        || outbox.memory_updated_at !== message.memoryUpdatedAt
+        || outboxRevision !== messageRevision
+      ) {
         await markFiveAxisOutboxCompleted(env.DB, message.outboxId, "skipped", {
-          reason: "outbox_message_version_mismatch",
-          expected: outbox.memory_updated_at,
-          received: message.memoryUpdatedAt
-        });
-        return;
-      }
-      if (await hasNewerFiveAxisOutboxVersion(env.DB, outbox)) {
-        await markFiveAxisOutboxCompleted(env.DB, message.outboxId, "skipped", {
-          reason: "superseded_by_newer_memory_version"
+          reason: "outbox_message_identity_mismatch",
+          expected: {
+            namespace: outbox.namespace,
+            memory_id: outbox.memory_id,
+            memory_updated_at: outbox.memory_updated_at,
+            memory_revision: outboxRevision
+          },
+          received: {
+            namespace: message.namespace,
+            memory_id: message.memoryId,
+            memory_updated_at: message.memoryUpdatedAt,
+            memory_revision: messageRevision
+          }
         });
         return;
       }
@@ -102,6 +113,21 @@ export async function handleQueueMessage(message: QueueMessage, env: Env): Promi
       if (!memory || memory.status !== "active") {
         await markFiveAxisOutboxCompleted(env.DB, message.outboxId, "skipped", {
           reason: memory ? "memory_not_active" : "memory_not_found"
+        });
+        return;
+      }
+      const currentRevision = memory.five_axis_revision ?? 1;
+      if (currentRevision !== outboxRevision) {
+        await markFiveAxisOutboxCompleted(env.DB, message.outboxId, "skipped", {
+          reason: "memory_revision_mismatch",
+          expected: outboxRevision,
+          current: currentRevision
+        });
+        return;
+      }
+      if (await hasNewerFiveAxisOutboxVersion(env.DB, outbox)) {
+        await markFiveAxisOutboxCompleted(env.DB, message.outboxId, "skipped", {
+          reason: "superseded_by_newer_memory_version"
         });
         return;
       }

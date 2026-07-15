@@ -1,7 +1,8 @@
 import { dismissPendingMemoryCandidateByExternalKey, upsertMemoryCandidate } from "../db/memoryCandidates";
-import { fetchMemoriesByIds, listMemories, updateMemory } from "../db/memories";
+import { fetchMemoriesByIds, listCoordinateBackfillCandidates, listMemories, updateMemory } from "../db/memories";
 import type { Env, MemoryRecord } from "../types";
 import { loadModelConfig, systemClock } from "../config/runtime";
+import type { CoordinateBackfillCursor } from "./coordinateBackfillControl";
 import {
   normalizeArousal,
   normalizeResponsePosture,
@@ -48,20 +49,52 @@ export interface CoordinateBackfillResult {
     before: Record<string, unknown>;
     proposed: Record<string, unknown>;
   }>;
+  cursor?: CoordinateBackfillCursor | null;
 }
 
 export async function runScheduledCoordinateBackfill(
   env: Env,
   namespace: string,
-  labelBatch: CoordinateLabeler
+  labelBatch: CoordinateLabeler,
+  cursor: CoordinateBackfillCursor | null = null
 ): Promise<CoordinateBackfillResult> {
-  return runCoordinateBackfill(env, {
+  let candidates = await listCoordinateBackfillCandidates(env.DB, {
+    namespace,
+    limit: COORDINATE_BACKFILL_BATCH_SIZE,
+    cursor
+  });
+  if (candidates.length === 0 && cursor) {
+    candidates = await listCoordinateBackfillCandidates(env.DB, {
+      namespace,
+      limit: COORDINATE_BACKFILL_BATCH_SIZE,
+      cursor: null
+    });
+  }
+  if (candidates.length === 0) {
+    return {
+      ok: true,
+      mode: "auto_apply_with_exception_review",
+      scanned: 0,
+      needBackfill: 0,
+      offset: 0,
+      nextOffset: null,
+      processed: 0,
+      applied: 0,
+      queued: 0,
+      cursor: null,
+      message: "No memories need scheduled coordinate backfill"
+    };
+  }
+  const result = await runCoordinateBackfill(env, {
     namespace,
     apply: true,
     limit: COORDINATE_BACKFILL_BATCH_SIZE,
     offset: 0,
-    selection: "missing_fields"
+    selection: "missing_fields",
+    ids: candidates.map((memory) => memory.id)
   }, labelBatch);
+  const last = candidates[candidates.length - 1];
+  return { ...result, cursor: { createdAt: last.created_at, id: last.id } };
 }
 
 const THREAD_SLUG = /^[a-z0-9]+(?:[._-][a-z0-9]+)*$/;

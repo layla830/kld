@@ -45,7 +45,8 @@ function messageRecord(message: MessageRecord & { score: number }): ScoredMemory
     confidence: 0.75, status: "active", pinned: 0,
     tags: JSON.stringify(["raw_message", message.source || "chat"]), source: message.source || "messages",
     source_message_ids: JSON.stringify([message.id]), vector_id: null, vector_synced: 0,
-    last_recalled_at: null, recall_count: 0, created_at: message.created_at, updated_at: message.created_at,
+    last_recalled_at: null, recall_count: 0, five_axis_revision: 1,
+    created_at: message.created_at, updated_at: message.created_at,
     expires_at: null, score: message.score, keywordScore: message.score
   };
 }

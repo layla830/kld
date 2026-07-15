@@ -34,6 +34,7 @@ function memory(overrides: Partial<MemoryRecord> = {}): MemoryRecord {
     vector_sync_status: "synced",
     last_recalled_at: null,
     recall_count: 0,
+    five_axis_revision: 1,
     created_at: "2026-07-13T00:00:00.000Z",
     updated_at: "2026-07-13T00:00:00.000Z",
     expires_at: null,

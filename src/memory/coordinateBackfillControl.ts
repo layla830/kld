@@ -1,12 +1,16 @@
 import { getCacheEntry, parseCacheEntryValue, putCacheEntry } from "../db/cacheEntries";
+import type { MemoryKeysetCursor } from "../db/memories";
 import type { Env } from "../types";
 
 const CONTROL_KEY = "maintenance:coordinate_backfill";
+
+export type CoordinateBackfillCursor = MemoryKeysetCursor;
 
 export interface CoordinateBackfillControl {
   enabled: boolean;
   lastRunAt: string | null;
   lastResult: unknown | null;
+  cursor: CoordinateBackfillCursor | null;
 }
 
 export interface CoordinateBackfillStatus extends CoordinateBackfillControl {
@@ -19,9 +23,23 @@ export interface CoordinateBackfillStatus extends CoordinateBackfillControl {
 }
 
 function readControl(value: unknown): CoordinateBackfillControl {
-  if (!value || typeof value !== "object") return { enabled: true, lastRunAt: null, lastResult: null };
+  if (!value || typeof value !== "object") return { enabled: true, lastRunAt: null, lastResult: null, cursor: null };
   const record = value as Record<string, unknown>;
-  return { enabled: record.enabled !== false, lastRunAt: typeof record.lastRunAt === "string" ? record.lastRunAt : null, lastResult: record.lastResult ?? null };
+  const rawCursor = record.cursor;
+  const cursor = rawCursor && typeof rawCursor === "object"
+    && typeof (rawCursor as Record<string, unknown>).createdAt === "string"
+    && typeof (rawCursor as Record<string, unknown>).id === "string"
+    ? {
+        createdAt: (rawCursor as Record<string, string>).createdAt,
+        id: (rawCursor as Record<string, string>).id
+      }
+    : null;
+  return {
+    enabled: record.enabled !== false,
+    lastRunAt: typeof record.lastRunAt === "string" ? record.lastRunAt : null,
+    lastResult: record.lastResult ?? null,
+    cursor
+  };
 }
 
 export async function getCoordinateBackfillControl(env: Env, namespace: string): Promise<CoordinateBackfillControl> {
@@ -38,9 +56,14 @@ export async function setCoordinateBackfillEnabled(env: Env, namespace: string, 
   await saveControl(env, namespace, { ...current, enabled });
 }
 
-export async function recordCoordinateBackfillRun(env: Env, namespace: string, result: unknown): Promise<void> {
+export async function recordCoordinateBackfillRun(
+  env: Env,
+  namespace: string,
+  result: unknown,
+  cursor: CoordinateBackfillCursor | null
+): Promise<void> {
   const current = await getCoordinateBackfillControl(env, namespace);
-  await saveControl(env, namespace, { ...current, lastRunAt: new Date().toISOString(), lastResult: result });
+  await saveControl(env, namespace, { ...current, lastRunAt: new Date().toISOString(), lastResult: result, cursor });
 }
 
 export async function getCoordinateBackfillStatus(env: Env, namespace: string): Promise<CoordinateBackfillStatus> {

@@ -113,6 +113,7 @@ function toRecord(input: LegacyMemoryInput, namespace: string): MemoryRecord {
     vector_synced: 0,
     last_recalled_at: lastAccessed,
     recall_count: accessCount,
+    five_axis_revision: 1,
     created_at: readIso(input.created_at_iso, input.created_at),
     updated_at: readIso(input.updated_at_iso, input.updated_at),
     expires_at: null

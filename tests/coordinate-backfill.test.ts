@@ -35,6 +35,7 @@ function memory(overrides: Partial<MemoryRecord> = {}): MemoryRecord {
     vector_sync_status: "synced",
     last_recalled_at: null,
     recall_count: 0,
+    five_axis_revision: 1,
     created_at: "2026-07-14T00:00:00.000Z",
     updated_at: "2026-07-14T00:00:00.000Z",
     expires_at: null,
@@ -83,8 +84,10 @@ describe("field-level coordinate completion", () => {
 
   it("includes partially labeled legacy memories in the scheduled sweep", async () => {
     const partial = memory();
+    const sql: string[] = [];
     const db = {
-      prepare() {
+      prepare(statement: string) {
+        sql.push(statement);
         return {
           bind() {
             return { all: async () => ({ results: [partial] }) };
@@ -105,5 +108,51 @@ describe("field-level coordinate completion", () => {
 
     expect(labeled.map((item) => item.id)).toEqual([partial.id]);
     expect(result).toMatchObject({ needBackfill: 1, processed: 1 });
+    expect(result.cursor).toEqual({ createdAt: partial.created_at, id: partial.id });
+    expect(sql[0]).toContain("NOT EXISTS");
+    expect(sql[0]).toContain("coordinate-backfill:");
+  });
+
+  it("wraps a persisted cursor instead of letting one unresolved page starve the sweep", async () => {
+    const partial = memory({ id: "mem_after_wrap" });
+    let scheduledQueries = 0;
+    const binds: unknown[][] = [];
+    const db = {
+      prepare(statement: string) {
+        return {
+          bind(...values: unknown[]) {
+            binds.push(values);
+            if (statement.includes("SELECT m.* FROM memories m")) {
+              scheduledQueries += 1;
+              return { all: async () => ({ results: scheduledQueries === 1 ? [] : [partial] }) };
+            }
+            return { all: async () => ({ results: [partial] }) };
+          }
+        };
+      }
+    } as unknown as D1Database;
+    let labeled: MemoryRecord[] = [];
+
+    const result = await runScheduledCoordinateBackfill(
+      { DB: db, MEMORY_MODEL: "coordinate-model" } as Env,
+      "default",
+      async (_env, _model, memories) => {
+        labeled = memories;
+        return [];
+      },
+      { createdAt: "2026-07-15T00:00:00.000Z", id: "mem_cursor" }
+    );
+
+    expect(scheduledQueries).toBe(2);
+    expect(binds[0]).toEqual([
+      "default",
+      "2026-07-15T00:00:00.000Z",
+      "2026-07-15T00:00:00.000Z",
+      "mem_cursor",
+      5
+    ]);
+    expect(binds[1]).toEqual(["default", 5]);
+    expect(labeled.map((item) => item.id)).toEqual([partial.id]);
+    expect(result.cursor).toEqual({ createdAt: partial.created_at, id: partial.id });
   });
 });
