@@ -1,6 +1,7 @@
 import type { Env, MemoryRecord } from "../types";
 import { upsertMemoryCandidate } from "../db/memoryCandidates";
 import { getCacheEntry, parseCacheEntryValue, putCacheEntry } from "../db/cacheEntries";
+import { rebuildTimelineSequenceForMemory } from "./timelineRelations";
 
 const TIMELINE_BACKFILL_KEY = "maintenance:timeline_backfill";
 const TIMELINE_BATCH_SIZE = 100;
@@ -28,9 +29,10 @@ export interface TimelineBackfillStatus {
 
 export interface TimelineMemoryProjectionResult {
   scanned: 1;
-  outcome: "already_dated" | "no_explicit_date" | "ambiguous" | "queued";
+  outcome: "already_dated" | "reconciled" | "no_explicit_date" | "ambiguous" | "queued";
   dates: string[];
   queued: number;
+  sequence?: Awaited<ReturnType<typeof rebuildTimelineSequenceForMemory>>;
 }
 
 function parseTags(value: string | null): string[] {
@@ -66,8 +68,15 @@ export async function queueTimelineCandidateForMemory(
   memory: MemoryRecord
 ): Promise<TimelineMemoryProjectionResult> {
   const beforeTags = parseTags(memory.tags);
+  const approvedDates = beforeTags
+    .filter((tag) => /^date:20\d{2}-\d{2}-\d{2}$/.test(tag))
+    .map((tag) => tag.slice(5));
   if (beforeTags.some((tag) => tag.startsWith("date:"))) {
-    return { scanned: 1, outcome: "already_dated", dates: [], queued: 0 };
+    if (approvedDates.length === 1 && memory.thread && memory.fact_key) {
+      const sequence = await rebuildTimelineSequenceForMemory(env.DB, memory);
+      return { scanned: 1, outcome: "reconciled", dates: approvedDates, queued: 0, sequence };
+    }
+    return { scanned: 1, outcome: "already_dated", dates: approvedDates, queued: 0 };
   }
   const dates = extractExplicitDates(memory.content);
   if (dates.length === 0) return { scanned: 1, outcome: "no_explicit_date", dates, queued: 0 };

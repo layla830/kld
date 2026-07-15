@@ -164,6 +164,104 @@ describe("per-memory five-axis projection", () => {
     expect(result?.axes.M.status).toBe("skipped");
   });
 
+  it("does not persist X while E is failed, then runs X after E succeeds on retry", async () => {
+    const initial = memory({ thread: null });
+    const labeled = memory({ thread: "kld", risk_level: "normal", valence: 0.2 });
+    const records = new Map<FiveAxisName, MemoryFiveAxisRunRecord>();
+    let eAttempts = 0;
+    const timelineThreads: Array<string | null> = [];
+    const recordFor = (
+      key: FiveAxisRunKey,
+      patch: Partial<MemoryFiveAxisRunRecord>
+    ): MemoryFiveAxisRunRecord => ({
+      namespace: key.namespace,
+      memory_id: key.memoryId,
+      memory_revision: key.memoryRevision,
+      axis: key.axis,
+      status: "running",
+      attempts: records.get(key.axis)?.attempts ?? 1,
+      result_json: null,
+      last_error: null,
+      claim_token: null,
+      lease_expires_at: null,
+      started_at: "2026-07-15T00:00:00.000Z",
+      completed_at: null,
+      updated_at: "2026-07-15T00:00:00.000Z",
+      ...patch
+    });
+    const dependencies: MemoryFiveAxisProjectionDependencies = {
+      getMemory: async () => eAttempts >= 2 ? labeled : initial,
+      projectTimeline: async (_env, current) => {
+        timelineThreads.push(current.thread);
+        return { scanned: 1, outcome: "queued", dates: ["2026-07-20"], queued: 1 };
+      },
+      projectCoordinates: async () => {
+        eAttempts += 1;
+        if (eAttempts === 1) throw new Error("coordinate provider unavailable");
+        return {
+          ok: true,
+          mode: "auto_apply_with_exception_review",
+          scanned: 1,
+          needBackfill: 1,
+          offset: 0,
+          nextOffset: null,
+          processed: 1,
+          applied: 1,
+          queued: 0
+        };
+      },
+      syncVector: async () => "synced",
+      projectRelations: async () => ({ scanned: 1, inserted: 0, review: 0, proposed: 0, candidates: 0 }),
+      projectFacts: async () => ({ conflicts: 0, candidates: 0 }),
+      projectMetabolism: async () => ({ archive: 0, relations: 0 }),
+      axisRuns: {
+        get: async (_env, key) => records.get(key.axis) ?? null,
+        claim: async (_env, key) => {
+          const token = `claim-${key.axis}-${(records.get(key.axis)?.attempts ?? 0) + 1}`;
+          records.set(key.axis, recordFor(key, {
+            status: "running",
+            attempts: (records.get(key.axis)?.attempts ?? 0) + 1,
+            claim_token: token
+          }));
+          return token;
+        },
+        complete: async (_env, key, _claimToken, status, value) => {
+          records.set(key.axis, recordFor(key, {
+            status,
+            result_json: JSON.stringify(value),
+            completed_at: "2026-07-15T00:00:01.000Z"
+          }));
+          return true;
+        },
+        fail: async (_env, key, _claimToken, error) => {
+          records.set(key.axis, recordFor(key, {
+            status: "failed",
+            last_error: error instanceof Error ? error.message : String(error),
+            completed_at: "2026-07-15T00:00:01.000Z"
+          }));
+          return true;
+        }
+      }
+    };
+    const input = {
+      namespace: "default",
+      memoryId: initial.id,
+      memoryRevision: 8,
+      projectionKey: "five-axis:e-retry:v8"
+    };
+
+    const first = await projectMemoryIntoFiveAxes({} as Env, input, dependencies);
+    expect(first?.failedAxes).toEqual(["E"]);
+    expect(first?.deferredAxes).toEqual(["X"]);
+    expect(records.has("X")).toBe(false);
+    const second = await projectMemoryIntoFiveAxes({} as Env, input, dependencies);
+
+    expect(second?.failedAxes).toEqual([]);
+    expect(second?.deferredAxes).toEqual([]);
+    expect(timelineThreads).toEqual(["kld"]);
+    expect(records.get("E")?.attempts).toBe(2);
+  });
+
   it("reuses completed axes and retries only the failed axis for the same revision", async () => {
     const initial = memory({ fact_key: null, thread: "kld", valence: 0.2 });
     const records = new Map<FiveAxisName, MemoryFiveAxisRunRecord>();
@@ -178,6 +276,8 @@ describe("per-memory five-axis projection", () => {
       attempts: records.get(key.axis)?.attempts ?? 1,
       result_json: null,
       last_error: null,
+      claim_token: null,
+      lease_expires_at: null,
       started_at: "2026-07-15T00:00:00.000Z",
       completed_at: null,
       updated_at: "2026-07-15T00:00:00.000Z",
@@ -211,25 +311,30 @@ describe("per-memory five-axis projection", () => {
       },
       axisRuns: {
         get: async (_env, key) => records.get(key.axis) ?? null,
-        start: async (_env, key) => {
+        claim: async (_env, key) => {
+          const token = `claim-${key.axis}`;
           records.set(key.axis, keyRecord(key, {
             status: "running",
+            claim_token: token,
             attempts: (records.get(key.axis)?.attempts ?? 0) + 1
           }));
+          return token;
         },
-        complete: async (_env, key, status, value) => {
+        complete: async (_env, key, _claimToken, status, value) => {
           records.set(key.axis, keyRecord(key, {
             status,
             result_json: JSON.stringify(value),
             completed_at: "2026-07-15T00:00:01.000Z"
           }));
+          return true;
         },
-        fail: async (_env, key, error) => {
+        fail: async (_env, key, _claimToken, error) => {
           records.set(key.axis, keyRecord(key, {
             status: "failed",
             last_error: error instanceof Error ? error.message : String(error),
             completed_at: "2026-07-15T00:00:01.000Z"
           }));
+          return true;
         }
       }
     };

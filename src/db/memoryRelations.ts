@@ -129,61 +129,12 @@ export async function createMemoryRelation(
   return Boolean(result.meta.changes);
 }
 
-export async function createReviewedMemoryRelation(
-  db: D1Database,
-  input: {
-    namespace: string;
-    sourceMemoryId: string;
-    targetMemoryId: string;
-    relationType: string;
-    strength?: number;
-    reason?: string | null;
-  }
-): Promise<{ relation: MemoryRelationRecord; inserted: boolean } | null> {
-  if (input.sourceMemoryId === input.targetMemoryId) return null;
-  const pair = normalizeRelationPair(input.sourceMemoryId, input.targetMemoryId, input.relationType);
-  if (!REVIEW_RELATION_TYPES.has(pair.relationType)) return null;
-  const strength = typeof input.strength === "number" && Number.isFinite(input.strength)
-    ? clamp(input.strength, 0, 1)
-    : 1;
-  const id = newId("rel");
-  const inserted = await db.prepare(
-    `INSERT OR IGNORE INTO memory_relations (
-       id, namespace, source_memory_id, target_memory_id, relation_type, strength, reason, created_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-  ).bind(
-    id,
-    input.namespace,
-    pair.sourceMemoryId,
-    pair.targetMemoryId,
-    pair.relationType,
-    strength,
-    input.reason ?? null,
-    nowIso()
-  ).run();
-  const relation = (await db.prepare(
-    `SELECT * FROM memory_relations
-     WHERE namespace = ? AND source_memory_id = ? AND target_memory_id = ? AND relation_type = ?`
-  ).bind(input.namespace, pair.sourceMemoryId, pair.targetMemoryId, pair.relationType)
-    .first<MemoryRelationRecord>()) ?? null;
-  return relation ? { relation, inserted: (inserted.meta.changes ?? 0) === 1 } : null;
-}
-
 export async function getMemoryRelationById(
   db: D1Database,
   input: { namespace: string; id: string }
 ): Promise<MemoryRelationRecord | null> {
   return (await db.prepare("SELECT * FROM memory_relations WHERE namespace = ? AND id = ?")
     .bind(input.namespace, input.id).first<MemoryRelationRecord>()) ?? null;
-}
-
-export async function deleteMemoryRelation(
-  db: D1Database,
-  input: { namespace: string; id: string }
-): Promise<boolean> {
-  const result = await db.prepare("DELETE FROM memory_relations WHERE namespace = ? AND id = ?")
-    .bind(input.namespace, input.id).run();
-  return (result.meta.changes ?? 0) === 1;
 }
 
 export async function replaceTimelineSequenceRelations(
@@ -201,26 +152,10 @@ export async function replaceTimelineSequenceRelations(
     db.prepare(
       `DELETE FROM memory_relations
        WHERE namespace = ? AND relation_type = 'temporal_sequence'
-         AND (
-           reason = ?
-           OR (
-             source_memory_id IN (
-               SELECT id FROM memories WHERE namespace = ? AND status = 'active' AND thread = ? AND fact_key = ?
-             )
-             AND target_memory_id IN (
-               SELECT id FROM memories WHERE namespace = ? AND status = 'active' AND thread = ? AND fact_key = ?
-             )
-           )
-         )`
+         AND reason = ?`
     ).bind(
       input.namespace,
-      reason,
-      input.namespace,
-      input.thread,
-      input.factKey,
-      input.namespace,
-      input.thread,
-      input.factKey
+      reason
     ),
     ...input.edges.map((edge) => db.prepare(
       `INSERT OR IGNORE INTO memory_relations (

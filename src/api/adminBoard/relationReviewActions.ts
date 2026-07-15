@@ -1,15 +1,14 @@
 import { loadDreamConfig } from "../../config/runtime";
-import { createMemoryEvent } from "../../db/memoryEvents";
-import { getMemoryCandidate, resolveMemoryCandidate } from "../../db/memoryCandidates";
+import { getMemoryCandidate, resolveMemoryCandidate, type MemoryCandidateRecord } from "../../db/memoryCandidates";
 import {
-  createReviewedMemoryRelation,
-  deleteMemoryRelation,
   getMemoryRelationById,
   normalizeRelationPair,
-  REVIEW_RELATION_TYPES
+  REVIEW_RELATION_TYPES,
+  type MemoryRelationRecord
 } from "../../db/memoryRelations";
 import { getMemoryById } from "../../db/memories";
 import type { Env } from "../../types";
+import { newId } from "../../utils/ids";
 import { nowIso } from "../../utils/time";
 import { readFormText } from "./utils";
 
@@ -64,14 +63,99 @@ function proposalOf(payload: Record<string, unknown>): RelationProposal | null {
   };
 }
 
+async function findProposalRelation(
+  db: D1Database,
+  namespace: string,
+  proposal: RelationProposal
+): Promise<MemoryRelationRecord | null> {
+  return (await db.prepare(
+    `SELECT * FROM memory_relations
+     WHERE namespace = ? AND source_memory_id = ? AND target_memory_id = ? AND relation_type = ?`
+  ).bind(namespace, proposal.sourceId, proposal.targetId, proposal.relationType)
+    .first<MemoryRelationRecord>()) ?? null;
+}
+
+async function commitApproval(
+  env: Env,
+  candidate: MemoryCandidateRecord,
+  proposal: RelationProposal,
+  relationId: string,
+  inserted: boolean
+): Promise<boolean> {
+  const now = nowIso();
+  const approvalToken = newId("approval");
+  const approvedPayload = JSON.stringify({
+    ...payloadOf(candidate.payload_json),
+    approval: { relation_id: relationId, inserted, token: approvalToken }
+  });
+  const eventId = newId("ev");
+  const eventPayload = JSON.stringify({
+    candidate_id: candidate.id,
+    relation_id: relationId,
+    inserted,
+    proposal
+  });
+  const statements: D1PreparedStatement[] = [];
+  if (inserted) {
+    statements.push(env.DB.prepare(
+      `INSERT INTO memory_relations (
+         id, namespace, source_memory_id, target_memory_id, relation_type, strength, reason, created_at
+       )
+       SELECT ?, ?, ?, ?, ?, ?, ?, ?
+       WHERE EXISTS (
+         SELECT 1 FROM memory_candidates
+         WHERE namespace = ? AND id = ? AND status = 'pending' AND action = 'y_relation_review'
+       )`
+    ).bind(
+      relationId,
+      candidate.namespace,
+      proposal.sourceId,
+      proposal.targetId,
+      proposal.relationType,
+      proposal.strength,
+      proposal.reason,
+      now,
+      candidate.namespace,
+      candidate.id
+    ));
+  }
+  const updateIndex = statements.length;
+  statements.push(env.DB.prepare(
+    `UPDATE memory_candidates
+     SET payload_json = ?, status = 'approved', result_memory_id = ?,
+         resolved_at = ?, updated_at = ?
+     WHERE namespace = ? AND id = ? AND status = 'pending' AND action = 'y_relation_review'`
+  ).bind(approvedPayload, relationId, now, now, candidate.namespace, candidate.id));
+  statements.push(env.DB.prepare(
+    `INSERT INTO memory_events (id, namespace, event_type, memory_id, payload_json, created_at)
+     SELECT ?, ?, 'y_relation_approved', ?, ?, ?
+     WHERE EXISTS (
+       SELECT 1 FROM memory_candidates
+       WHERE namespace = ? AND id = ? AND status = 'approved'
+         AND result_memory_id = ? AND payload_json = ?
+     )`
+  ).bind(
+    eventId,
+    candidate.namespace,
+    relationId,
+    eventPayload,
+    now,
+    candidate.namespace,
+    candidate.id,
+    relationId,
+    approvedPayload
+  ));
+  const results = await env.DB.batch(statements);
+  return (results[updateIndex]?.meta.changes ?? 0) === 1;
+}
+
 export async function approveRelationReviewCandidate(env: Env, form: FormData): Promise<RelationReviewResult | null> {
   const id = readFormText(form, "id");
   if (!id) return null;
   const namespace = loadDreamConfig(env).namespace;
   const candidate = await getMemoryCandidate(env.DB, namespace, id);
   if (!candidate || candidate.status !== "pending" || candidate.action !== "y_relation_review") return null;
-  const candidatePayload = payloadOf(candidate.payload_json);
-  const proposal = proposalOf(candidatePayload);
+  const proposal = proposalOf(payloadOf(candidate.payload_json));
   if (!proposal) return null;
 
   const [source, target] = await Promise.all([
@@ -83,63 +167,36 @@ export async function approveRelationReviewCandidate(env: Env, form: FormData): 
     throw new Error("relation_review_candidate_is_stale");
   }
 
-  const storedApproval = candidatePayload.approval && typeof candidatePayload.approval === "object"
-    && !Array.isArray(candidatePayload.approval)
-    ? candidatePayload.approval as Record<string, unknown>
-    : null;
-  let created: NonNullable<Awaited<ReturnType<typeof createReviewedMemoryRelation>>>;
-  if (storedApproval && typeof storedApproval.relation_id === "string"
-    && typeof storedApproval.inserted === "boolean") {
-    const relation = await getMemoryRelationById(env.DB, { namespace, id: storedApproval.relation_id });
-    if (!relation || relation.source_memory_id !== proposal.sourceId || relation.target_memory_id !== proposal.targetId
-      || relation.relation_type !== proposal.relationType) {
-      throw new Error("relation_review_approval_resume_state_changed");
-    }
-    created = { relation, inserted: storedApproval.inserted };
-  } else {
-    const proposed = await createReviewedMemoryRelation(env.DB, {
-      namespace,
-      sourceMemoryId: proposal.sourceId,
-      targetMemoryId: proposal.targetId,
-      relationType: proposal.relationType,
-      strength: proposal.strength,
-      reason: proposal.reason
-    });
-    if (!proposed) return null;
-    created = proposed;
-    const approvedPayload = {
-      ...candidatePayload,
-      approval: {
-        relation_id: created.relation.id,
-        inserted: created.inserted
+  let relation = await findProposalRelation(env.DB, namespace, proposal);
+  let inserted = false;
+  if (!relation) {
+    const deterministicId = `rel_yreview_${candidate.id}`;
+    try {
+      const changed = await commitApproval(env, candidate, proposal, deterministicId, true);
+      if (!changed) {
+        const current = await getMemoryCandidate(env.DB, namespace, candidate.id);
+        if (current?.status === "approved" && current.result_memory_id) {
+          const approval = payloadOf(current.payload_json).approval as Record<string, unknown> | undefined;
+          return {
+            axis: "Y",
+            action: "approve",
+            relationId: current.result_memory_id,
+            changed: approval?.inserted === true
+          };
+        }
+        throw new Error("relation_review_candidate_changed");
       }
-    };
-    const payloadUpdated = await env.DB.prepare(
-      `UPDATE memory_candidates SET payload_json = ?, updated_at = ?
-       WHERE namespace = ? AND id = ? AND status = 'pending'`
-    ).bind(JSON.stringify(approvedPayload), nowIso(), namespace, candidate.id).run();
-    if ((payloadUpdated.meta.changes ?? 0) !== 1) {
-      if (created.inserted) await deleteMemoryRelation(env.DB, { namespace, id: created.relation.id });
-      throw new Error("relation_review_candidate_changed");
+      return { axis: "Y", action: "approve", relationId: deterministicId, changed: true };
+    } catch (error) {
+      relation = await findProposalRelation(env.DB, namespace, proposal);
+      if (!relation) throw error;
     }
   }
-  const resolved = await resolveMemoryCandidate(env.DB, namespace, candidate.id, "approved", created.relation.id);
-  if (!resolved) {
-    if (created.inserted) await deleteMemoryRelation(env.DB, { namespace, id: created.relation.id });
+
+  if (!await commitApproval(env, candidate, proposal, relation.id, inserted)) {
     throw new Error("relation_review_candidate_changed");
   }
-  await createMemoryEvent(env.DB, {
-    namespace,
-    eventType: "y_relation_approved",
-    memoryId: created.relation.id,
-    payload: {
-      candidate_id: candidate.id,
-      relation_id: created.relation.id,
-      inserted: created.inserted,
-      proposal
-    }
-  });
-  return { axis: "Y", action: "approve", relationId: created.relation.id, changed: created.inserted };
+  return { axis: "Y", action: "approve", relationId: relation.id, changed: false };
 }
 
 export async function rejectRelationReviewCandidate(env: Env, form: FormData): Promise<boolean> {
@@ -158,10 +215,9 @@ export async function rollbackRelationReviewCandidate(env: Env, form: FormData):
   const candidate = await getMemoryCandidate(env.DB, namespace, id);
   if (!candidate || candidate.status !== "approved" || candidate.action !== "y_relation_review"
     || !candidate.result_memory_id) return null;
-  const proposal = proposalOf(payloadOf(candidate.payload_json));
-  if (!proposal) return null;
-
   const payload = payloadOf(candidate.payload_json);
+  const proposal = proposalOf(payload);
+  if (!proposal) return null;
   const approval = payload.approval && typeof payload.approval === "object" && !Array.isArray(payload.approval)
     ? payload.approval as Record<string, unknown>
     : {};
@@ -169,29 +225,55 @@ export async function rollbackRelationReviewCandidate(env: Env, form: FormData):
     throw new Error("relation_review_rollback_metadata_missing");
   }
   const inserted = approval.inserted;
-  let changed = false;
-
   if (inserted) {
     const relation = await getMemoryRelationById(env.DB, { namespace, id: candidate.result_memory_id });
     if (!relation || relation.source_memory_id !== proposal.sourceId || relation.target_memory_id !== proposal.targetId
       || relation.relation_type !== proposal.relationType) {
       throw new Error("relation_review_rollback_state_changed");
     }
-    changed = await deleteMemoryRelation(env.DB, { namespace, id: relation.id });
-    if (!changed) throw new Error("relation_review_rollback_delete_failed");
   }
 
   const now = nowIso();
-  const updated = await env.DB.prepare(
-    `UPDATE memory_candidates SET status = 'rolled_back', resolved_at = ?, updated_at = ?
-     WHERE namespace = ? AND id = ? AND status = 'approved'`
-  ).bind(now, now, namespace, candidate.id).run();
-  if ((updated.meta.changes ?? 0) !== 1) throw new Error("relation_review_rollback_candidate_changed");
-  await createMemoryEvent(env.DB, {
-    namespace,
-    eventType: "y_relation_rollback",
-    memoryId: candidate.result_memory_id,
-    payload: { candidate_id: candidate.id, relation_id: candidate.result_memory_id, changed }
+  const eventId = newId("ev");
+  const rolledBackPayload = JSON.stringify({
+    ...payload,
+    rollback: { token: newId("rollback"), relation_id: candidate.result_memory_id }
   });
+  const statements: D1PreparedStatement[] = [];
+  if (inserted) {
+    statements.push(env.DB.prepare(
+      `DELETE FROM memory_relations
+       WHERE namespace = ? AND id = ? AND source_memory_id = ? AND target_memory_id = ? AND relation_type = ?`
+    ).bind(namespace, candidate.result_memory_id, proposal.sourceId, proposal.targetId, proposal.relationType));
+  }
+  const updateIndex = statements.length;
+  statements.push(env.DB.prepare(
+    `UPDATE memory_candidates SET payload_json = ?, status = 'rolled_back', resolved_at = ?, updated_at = ?
+     WHERE namespace = ? AND id = ? AND status = 'approved' AND result_memory_id = ?`
+  ).bind(rolledBackPayload, now, now, namespace, candidate.id, candidate.result_memory_id));
+  statements.push(env.DB.prepare(
+    `INSERT INTO memory_events (id, namespace, event_type, memory_id, payload_json, created_at)
+     SELECT ?, ?, 'y_relation_rollback', ?, ?, ?
+     WHERE EXISTS (
+       SELECT 1 FROM memory_candidates
+       WHERE namespace = ? AND id = ? AND status = 'rolled_back'
+         AND result_memory_id = ? AND payload_json = ?
+     )`
+  ).bind(
+    eventId,
+    namespace,
+    candidate.result_memory_id,
+    JSON.stringify({ candidate_id: candidate.id, relation_id: candidate.result_memory_id, changed: inserted }),
+    now,
+    namespace,
+    candidate.id,
+    candidate.result_memory_id,
+    rolledBackPayload
+  ));
+  const results = await env.DB.batch(statements);
+  if ((results[updateIndex]?.meta.changes ?? 0) !== 1) {
+    throw new Error("relation_review_rollback_candidate_changed");
+  }
+  const changed = inserted && (results[0]?.meta.changes ?? 0) === 1;
   return { axis: "Y", action: "rollback", relationId: candidate.result_memory_id, changed };
 }

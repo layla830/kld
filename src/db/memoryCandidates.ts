@@ -54,7 +54,8 @@ export async function upsertMemoryCandidate(db: D1Database, namespace: string, i
      ON CONFLICT(namespace, external_key) DO UPDATE SET
        payload_json=excluded.payload_json, source_chunk_ids_json=excluded.source_chunk_ids_json,
        source_chunks_json=excluded.source_chunks_json, subject=excluded.subject,
-       validation_error=excluded.validation_error, updated_at=excluded.updated_at`
+       validation_error=excluded.validation_error, updated_at=excluded.updated_at
+     WHERE memory_candidates.status IN ('pending','needs_subject_review','deferred_relation')`
   ).bind(
     newId("cand"), namespace, input.externalKey, input.dreamDate, input.action,
     input.subject ?? null, input.targetId ?? null, JSON.stringify(input.payload),

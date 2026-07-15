@@ -15,7 +15,9 @@ import {
 } from "../db/memoryFiveAxisOutbox";
 import { getMemoryById } from "../db/memories";
 import { projectMemoryIntoFiveAxes } from "../memory/fiveAxis/projection";
+import { rebuildTimelineSequenceForMemory } from "../memory/timelineRelations";
 import { loadFiveAxisConfig } from "../config/runtime";
+import { isFiveAxisMemoryTypeEligible } from "../memory/fiveAxis/eligibility";
 
 async function hasCompletedDiarySplit(env: Env, namespace: string, diaryId: string): Promise<boolean> {
   const row = await env.DB.prepare(
@@ -110,9 +112,12 @@ export async function handleQueueMessage(message: QueueMessage, env: Env): Promi
         return;
       }
       const memory = await getMemoryById(env.DB, { namespace: message.namespace, id: message.memoryId });
-      if (!memory || memory.status !== "active") {
+      if (!memory || memory.status !== "active" || !isFiveAxisMemoryTypeEligible(memory.type)) {
+        if (memory) await rebuildTimelineSequenceForMemory(env.DB, memory);
         await markFiveAxisOutboxCompleted(env.DB, message.outboxId, "skipped", {
-          reason: memory ? "memory_not_active" : "memory_not_found"
+          reason: !memory
+            ? "memory_not_found"
+            : memory.status !== "active" ? "memory_not_active" : "memory_type_not_projectable"
         });
         return;
       }
@@ -138,8 +143,12 @@ export async function handleQueueMessage(message: QueueMessage, env: Env): Promi
           memoryRevision: outboxRevision,
           projectionKey: message.idempotencyKey
         });
-        if (result?.failedAxes.length) {
-          const error = new Error(`five_axis_stages_failed:${result.failedAxes.join(",")}`);
+        if (result && (result.failedAxes.length || result.deferredAxes.length)) {
+          const detail = [
+            result.failedAxes.length ? `failed=${result.failedAxes.join(",")}` : "",
+            result.deferredAxes.length ? `deferred=${result.deferredAxes.join(",")}` : ""
+          ].filter(Boolean).join(";");
+          const error = new Error(`five_axis_stages_incomplete:${detail}`);
           await markFiveAxisOutboxFailed(env.DB, message.outboxId, error, result);
           throw error;
         }

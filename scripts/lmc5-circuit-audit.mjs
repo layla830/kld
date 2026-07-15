@@ -85,7 +85,8 @@ const fiveAxisRuns = fs.readFileSync("src/db/memoryFiveAxisRuns.ts", "utf8");
 const fiveAxisOutboxMigration = fs.readFileSync("migrations/20260713_memory_five_axis_outbox.sql", "utf8");
 const fiveAxisRevisionMigration = fs.readFileSync("migrations/20260715_five_axis_revision.sql", "utf8");
 const fiveAxisRunsMigration = fs.readFileSync("migrations/20260715_projection_axis_runs.sql", "utf8");
-const timelineSequenceMigration = fs.readFileSync("migrations/20260715_timeline_sequence_backfill.sql", "utf8");
+const fiveAxisDependencyMigration = fs.readFileSync("migrations/20260716_five_axis_dependency_triggers.sql", "utf8");
+const timelineSequenceMigration = fiveAxisDependencyMigration;
 
 const checks = [
   [
@@ -141,10 +142,14 @@ const checks = [
     "X: approved dates rebuild durable adjacent edges across the full thread/fact group",
     timelineRelations.includes("WHERE namespace = ? AND status = 'active' AND thread = ? AND fact_key = ?") &&
       timelineRelations.includes("replaceTimelineSequenceRelations") &&
-      timelineRelations.includes("previous.memory.id") &&
+    timelineRelations.includes("previous.memory.id") &&
+      timelineRelations.includes("memory_timeline_memberships") &&
       files.relations.includes("timeline_approved:") &&
       files.relations.includes("DELETE FROM memory_relations") &&
+      files.relations.includes("AND reason = ?") &&
+      !files.relations.includes("source_memory_id IN (\n               SELECT id FROM memories") &&
       timelineSequenceMigration.includes("LAG(id) OVER") &&
+      timelineSequenceMigration.includes("CREATE TABLE IF NOT EXISTS memory_timeline_memberships") &&
       timelineSequenceMigration.includes("json_array(thread, fact_key)"),
   ],
   [
@@ -195,8 +200,11 @@ const checks = [
   [
     "Y: risky relations enter expansion only after reviewed persistence",
     files.relations.includes("PERSISTED_RELATION_TYPES") &&
-      files.relations.includes("createReviewedMemoryRelation") &&
-      relationReviewActions.includes("createReviewedMemoryRelation"),
+      relationReviewActions.includes("await env.DB.batch(statements)") &&
+      relationReviewActions.includes("status = 'approved'") &&
+      relationReviewActions.includes("rel_yreview_") &&
+      fs.readFileSync("src/db/memoryCandidates.ts", "utf8")
+        .includes("WHERE memory_candidates.status IN ('pending','needs_subject_review','deferred_relation')"),
   ],
   [
     "Recall: lexical evidence is never vector-gated",
@@ -486,11 +494,27 @@ const checks = [
     "Ingest: each axis persists terminal state so retries rerun only failed axes",
     fiveAxisRunsMigration.includes("CREATE TABLE IF NOT EXISTS memory_five_axis_runs") &&
       fiveAxisRunsMigration.includes("PRIMARY KEY (namespace, memory_id, memory_revision, axis)") &&
+      fiveAxisDependencyMigration.includes("ADD COLUMN claim_token TEXT") &&
+      fiveAxisDependencyMigration.includes("ADD COLUMN lease_expires_at TEXT") &&
+      fiveAxisDependencyMigration.includes("CREATE TABLE IF NOT EXISTS memory_timeline_memberships") &&
+      fiveAxisDependencyMigration.includes("DELETE FROM memory_timeline_memberships") &&
+      fiveAxisDependencyMigration.includes("reason LIKE 'timeline_approved:%'") &&
       fiveAxisRuns.includes("attempts = memory_five_axis_runs.attempts + 1") &&
+      fiveAxisRuns.includes("AND status = 'running' AND claim_token = ?") &&
       fiveAxisProjection.includes("runAxisStage") &&
       fiveAxisProjection.includes("reused: true") &&
-      queueConsumer.includes("result?.failedAxes.length") &&
+      fiveAxisProjection.includes('status: "blocked"') &&
+      queueConsumer.includes("result.deferredAxes.length") &&
       fiveAxisOutbox.includes("result_json = COALESCE"),
+  ],
+  [
+    "Ingest: type transitions enqueue cleanup before excluded memories leave five-axis ownership",
+    fiveAxisDependencyMigration.includes("OLD.type NOT IN") &&
+      fiveAxisDependencyMigration.includes("OR NEW.type NOT IN") &&
+      queueConsumer.includes("isFiveAxisMemoryTypeEligible(memory.type)") &&
+      queueConsumer.includes('reason: !memory') &&
+      timelineRelations.includes("AND type NOT IN") &&
+      timelineRelations.includes("isFiveAxisMemoryTypeEligible(memory.type)"),
   ],
   [
     "E ingest: partial coordinate bundles are completed field-by-field without overwriting supplied values",
