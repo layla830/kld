@@ -59,7 +59,8 @@ export async function runScheduledCoordinateBackfill(
     namespace,
     apply: true,
     limit: COORDINATE_BACKFILL_BATCH_SIZE,
-    offset: 0
+    offset: 0,
+    selection: "missing_fields"
   }, labelBatch);
 }
 

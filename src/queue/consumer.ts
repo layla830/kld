@@ -7,9 +7,15 @@ import { splitDiaryMemories } from "../memory/diarySplit";
 import { createMemoryEvent } from "../db/memoryEvents";
 import { fetchMemoriesByIds } from "../db/memories";
 import { syncMemoryVector } from "../memory/state";
-import { getFiveAxisOutbox, markFiveAxisOutboxCompleted, markFiveAxisOutboxFailed } from "../db/memoryFiveAxisOutbox";
+import {
+  getFiveAxisOutbox,
+  hasNewerFiveAxisOutboxVersion,
+  markFiveAxisOutboxCompleted,
+  markFiveAxisOutboxFailed
+} from "../db/memoryFiveAxisOutbox";
 import { getMemoryById } from "../db/memories";
 import { projectMemoryIntoFiveAxes } from "../memory/fiveAxis/projection";
+import { loadFiveAxisConfig } from "../config/runtime";
 
 async function hasCompletedDiarySplit(env: Env, namespace: string, diaryId: string): Promise<boolean> {
   const row = await env.DB.prepare(
@@ -75,8 +81,23 @@ export async function handleQueueMessage(message: QueueMessage, env: Env): Promi
       return;
     }
     case "memory_five_axis_projection": {
+      if (!loadFiveAxisConfig(env).enabled) return;
       const outbox = await getFiveAxisOutbox(env.DB, message.outboxId);
       if (!outbox || outbox.status === "completed" || outbox.status === "skipped") return;
+      if (outbox.memory_updated_at !== message.memoryUpdatedAt) {
+        await markFiveAxisOutboxCompleted(env.DB, message.outboxId, "skipped", {
+          reason: "outbox_message_version_mismatch",
+          expected: outbox.memory_updated_at,
+          received: message.memoryUpdatedAt
+        });
+        return;
+      }
+      if (await hasNewerFiveAxisOutboxVersion(env.DB, outbox)) {
+        await markFiveAxisOutboxCompleted(env.DB, message.outboxId, "skipped", {
+          reason: "superseded_by_newer_memory_version"
+        });
+        return;
+      }
       const memory = await getMemoryById(env.DB, { namespace: message.namespace, id: message.memoryId });
       if (!memory || memory.status !== "active") {
         await markFiveAxisOutboxCompleted(env.DB, message.outboxId, "skipped", {

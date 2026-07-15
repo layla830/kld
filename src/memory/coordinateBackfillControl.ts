@@ -47,7 +47,18 @@ export async function getCoordinateBackfillStatus(env: Env, namespace: string): 
   const [control, totalRow, remainingRow, reviewRow] = await Promise.all([
     getCoordinateBackfillControl(env, namespace),
     env.DB.prepare("SELECT COUNT(*) AS count FROM memories WHERE namespace = ? AND status = 'active'").bind(namespace).first<{ count: number }>(),
-    env.DB.prepare("SELECT COUNT(*) AS count FROM memories WHERE namespace = ? AND status = 'active' AND fact_key IS NULL AND thread IS NULL AND risk_level IS NULL AND valence IS NULL").bind(namespace).first<{ count: number }>(),
+    env.DB.prepare(
+      `SELECT COUNT(*) AS count FROM memories
+       WHERE namespace = ? AND status = 'active' AND (
+         thread IS NULL OR trim(thread) = ''
+         OR risk_level IS NULL OR trim(risk_level) = ''
+         OR urgency_level IS NULL OR trim(urgency_level) = ''
+         OR tension_score IS NULL
+         OR response_posture IS NULL OR trim(response_posture) = ''
+         OR valence IS NULL
+         OR arousal IS NULL
+       )`
+    ).bind(namespace).first<{ count: number }>(),
     env.DB.prepare("SELECT COUNT(*) AS count FROM memory_candidates WHERE namespace = ? AND external_key LIKE 'coordinate-backfill:%' AND status IN ('pending','needs_subject_review')").bind(namespace).first<{ count: number }>()
   ]);
   const totalActive = totalRow?.count ?? 0;

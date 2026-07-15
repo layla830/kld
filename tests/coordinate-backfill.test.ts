@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   coordinatePatchForMissingFields,
-  needsCoordinateBackfill
+  needsCoordinateBackfill,
+  runScheduledCoordinateBackfill
 } from "../src/memory/coordinateBackfill";
-import type { MemoryRecord } from "../src/types";
+import type { Env, MemoryRecord } from "../src/types";
 
 function memory(overrides: Partial<MemoryRecord> = {}): MemoryRecord {
   return {
@@ -78,5 +79,31 @@ describe("field-level coordinate completion", () => {
       response_posture: "保持简洁、事实性的回应。",
       arousal: 0
     }), "missing_fields")).toBe(false);
+  });
+
+  it("includes partially labeled legacy memories in the scheduled sweep", async () => {
+    const partial = memory();
+    const db = {
+      prepare() {
+        return {
+          bind() {
+            return { all: async () => ({ results: [partial] }) };
+          }
+        };
+      }
+    } as unknown as D1Database;
+    let labeled: MemoryRecord[] = [];
+
+    const result = await runScheduledCoordinateBackfill(
+      { DB: db, MEMORY_MODEL: "coordinate-model" } as Env,
+      "default",
+      async (_env, _model, memories) => {
+        labeled = memories;
+        return [];
+      }
+    );
+
+    expect(labeled.map((item) => item.id)).toEqual([partial.id]);
+    expect(result).toMatchObject({ needBackfill: 1, processed: 1 });
   });
 });

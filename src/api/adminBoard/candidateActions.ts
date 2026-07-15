@@ -21,6 +21,23 @@ function coordinateNumber(value: unknown, min = 0): number | null | undefined {
 }
 function tags(value: unknown): string[] { return Array.isArray(value) ? value.map(String).map((item) => item.trim()).filter(Boolean) : []; }
 
+function hasOwn(payload: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(payload, key);
+}
+
+function nullableTextPatch(payload: Record<string, unknown>, key: string): string | null | undefined {
+  if (!hasOwn(payload, key)) return undefined;
+  return text(payload[key]) ?? null;
+}
+
+function nullableCoordinatePatch(
+  payload: Record<string, unknown>,
+  key: string,
+  min = 0
+): number | null | undefined {
+  return hasOwn(payload, key) ? coordinateNumber(payload[key], min) : undefined;
+}
+
 function quotedEvidence(candidate: Awaited<ReturnType<typeof getMemoryCandidate>>): string[] {
   if (!candidate) return [];
   try {
@@ -67,14 +84,21 @@ async function existingDiarySplitMemory(env: Env, itemKey: string): Promise<Memo
   ).bind("default", `%split_item:${itemKey}%`).first<MemoryRecord>()) ?? null;
 }
 
-function updatePatch(payload: Record<string, unknown>): UpdateMemoryInput {
+export function candidateUpdatePatch(payload: Record<string, unknown>): UpdateMemoryInput {
   return {
-    content: text(payload.content), type: text(payload.type), factKey: text(payload.fact_key) ?? null,
-    thread: text(payload.thread) ?? null, riskLevel: text(payload.risk_level) ?? null,
-    urgencyLevel: text(payload.urgency_level) ?? null, responsePosture: text(payload.response_posture) ?? null,
-    importance: number(payload.importance), confidence: number(payload.confidence), tensionScore: coordinateNumber(payload.tension_score),
-    valence: coordinateNumber(payload.valence, -1), arousal: coordinateNumber(payload.arousal),
-    tags: tags(payload.tags)
+    content: hasOwn(payload, "content") ? text(payload.content) : undefined,
+    type: hasOwn(payload, "type") ? text(payload.type) : undefined,
+    factKey: nullableTextPatch(payload, "fact_key"),
+    thread: nullableTextPatch(payload, "thread"),
+    riskLevel: nullableTextPatch(payload, "risk_level"),
+    urgencyLevel: nullableTextPatch(payload, "urgency_level"),
+    responsePosture: nullableTextPatch(payload, "response_posture"),
+    importance: hasOwn(payload, "importance") ? number(payload.importance) : undefined,
+    confidence: hasOwn(payload, "confidence") ? number(payload.confidence) : undefined,
+    tensionScore: nullableCoordinatePatch(payload, "tension_score"),
+    valence: nullableCoordinatePatch(payload, "valence", -1),
+    arousal: nullableCoordinatePatch(payload, "arousal"),
+    tags: hasOwn(payload, "tags") ? tags(payload.tags) : undefined
   };
 }
 
@@ -210,7 +234,7 @@ export async function approveCandidate(env: Env, form: FormData): Promise<Memory
     }
   } else if (candidate.action === "update" && candidate.target_id) {
     if (!(await getMemoryById(env.DB, { namespace: "default", id: candidate.target_id }))) return null;
-    target = await updateMemory(env.DB, { namespace: "default", id: candidate.target_id, patch: updatePatch(payload) });
+    target = await updateMemory(env.DB, { namespace: "default", id: candidate.target_id, patch: candidateUpdatePatch(payload) });
   } else if (candidate.action === "delete" && candidate.target_id) {
     target = await softDeleteMemory(env.DB, { namespace: "default", id: candidate.target_id });
   } else if (candidate.action === "fact_group") {

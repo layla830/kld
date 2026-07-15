@@ -43,6 +43,18 @@ export async function getFiveAxisOutbox(
     .bind(id).first<MemoryFiveAxisOutboxRecord>()) ?? null;
 }
 
+export async function hasNewerFiveAxisOutboxVersion(
+  db: D1Database,
+  record: Pick<MemoryFiveAxisOutboxRecord, "id" | "namespace" | "memory_id">
+): Promise<boolean> {
+  const newer = await db.prepare(
+    `SELECT id FROM memory_five_axis_outbox
+     WHERE namespace = ? AND memory_id = ? AND id > ?
+     LIMIT 1`
+  ).bind(record.namespace, record.memory_id, record.id).first<{ id: number }>();
+  return Boolean(newer?.id);
+}
+
 export async function markFiveAxisOutboxQueued(db: D1Database, id: number): Promise<void> {
   const now = nowIso();
   await db.prepare(
