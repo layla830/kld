@@ -80,6 +80,7 @@ const fiveAxisNightly = fs.readFileSync("src/memory/fiveAxis/nightly.ts", "utf8"
 const fiveAxisProjection = fs.readFileSync("src/memory/fiveAxis/projection.ts", "utf8");
 const fiveAxisOutbox = fs.readFileSync("src/db/memoryFiveAxisOutbox.ts", "utf8");
 const fiveAxisOutboxMigration = fs.readFileSync("migrations/20260713_memory_five_axis_outbox.sql", "utf8");
+const fiveAxisRevisionMigration = fs.readFileSync("migrations/20260715_five_axis_revision.sql", "utf8");
 
 const checks = [
   [
@@ -453,6 +454,13 @@ const checks = [
       fiveAxisOutbox.includes("attempts < 5") &&
       fiveAxisOutbox.includes("status = 'queued'") &&
       fiveAxisOutbox.includes("status = 'failed'"),
+  ],
+  [
+    "Ingest: material revisions prevent stale outbox projection",
+    fiveAxisRevisionMigration.includes("five_axis_revision") &&
+      fiveAxisRevisionMigration.includes("memory_revision") &&
+      fiveAxisRevisionMigration.includes("OLD.five_axis_revision + 1") &&
+      queueConsumer.includes("currentRevision !== outboxRevision"),
   ],
   [
     "Ingest: per-memory projection feeds X E Y Z M without bypassing review",

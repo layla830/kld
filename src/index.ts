@@ -205,8 +205,8 @@ export default {
           config.fiveAxis.coordinateBackfillEnabled
             ? getCoordinateBackfillControl(env, namespace).then(async (control) => {
                 if (!control.enabled) return { skipped: "paused" as const };
-                const result = await runScheduledCoordinateBackfill(env, namespace, labelCoordinateBatch);
-                await recordCoordinateBackfillRun(env, namespace, result);
+                const result = await runScheduledCoordinateBackfill(env, namespace, labelCoordinateBatch, control.cursor);
+                await recordCoordinateBackfillRun(env, namespace, result, result.cursor ?? null);
                 return result;
               })
             : Promise.resolve({ skipped: "disabled" as const }),

@@ -5,6 +5,7 @@ export interface MemoryFiveAxisOutboxRecord {
   namespace: string;
   memory_id: string;
   memory_updated_at: string;
+  memory_revision?: number;
   status: "pending" | "queued" | "failed" | "completed" | "skipped";
   attempts: number;
   queued_at: string | null;
@@ -41,6 +42,18 @@ export async function getFiveAxisOutbox(
 ): Promise<MemoryFiveAxisOutboxRecord | null> {
   return (await db.prepare("SELECT * FROM memory_five_axis_outbox WHERE id = ?")
     .bind(id).first<MemoryFiveAxisOutboxRecord>()) ?? null;
+}
+
+export async function hasNewerFiveAxisOutboxVersion(
+  db: D1Database,
+  record: Pick<MemoryFiveAxisOutboxRecord, "id" | "namespace" | "memory_id">
+): Promise<boolean> {
+  const newer = await db.prepare(
+    `SELECT id FROM memory_five_axis_outbox
+     WHERE namespace = ? AND memory_id = ? AND id > ?
+     LIMIT 1`
+  ).bind(record.namespace, record.memory_id, record.id).first<{ id: number }>();
+  return Boolean(newer?.id);
 }
 
 export async function markFiveAxisOutboxQueued(db: D1Database, id: number): Promise<void> {

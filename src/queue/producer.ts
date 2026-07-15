@@ -2,7 +2,7 @@ import { listUnprocessedChunkMessages } from "../db/messages";
 import type { Env, MemoryRecord, QueueMessage } from "../types";
 import { handleQueueMessage } from "./consumer";
 import { dateFromDiary } from "../memory/diarySplit";
-import { loadChunkingConfig, loadMemoryConfig, systemClock } from "../config/runtime";
+import { loadChunkingConfig, loadFiveAxisConfig, loadMemoryConfig, systemClock } from "../config/runtime";
 import { listDueFiveAxisOutbox, markFiveAxisOutboxQueued } from "../db/memoryFiveAxisOutbox";
 
 function allowQueueFallback(env: Env): boolean {
@@ -233,16 +233,19 @@ export async function enqueueMissedDiarySplits(env: Env, namespace: string, limi
 }
 
 export async function enqueuePendingFiveAxisProjections(env: Env, limit = 5): Promise<number> {
+  if (!loadFiveAxisConfig(env).enabled) return 0;
   const due = await listDueFiveAxisOutbox(env.DB, limit);
   let queued = 0;
   for (const item of due) {
+    const memoryRevision = item.memory_revision ?? 1;
     const message: QueueMessage = {
       type: "memory_five_axis_projection",
       namespace: item.namespace,
       memoryId: item.memory_id,
       memoryUpdatedAt: item.memory_updated_at,
+      memoryRevision,
       outboxId: item.id,
-      idempotencyKey: `five-axis:${item.id}:${item.memory_updated_at}`
+      idempotencyKey: `five-axis:${item.id}:r${memoryRevision}`
     };
     if (!(await sendQueueMessage(env, message))) continue;
     await markFiveAxisOutboxQueued(env.DB, item.id);

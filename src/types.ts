@@ -56,6 +56,7 @@ export interface MemoryFiveAxisProjectionQueueMessage {
   namespace: string;
   memoryId: string;
   memoryUpdatedAt: string;
+  memoryRevision?: number;
   outboxId: number;
   idempotencyKey: string;
 }
@@ -188,6 +189,7 @@ export interface MemoryRecord {
   vector_sync_status?: "synced" | "failed" | "pending" | "deleted" | null;
   last_recalled_at: string | null;
   recall_count: number;
+  five_axis_revision?: number;
   created_at: string;
   updated_at: string;
   expires_at: string | null;
