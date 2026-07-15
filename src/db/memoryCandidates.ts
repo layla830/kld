@@ -54,7 +54,8 @@ export async function upsertMemoryCandidate(db: D1Database, namespace: string, i
      ON CONFLICT(namespace, external_key) DO UPDATE SET
        payload_json=excluded.payload_json, source_chunk_ids_json=excluded.source_chunk_ids_json,
        source_chunks_json=excluded.source_chunks_json, subject=excluded.subject,
-       validation_error=excluded.validation_error, updated_at=excluded.updated_at`
+       validation_error=excluded.validation_error, updated_at=excluded.updated_at
+     WHERE memory_candidates.status IN ('pending','needs_subject_review','deferred_relation')`
   ).bind(
     newId("cand"), namespace, input.externalKey, input.dreamDate, input.action,
     input.subject ?? null, input.targetId ?? null, JSON.stringify(input.payload),
@@ -68,7 +69,9 @@ export async function listMemoryCandidates(db: D1Database, namespace: string, li
     `SELECT c.*, m.content AS target_content, m.type AS target_type, m.status AS target_status
      FROM memory_candidates c
      LEFT JOIN memories m ON m.namespace = c.namespace AND m.id = c.target_id
-     WHERE c.namespace = ? AND c.action != 'timeline_date' AND c.status IN ('pending','needs_subject_review')
+     WHERE c.namespace = ?
+       AND c.action NOT IN ('timeline_date','z_supersede','y_relation_review','m_archive','m_relation_cleanup')
+       AND c.status IN ('pending','needs_subject_review')
      ORDER BY c.dream_date DESC, c.created_at DESC LIMIT ?`
   ).bind(namespace, limit).all<MemoryCandidateRecord>();
   return result.results ?? [];
@@ -106,7 +109,7 @@ export async function listMetabolismCandidates(db: D1Database, namespace: string
   return enrichMetabolismRelationEndpoints(db, namespace, result.results ?? []);
 }
 
-const OPERATIONAL_REVIEW_ACTIONS = ["z_supersede", "m_archive", "m_relation_cleanup"] as const;
+const OPERATIONAL_REVIEW_ACTIONS = ["z_supersede", "y_relation_review", "m_archive", "m_relation_cleanup"] as const;
 
 export async function listOperationalReviewCandidates(db: D1Database, namespace: string, limit = 100): Promise<MemoryCandidateRecord[]> {
   const placeholders = OPERATIONAL_REVIEW_ACTIONS.map(() => "?").join(", ");
@@ -115,7 +118,7 @@ export async function listOperationalReviewCandidates(db: D1Database, namespace:
      FROM memory_candidates c
      LEFT JOIN memories m ON m.namespace = c.namespace AND m.id = c.target_id
      WHERE c.namespace = ? AND c.action IN (${placeholders}) AND c.status = 'pending'
-     ORDER BY CASE c.action WHEN 'z_supersede' THEN 0 ELSE 1 END, c.created_at DESC
+     ORDER BY CASE c.action WHEN 'z_supersede' THEN 0 WHEN 'y_relation_review' THEN 1 ELSE 2 END, c.created_at DESC
      LIMIT ?`
   ).bind(namespace, ...OPERATIONAL_REVIEW_ACTIONS, limit).all<MemoryCandidateRecord>();
   return enrichMetabolismRelationEndpoints(db, namespace, result.results ?? []);
@@ -137,6 +140,14 @@ function readRelationEndpointIds(candidate: MemoryCandidateRecord): { sourceId: 
   try {
     const payload = JSON.parse(candidate.payload_json) as unknown;
     if (!payload || typeof payload !== "object") return { sourceId: null, targetId: null };
+    if (candidate.action === "y_relation_review") {
+      const sourceId = (payload as { source_id?: unknown }).source_id;
+      const targetId = (payload as { target_id?: unknown }).target_id;
+      return {
+        sourceId: typeof sourceId === "string" ? sourceId : null,
+        targetId: typeof targetId === "string" ? targetId : null
+      };
+    }
     const before = (payload as { before?: unknown }).before;
     if (!before || typeof before !== "object") return { sourceId: null, targetId: null };
     const sourceId = (before as { source_memory_id?: unknown }).source_memory_id;
@@ -155,7 +166,7 @@ async function enrichMetabolismRelationEndpoints(db: D1Database, namespace: stri
   const ids = new Set<string>();
 
   for (const row of rows) {
-    if (row.action !== "m_relation_cleanup") continue;
+    if (row.action !== "m_relation_cleanup" && row.action !== "y_relation_review") continue;
     const endpoints = readRelationEndpointIds(row);
     endpointByCandidate.set(row.id, endpoints);
     if (endpoints.sourceId) ids.add(endpoints.sourceId);

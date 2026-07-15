@@ -13,7 +13,16 @@ interface RelationSnapshot {
   created_at: string;
 }
 
-const PROTECTED_MEMORY_TYPES = new Set(["identity", "relationship_moment", "diary", "layla_diary", "auto_diary"]);
+export const PROTECTED_MEMORY_TYPES = new Set([
+  "identity",
+  "relationship_moment",
+  "diary",
+  "layla_diary",
+  "auto_diary"
+]);
+export const COLD_MEMORY_DAYS = 90;
+export const COLD_MEMORY_MAX_IMPORTANCE = 0.35;
+export const COLD_MEMORY_MAX_CONFIDENCE = 0.6;
 
 function dateKey(): string {
   return new Date().toISOString().slice(0, 10);
@@ -22,32 +31,63 @@ function dateKey(): string {
 async function queueArchiveCandidates(
   env: { DB: D1Database },
   namespace: string,
-  memoryIds: string[] = []
+  memoryIds: string[] = [],
+  dryRun = false
 ): Promise<number> {
   const now = new Date().toISOString();
+  const coldBefore = new Date(Date.now() - COLD_MEMORY_DAYS * 86_400_000).toISOString();
   const ids = [...new Set(memoryIds.map((id) => id.trim()).filter(Boolean))].slice(0, 20);
   const idClause = ids.length > 0 ? ` AND id IN (${ids.map(() => "?").join(", ")})` : "";
-  const rows = await env.DB
-    .prepare(
-      `SELECT * FROM memories
-       WHERE namespace = ? AND status = 'active' AND pinned = 0
-         AND type = 'project_state' AND expires_at IS NOT NULL AND expires_at < ?
-         ${idClause}
-       ORDER BY expires_at ASC LIMIT 50`
-    )
-    .bind(namespace, now, ...ids)
-    .all<MemoryRecord>();
+  const rows = await env.DB.prepare(
+    `SELECT * FROM memories
+     WHERE namespace = ? AND status = 'active' AND pinned = 0
+       AND (
+         (type = 'project_state' AND expires_at IS NOT NULL AND expires_at < ?)
+         OR (
+           type NOT IN ('identity','relationship_moment','diary','layla_diary','auto_diary')
+           AND created_at < ?
+           AND COALESCE(last_recalled_at, created_at) < ?
+           AND recall_count = 0
+           AND importance <= ? AND confidence <= ?
+           AND NOT EXISTS (
+             SELECT 1 FROM memory_relations r
+             WHERE r.namespace = memories.namespace
+               AND (r.source_memory_id = memories.id OR r.target_memory_id = memories.id)
+           )
+         )
+       )
+       ${idClause}
+     ORDER BY COALESCE(last_recalled_at, created_at) ASC
+     LIMIT 50`
+  ).bind(
+    namespace,
+    now,
+    coldBefore,
+    coldBefore,
+    COLD_MEMORY_MAX_IMPORTANCE,
+    COLD_MEMORY_MAX_CONFIDENCE,
+    ...ids
+  ).all<MemoryRecord>();
+
   let queued = 0;
   for (const memory of rows.results ?? []) {
     if (PROTECTED_MEMORY_TYPES.has(memory.type)) continue;
-    await upsertMemoryCandidate(env.DB, namespace, {
-      externalKey: `m-review:archive:${memory.id}:${memory.updated_at}`,
+    const policy = memory.type === "project_state" && memory.expires_at && memory.expires_at < now
+      ? "expired_project_state"
+      : "cold_low_signal";
+    if (!dryRun) await upsertMemoryCandidate(env.DB, namespace, {
+      externalKey: `m-review:archive:${policy}:${memory.id}:${memory.updated_at}`,
       dreamDate: dateKey(),
       action: "m_archive",
       subject: "system",
       targetId: memory.id,
       payload: {
-        reason: "project_state 已超过 expires_at；建议退出默认召回，但保留完整记录和回滚能力",
+        _kind: "metabolism_archive",
+        policy,
+        reason: policy === "expired_project_state"
+          ? "project_state 已超过 expires_at，建议退出默认召回"
+          : `超过 ${COLD_MEMORY_DAYS} 天未被召回、低重要度且没有关系边，建议进入可回滚归档`,
+        cold_before: coldBefore,
         before: memory
       },
       sourceChunkIds: [],
@@ -79,8 +119,7 @@ async function relationCleanupRows(
          ${relationFilter}
          AND NOT EXISTS (
            SELECT 1 FROM memory_candidates c
-           WHERE c.namespace = r.namespace
-             AND c.external_key = 'm-review:relation:' || r.id
+           WHERE c.namespace = r.namespace AND c.external_key = 'm-review:relation:' || r.id
          )
        LIMIT 50`
     ).bind(namespace, ...ids, ...ids).all<RelationSnapshot>(),
@@ -95,8 +134,7 @@ async function relationCleanupRows(
          ${relationFilter}
          AND NOT EXISTS (
            SELECT 1 FROM memory_candidates c
-           WHERE c.namespace = r.namespace
-             AND c.external_key = 'm-review:relation:' || r.id
+           WHERE c.namespace = r.namespace AND c.external_key = 'm-review:relation:' || r.id
          )
        LIMIT 50`
     ).bind(namespace, ...ids, ...ids).all<RelationSnapshot>(),
@@ -110,8 +148,7 @@ async function relationCleanupRows(
          ${symmetricFilter}
          AND NOT EXISTS (
            SELECT 1 FROM memory_candidates c
-           WHERE c.namespace = b.namespace
-             AND c.external_key = 'm-review:relation:' || b.id
+           WHERE c.namespace = b.namespace AND c.external_key = 'm-review:relation:' || b.id
          )
        LIMIT 50`
     ).bind(namespace, ...symmetricTypes, ...ids, ...ids).all<RelationSnapshot>()
@@ -129,16 +166,18 @@ async function relationCleanupRows(
 async function queueRelationCandidates(
   env: { DB: D1Database },
   namespace: string,
-  memoryIds: string[] = []
+  memoryIds: string[] = [],
+  dryRun = false
 ): Promise<number> {
   const rows = await relationCleanupRows(env, namespace, memoryIds);
+  if (dryRun) return rows.length;
   for (const row of rows) {
     await upsertMemoryCandidate(env.DB, namespace, {
       externalKey: `m-review:relation:${row.relation.id}`,
       dreamDate: dateKey(),
       action: "m_relation_cleanup",
       subject: "system",
-      payload: { reason: row.issue, before: row.relation },
+      payload: { _kind: "metabolism_relation_cleanup", reason: row.issue, before: row.relation },
       sourceChunkIds: [],
       status: "pending"
     });
@@ -149,13 +188,11 @@ async function queueRelationCandidates(
 export async function scanMetabolismReviewCandidates(
   env: { DB: D1Database },
   namespace = "default",
-  options: { memoryIds?: string[] } = {}
+  options: { memoryIds?: string[]; dryRun?: boolean } = {}
 ): Promise<{ archive: number; relations: number }> {
   const [archive, relations] = await Promise.all([
-    queueArchiveCandidates(env, namespace, options.memoryIds),
-    queueRelationCandidates(env, namespace, options.memoryIds)
+    queueArchiveCandidates(env, namespace, options.memoryIds, options.dryRun === true),
+    queueRelationCandidates(env, namespace, options.memoryIds, options.dryRun === true)
   ]);
   return { archive, relations };
 }
-
-export { PROTECTED_MEMORY_TYPES };

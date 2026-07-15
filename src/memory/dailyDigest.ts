@@ -25,6 +25,7 @@ import {
 import { createMemoryRelation } from "../db/memoryRelations";
 import { normalizeRelationType, REVIEW_RELATION_TYPES, SAFE_RELATION_TYPES } from "../db/memoryRelations";
 import { loadDreamConfig, systemClock, type AppClock, type DreamConfig } from "../config/runtime";
+import { queueRelationReviewCandidate } from "./relationReview";
 
 interface DigestMemoryUpdate {
   target_id: string;
@@ -454,7 +455,7 @@ function buildDigestPrompt(input: {
     "",
     "relation_hints 是新记忆之间或新记忆与旧记忆之间的关系建议：",
     "- source_id 和 target_id 可以是新 memories_to_add 里暂时用 placeholder（如 add_0, add_1），也可以是旧记忆的 mem_x id。",
-    "- relation_type 只能用：same_topic, same_event, temporal_sequence, emotional_link, derived_from（safe 类，可直接建边）；或 contradicts, cause_effect, supports（review 类，需人工审）。",
+    "- relation_type 只能用：same_topic, same_event, emotional_link, derived_from（safe 类，可直接建边）；或 contradicts, cause_effect, supports（review 类，需人工审）。时间先后关系由 X 时间轴维护，不要输出 temporal_sequence。",
     "- 不确定关系就给空数组，不要硬编关系。",
     "",
     "输出 JSON 结构：",
@@ -938,7 +939,7 @@ export async function runDailyMemoryDigest(
     if (!sourceId || !targetId || sourceId === targetId) continue;
     const relationType = normalizeRelationType(hint.relation_type);
     if (relationType === "none") continue;
-    if (SAFE_RELATION_TYPES.has(relationType)) {
+    if (SAFE_RELATION_TYPES.has(relationType) && relationType !== "temporal_sequence") {
       if (await createMemoryRelation(env.DB, {
         namespace,
         sourceMemoryId: sourceId,
@@ -950,16 +951,18 @@ export async function runDailyMemoryDigest(
         relationsInserted += 1;
       }
     } else if (REVIEW_RELATION_TYPES.has(relationType)) {
-      await createMemoryEvent(env.DB, {
-        namespace,
-        eventType: "y_relation_review",
-        payload: {
-          relation_type: relationType,
-          source_id: sourceId,
-          target_id: targetId,
-          strength: hint.strength ?? 0.6,
-          reason: hint.reason ?? null
-        }
+      const [source, target] = await Promise.all([
+        getMemoryById(env.DB, { namespace, id: sourceId }),
+        getMemoryById(env.DB, { namespace, id: targetId })
+      ]);
+      if (!source || source.status !== "active" || !target || target.status !== "active") continue;
+      await queueRelationReviewCandidate(env, namespace, {
+        relationType,
+        source,
+        target,
+        strength: hint.strength ?? 0.6,
+        reason: hint.reason ?? null,
+        projectionKey: `dream:${dateLabel}`
       });
       relationsReview += 1;
     }

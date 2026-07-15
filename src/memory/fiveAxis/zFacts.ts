@@ -1,4 +1,3 @@
-import { createMemoryEvent } from "../../db/memoryEvents";
 import { getMemoryById, listFactKeyConflicts } from "../../db/memories";
 import type { Env, MemoryRecord } from "../../types";
 
@@ -10,7 +9,6 @@ export interface FactKeyConflictReview {
   weaker: MemoryRecord[];
   reason: "pinned_memory_present" | "single_active" | "pending_supersede_review";
 }
-
 export async function listFactKeyConflictsForReview(
   env: Env,
   namespace: string,
@@ -62,46 +60,4 @@ export async function listFactKeyConflictsForReview(
   return reviews;
 }
 
-export async function runZAudit(
-  env: Env,
-  namespace: string,
-  options: { dryRun?: boolean } = {}
-): Promise<{ conflicts: number; queued: number; events: number }> {
-  const dryRun = options.dryRun ?? false;
-  const reviews = await listFactKeyConflictsForReview(env, namespace, 200);
-  let queued = 0;
-  let events = 0;
-
-  for (const review of reviews) {
-    if (review.reason === "pending_supersede_review" && review.best) {
-      if (!dryRun) await createMemoryEvent(env.DB, {
-        namespace,
-        eventType: "z_audit",
-        payload: {
-          fact_key: review.fact_key,
-          memory_ids: review.memory_ids,
-          count: review.count,
-          action: "pending_supersede_review",
-          best_id: review.best.id,
-          weaker_ids: review.weaker.map((memory) => memory.id)
-        }
-      });
-      queued += 1;
-    } else {
-      if (!dryRun) await createMemoryEvent(env.DB, {
-        namespace,
-        eventType: "z_audit",
-        payload: {
-          fact_key: review.fact_key,
-          memory_ids: review.memory_ids,
-          count: review.count,
-          action: "no_change",
-          reason: review.reason
-        }
-      });
-    }
-    if (!dryRun) events += 1;
-  }
-
-  return { conflicts: reviews.length, queued, events };
-}
+export type FactConflictReview = Awaited<ReturnType<typeof listFactKeyConflictsForReview>>[number];

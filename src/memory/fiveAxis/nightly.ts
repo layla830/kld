@@ -1,7 +1,6 @@
 import type { Env } from "../../types";
-import { runMetabolismPatrol } from "./mMetabolism";
+import { scanOperationalReviewCandidates } from "../operationalReview";
 import { runRelationBuild } from "./yRelations";
-import { runZAudit } from "./zFacts";
 
 export interface FiveAxisNightlyOptions {
   dryRun?: boolean;
@@ -10,14 +9,12 @@ export interface FiveAxisNightlyOptions {
 
 export interface FiveAxisNightlyDependencies {
   runRelations: typeof runRelationBuild;
-  runFactAudit: typeof runZAudit;
-  runMetabolism: typeof runMetabolismPatrol;
+  scanOperational: typeof scanOperationalReviewCandidates;
 }
 
 const defaultDependencies: FiveAxisNightlyDependencies = {
   runRelations: runRelationBuild,
-  runFactAudit: runZAudit,
-  runMetabolism: runMetabolismPatrol
+  scanOperational: scanOperationalReviewCandidates
 };
 
 export async function runFiveAxisNightlyMaintenance(
@@ -26,15 +23,15 @@ export async function runFiveAxisNightlyMaintenance(
   options: FiveAxisNightlyOptions = {},
   dependencies: FiveAxisNightlyDependencies = defaultDependencies
 ): Promise<{
-  zAudit: Awaited<ReturnType<typeof runZAudit>>;
-  patrol: Awaited<ReturnType<typeof runMetabolismPatrol>>;
   relations: Awaited<ReturnType<typeof runRelationBuild>>;
+  operationalReview: Awaited<ReturnType<typeof scanOperationalReviewCandidates>>;
 }> {
   const relations = await dependencies.runRelations(env, namespace, {
     dryRun: options.dryRun,
     sinceIso: options.sinceIso
   });
-  const zAudit = await dependencies.runFactAudit(env, namespace, { dryRun: options.dryRun });
-  const patrol = await dependencies.runMetabolism(env, namespace, { dryRun: options.dryRun });
-  return { zAudit, patrol, relations };
+  const operationalReview = await dependencies.scanOperational(env, namespace, {
+    dryRun: options.dryRun
+  });
+  return { relations, operationalReview };
 }

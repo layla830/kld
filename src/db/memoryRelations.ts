@@ -35,6 +35,11 @@ export const SAFE_RELATION_TYPES = new Set([
 
 export const REVIEW_RELATION_TYPES = new Set(["contradicts", "cause_effect", "supports"]);
 
+export const PERSISTED_RELATION_TYPES = new Set([
+  ...SAFE_RELATION_TYPES,
+  ...REVIEW_RELATION_TYPES
+]);
+
 export const SYMMETRIC_RELATION_TYPES = new Set([
   "same_issue",
   "same_project",
@@ -63,7 +68,10 @@ const RELATION_TYPE_WEIGHTS = new Map([
   ["instance_of", 0.72],
   ["derived_from", 0.7],
   ["temporal_sequence", 0.55],
-  ["emotional_link", 0.5]
+  ["emotional_link", 0.5],
+  ["supports", 0.8],
+  ["cause_effect", 0.78],
+  ["contradicts", 0.65]
 ]);
 
 function chunk<T>(items: T[], size: number): T[][] {
@@ -121,6 +129,54 @@ export async function createMemoryRelation(
   return Boolean(result.meta.changes);
 }
 
+export async function getMemoryRelationById(
+  db: D1Database,
+  input: { namespace: string; id: string }
+): Promise<MemoryRelationRecord | null> {
+  return (await db.prepare("SELECT * FROM memory_relations WHERE namespace = ? AND id = ?")
+    .bind(input.namespace, input.id).first<MemoryRelationRecord>()) ?? null;
+}
+
+export async function replaceTimelineSequenceRelations(
+  db: D1Database,
+  input: {
+    namespace: string;
+    groupKey: string;
+    thread: string;
+    factKey: string;
+    edges: Array<{ sourceMemoryId: string; targetMemoryId: string }>;
+  }
+): Promise<{ expected: number; inserted: number }> {
+  const reason = `timeline_approved:${input.groupKey}`;
+  const statements = [
+    db.prepare(
+      `DELETE FROM memory_relations
+       WHERE namespace = ? AND relation_type = 'temporal_sequence'
+         AND reason = ?`
+    ).bind(
+      input.namespace,
+      reason
+    ),
+    ...input.edges.map((edge) => db.prepare(
+      `INSERT OR IGNORE INTO memory_relations (
+         id, namespace, source_memory_id, target_memory_id, relation_type, strength, reason, created_at
+       ) VALUES (?, ?, ?, ?, 'temporal_sequence', 1, ?, ?)`
+    ).bind(
+      newId("rel"),
+      input.namespace,
+      edge.sourceMemoryId,
+      edge.targetMemoryId,
+      reason,
+      nowIso()
+    ))
+  ];
+  const results = await db.batch(statements);
+  return {
+    expected: input.edges.length,
+    inserted: results.slice(1).reduce((sum, result) => sum + (result.meta.changes ?? 0), 0)
+  };
+}
+
 async function listRelationsForFrontier(
   db: D1Database,
   input: { namespace: string; frontier: string[] }
@@ -160,7 +216,7 @@ export async function listRelationExpandedMemories(
     const nextFrontier = new Set<string>();
 
     for (const relation of relations) {
-      if (!SAFE_RELATION_TYPES.has(relation.relation_type)) continue;
+      if (!PERSISTED_RELATION_TYPES.has(relation.relation_type)) continue;
       if (depth === 1 && relation.strength < 0.4) continue;
       if (depth === 2 && relation.strength < 0.7) continue;
 

@@ -1,6 +1,9 @@
 import { getMemoryCandidate, resolveMemoryCandidate } from "../../db/memoryCandidates";
+import { createMemoryEvent } from "../../db/memoryEvents";
 import { getMemoryById, updateMemory } from "../../db/memories";
+import { loadDreamConfig } from "../../config/runtime";
 import { extractExplicitDates } from "../../memory/timelineBackfill";
+import { rebuildTimelineSequenceForMemory } from "../../memory/timelineRelations";
 import type { Env, MemoryRecord } from "../../types";
 import { parseTags, readFormText } from "./utils";
 
@@ -16,10 +19,11 @@ function payloadOf(value: string): Record<string, unknown> {
 export async function approveTimelineCandidate(env: Env, form: FormData): Promise<MemoryRecord | null> {
   const id = readFormText(form, "id");
   if (!id) return null;
-  const candidate = await getMemoryCandidate(env.DB, "default", id);
+  const namespace = loadDreamConfig(env).namespace;
+  const candidate = await getMemoryCandidate(env.DB, namespace, id);
   if (!candidate || candidate.status !== "pending" || candidate.action !== "timeline_date" || !candidate.target_id) return null;
 
-  const target = await getMemoryById(env.DB, { namespace: "default", id: candidate.target_id });
+  const target = await getMemoryById(env.DB, { namespace, id: candidate.target_id });
   if (!target || target.status !== "active" || target.type === "dream_review") return null;
   const payload = payloadOf(candidate.payload_json);
   const date = typeof payload.date === "string" ? payload.date : "";
@@ -32,19 +36,27 @@ export async function approveTimelineCandidate(env: Env, form: FormData): Promis
   const conflictingDate = tags.find((tag) => tag.startsWith("date:") && tag !== `date:${date}`);
   if (conflictingDate) throw new Error("timeline_candidate_conflicts_with_existing_date");
   const updated = await updateMemory(env.DB, {
-    namespace: "default",
+    namespace,
     id: target.id,
     patch: { tags: [...new Set([...tags, `date:${date}`, "timeline"])] }
   });
   if (!updated) return null;
-  await resolveMemoryCandidate(env.DB, "default", candidate.id, "approved", updated.id);
+  const sequence = await rebuildTimelineSequenceForMemory(env.DB, updated);
+  await createMemoryEvent(env.DB, {
+    namespace,
+    eventType: "x_timeline_sequence_rebuilt",
+    memoryId: updated.id,
+    payload: { candidate_id: candidate.id, date, sequence }
+  });
+  await resolveMemoryCandidate(env.DB, namespace, candidate.id, "approved", updated.id);
   return updated;
 }
 
 export async function rejectTimelineCandidate(env: Env, form: FormData): Promise<boolean> {
   const id = readFormText(form, "id");
   if (!id) return false;
-  const candidate = await getMemoryCandidate(env.DB, "default", id);
+  const namespace = loadDreamConfig(env).namespace;
+  const candidate = await getMemoryCandidate(env.DB, namespace, id);
   if (!candidate || candidate.status !== "pending" || candidate.action !== "timeline_date") return false;
-  return resolveMemoryCandidate(env.DB, "default", id, "rejected");
+  return resolveMemoryCandidate(env.DB, namespace, id, "rejected");
 }

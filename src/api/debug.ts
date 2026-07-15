@@ -2,7 +2,7 @@ import { authenticate } from "../auth/apiKey";
 import { requireScope } from "../auth/scopes";
 import { runDailyMemoryDigest } from "../memory/dailyDigest";
 import { runFiveAxisNightlyMaintenance } from "../memory/fiveAxis/nightly";
-import { listFactKeyConflictsForReview, runZAudit } from "../memory/fiveAxis/zFacts";
+import { listFactKeyConflictsForReview } from "../memory/fiveAxis/zFacts";
 import { listMemoryCandidatesByAction } from "../db/memoryCandidates";
 import { json, openAiError } from "../utils/json";
 import { readBody } from "./common";
@@ -184,7 +184,7 @@ export async function handleZAuditScan(request: Request, env: Env): Promise<Resp
       }));
       return json({ ok: true, mode: "dry_run", conflicts: detail.length, detail });
     }
-    const result = await runZAudit(env, namespace);
+    const result = await scanFactTransitionReviewCandidates(env, namespace);
     return json({ ok: true, mode: "queued", result });
   } catch (error) {
     console.error("z_audit_scan failed", error);
