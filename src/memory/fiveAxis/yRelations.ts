@@ -1,10 +1,15 @@
-import { createMemoryEvent } from "../../db/memoryEvents";
-import { createMemoryRelation, normalizeRelationType, REVIEW_RELATION_TYPES, SAFE_RELATION_TYPES } from "../../db/memoryRelations";
+import {
+  createMemoryRelation,
+  normalizeRelationType,
+  REVIEW_RELATION_TYPES,
+  SAFE_RELATION_TYPES
+} from "../../db/memoryRelations";
 import { fetchMemoriesByIds, listMemoriesSince } from "../../db/memories";
 import { callOpenAICompat } from "../../proxy/openaiAdapter";
 import type { Env, MemoryRecord, OpenAIChatRequest, OpenAIChatResponse } from "../../types";
 import { extractJsonObject } from "../../utils/jsonHelpers";
 import { searchVectorMemories } from "../vectorStore";
+import { queueRelationReviewCandidate } from "../relationReview";
 
 function dayAgoIso(): string {
   return new Date(Date.now() - 86_400_000).toISOString();
@@ -95,12 +100,12 @@ function buildRelationPrompt(candidates: RelationCandidate[]): string {
     "只输出 JSON，不要 markdown，不要解释。",
     "",
     "可选关系类型：",
-    "safe（可直接建边）：same_topic, same_event, same_project, same_issue, same_tool, same_person, in_thread, in_episode, emotional_link, instance_of, derived_from, temporal_sequence, origin_split, same_fact_key",
+    "safe（可直接建边）：same_topic, same_event, same_project, same_issue, same_tool, same_person, in_thread, in_episode, emotional_link, instance_of, derived_from, origin_split, same_fact_key",
     "review（需人工审）：contradicts, cause_effect, supports",
     "none：关联太弱",
     "",
     "判断规则：",
-    "- temporal_sequence：A 明显是 B 的前因或后续，同事件链",
+    "- 时间先后关系由 X 时间轴根据批准日期维护，这里不要输出 temporal_sequence",
     "- same_event：同一具体事件的两条记录",
     "- same_topic：同主题但不同事件",
     "- same_person：都涉及同一个人",
@@ -202,7 +207,7 @@ export async function runRelationBuild(
     const relationType = normalizeRelationType(hint.relation_type);
     if (relationType === "none") continue;
 
-    if (SAFE_RELATION_TYPES.has(relationType)) {
+    if (SAFE_RELATION_TYPES.has(relationType) && relationType !== "temporal_sequence") {
       if (dryRun) {
         proposed += 1;
       } else if (await createMemoryRelation(env.DB, {
@@ -217,60 +222,18 @@ export async function runRelationBuild(
       }
     } else if (REVIEW_RELATION_TYPES.has(relationType)) {
       if (!dryRun) {
-        const projectionKey = options.projectionKey
-          ? `${options.projectionKey}:relation:${relationType}:${[candidate.source.id, candidate.target.id].sort().join(":")}`
-          : null;
-        const existing = projectionKey
-          ? await env.DB.prepare(
-              "SELECT id FROM memory_events WHERE namespace = ? AND event_type = 'y_relation_review' AND payload_json LIKE ? LIMIT 1"
-            ).bind(namespace, `%\"projection_key\":\"${projectionKey}\"%`).first<{ id: string }>()
-          : null;
-        if (!existing?.id) await createMemoryEvent(env.DB, {
-          namespace,
-          eventType: "y_relation_review",
-          memoryId: candidate.source.id,
-          payload: {
-            projection_key: projectionKey,
-            relation_type: relationType,
-            source_id: candidate.source.id,
-            target_id: candidate.target.id,
-            strength: hint.strength,
-            reason: hint.reason ?? null
-          }
+        await queueRelationReviewCandidate(env, namespace, {
+          relationType,
+          source: candidate.source,
+          target: candidate.target,
+          strength: hint.strength,
+          reason: hint.reason,
+          vectorScore: candidate.vectorScore,
+          projectionKey: options.projectionKey
         });
       }
       review += 1;
     }
-  }
-
-  const factGroups = new Map<string, string[]>();
-  for (const memory of memories) {
-    if (!memory.fact_key) continue;
-    factGroups.set(memory.fact_key, [...(factGroups.get(memory.fact_key) ?? []), memory.id]);
-  }
-  for (const [factKey, ids] of factGroups.entries()) {
-    if (ids.length <= 1) continue;
-    if (!dryRun) {
-      const projectionKey = options.projectionKey ? `${options.projectionKey}:fact:${factKey}` : null;
-      const existing = projectionKey
-        ? await env.DB.prepare(
-            "SELECT id FROM memory_events WHERE namespace = ? AND event_type = 'y_relation_review' AND payload_json LIKE ? LIMIT 1"
-          ).bind(namespace, `%\"projection_key\":\"${projectionKey}\"%`).first<{ id: string }>()
-        : null;
-      if (!existing?.id) await createMemoryEvent(env.DB, {
-        namespace,
-        eventType: "y_relation_review",
-        memoryId: ids[0] ?? null,
-        payload: {
-          projection_key: projectionKey,
-          relation_type: "contradicts",
-          fact_key: factKey,
-          memory_ids: ids,
-          reason: "multiple new memories share fact_key; needs human or Z-axis review"
-        }
-      });
-    }
-    review += 1;
   }
 
   return { scanned: memories.length, inserted, review, proposed, candidates: candidates.length, error };

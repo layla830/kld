@@ -39,14 +39,14 @@ function externalKey(factKey: string, best: MemoryRecord, weaker: MemoryRecord):
 export async function scanFactTransitionReviewCandidates(
   env: Env,
   namespace = "default",
-  options: { factKeys?: string[] } = {}
+  options: { factKeys?: string[]; dryRun?: boolean } = {}
 ): Promise<{ conflicts: number; candidates: number }> {
   const reviews = await listFactKeyConflictsForReview(env, namespace, 200, options.factKeys);
   let candidates = 0;
   for (const review of reviews) {
     if (review.reason !== "pending_supersede_review" || !review.best) continue;
     for (const weaker of review.weaker) {
-      await upsertMemoryCandidate(env.DB, namespace, {
+      if (!options.dryRun) await upsertMemoryCandidate(env.DB, namespace, {
         externalKey: externalKey(review.fact_key, review.best, weaker),
         dreamDate: new Date().toISOString().slice(0, 10),
         action: "z_supersede",

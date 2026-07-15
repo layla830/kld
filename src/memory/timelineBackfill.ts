@@ -14,14 +14,6 @@ export interface TimelineDateProposal {
   tags: string[];
 }
 
-export interface TimelineEdgeProposal {
-  source_id: string;
-  target_id: string;
-  thread: string;
-  source_date: string;
-  target_date: string;
-}
-
 export interface TimelineBackfillStatus {
   cursor: string | null;
   scanned: number;
@@ -111,7 +103,6 @@ export async function runTimelineBackfill(env: Env, namespace: string, options: 
   nextCursor: string | null;
   hasMore: boolean;
   proposals: TimelineDateProposal[];
-  edges: TimelineEdgeProposal[];
 }> {
   const limit = Math.min(Math.max(Math.floor(options.limit ?? TIMELINE_BATCH_SIZE), 1), TIMELINE_BATCH_SIZE);
   const cursor = options.cursor?.trim() || "";
@@ -148,40 +139,13 @@ export async function runTimelineBackfill(env: Env, namespace: string, options: 
     });
   }
 
-  const byFact = new Map<string, TimelineDateProposal[]>();
-  for (const proposal of proposals) {
-    if (!proposal.thread || !proposal.fact_key) continue;
-    const key = `${proposal.thread}\u0000${proposal.fact_key}`;
-    const list = byFact.get(key) ?? [];
-    list.push(proposal);
-    byFact.set(key, list);
-  }
-
-  const edges: TimelineEdgeProposal[] = [];
-  for (const list of byFact.values()) {
-    list.sort((a, b) => a.date.localeCompare(b.date) || a.id.localeCompare(b.id));
-    for (let index = 1; index < list.length; index += 1) {
-      const previous = list[index - 1];
-      const current = list[index];
-      if (previous.date === current.date) continue;
-      edges.push({
-        source_id: previous.id,
-        target_id: current.id,
-        thread: current.thread!,
-        source_date: previous.date,
-        target_date: current.date
-      });
-    }
-  }
-
   return {
     scanned: pageRows.length,
     dated: proposals.length,
     ambiguous,
     nextCursor: hasMore ? pageRows.at(-1)?.id ?? null : null,
     hasMore,
-    proposals,
-    edges
+    proposals
   };
 }
 

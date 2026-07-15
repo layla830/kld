@@ -21,6 +21,27 @@ function candidate(status: "pending" | "approved"): MemoryCandidateRecord {
   };
 }
 
+function relationCandidate(status: "pending" | "approved"): MemoryCandidateRecord {
+  return {
+    ...candidate(status),
+    id: "cand_y",
+    external_key: "y-review:supports:mem_a:mem_b",
+    action: "y_relation_review",
+    target_id: "mem_b",
+    payload_json: JSON.stringify({
+      _kind: "y_relation_review",
+      relation_type: "supports",
+      source_id: "mem_a",
+      target_id: "mem_b",
+      source_updated_at: "2026-07-12T00:00:00.000Z",
+      target_updated_at: "2026-07-12T00:00:00.000Z",
+      strength: 0.8,
+      reason: "A 为 B 提供证据"
+    }),
+    result_memory_id: status === "approved" ? "rel_y" : null
+  };
+}
+
 describe("unified operational review card", () => {
   it("uses the existing M-review endpoints without exposing batch supersede", () => {
     const html = renderOperationalReviewCandidate(candidate("pending"));
@@ -34,5 +55,16 @@ describe("unified operational review card", () => {
     const html = renderOperationalReviewCandidate(candidate("approved"));
     expect(html).toContain('/admin/memories/m-review/rollback');
     expect(html).toContain("回滚这次取代");
+  });
+
+  it("renders risky Y relations as explicit approve/reject/rollback candidates", () => {
+    const pending = renderOperationalReviewCandidate(relationCandidate("pending"));
+    const approved = renderOperationalReviewCandidate(relationCandidate("approved"));
+
+    expect(pending).toContain("Y 关系判断 · 人工审核");
+    expect(pending).toContain("支持关系");
+    expect(pending).toContain('/admin/memories/m-review/approve');
+    expect(pending).toContain('/admin/memories/m-review/reject');
+    expect(approved).toContain('/admin/memories/m-review/rollback');
   });
 });

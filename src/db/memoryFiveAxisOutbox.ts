@@ -79,12 +79,17 @@ export async function markFiveAxisOutboxCompleted(
   ).bind(status, now, now, JSON.stringify(result), id).run();
 }
 
-export async function markFiveAxisOutboxFailed(db: D1Database, id: number, error: unknown): Promise<void> {
+export async function markFiveAxisOutboxFailed(
+  db: D1Database,
+  id: number,
+  error: unknown,
+  result?: unknown
+): Promise<void> {
   const now = nowIso();
   const message = error instanceof Error ? error.message : String(error);
   await db.prepare(
     `UPDATE memory_five_axis_outbox
-     SET status = 'failed', updated_at = ?, last_error = ?
+     SET status = 'failed', updated_at = ?, last_error = ?, result_json = COALESCE(?, result_json)
      WHERE id = ? AND status != 'completed' AND status != 'skipped'`
-  ).bind(now, message.slice(0, 1000), id).run();
+  ).bind(now, message.slice(0, 1000), result === undefined ? null : JSON.stringify(result), id).run();
 }

@@ -28,11 +28,14 @@ const factTransitionReview = fs.readFileSync("src/memory/factTransitionReview.ts
 const operationalReview = fs.readFileSync("src/memory/operationalReview.ts", "utf8");
 const factTransitionActions = fs.readFileSync("src/api/adminBoard/factTransitionActions.ts", "utf8");
 const operationalReviewActions = fs.readFileSync("src/api/adminBoard/operationalReviewActions.ts", "utf8");
+const relationReviewActions = fs.readFileSync("src/api/adminBoard/relationReviewActions.ts", "utf8");
+const relationReview = fs.readFileSync("src/memory/relationReview.ts", "utf8");
 
 const timelineBackfill = fs.readFileSync(
   "src/memory/timelineBackfill.ts",
   "utf8",
 );
+const timelineRelations = fs.readFileSync("src/memory/timelineRelations.ts", "utf8");
 const candidateResultMigration = fs.readFileSync(
   "migrations/20260704_candidate_result_link.sql",
   "utf8",
@@ -75,12 +78,14 @@ const packageJson = fs.readFileSync("package.json", "utf8");
 const wranglerConfig = fs.readFileSync("wrangler.toml", "utf8");
 const fiveAxisRelations = fs.readFileSync("src/memory/fiveAxis/yRelations.ts", "utf8");
 const fiveAxisFacts = fs.readFileSync("src/memory/fiveAxis/zFacts.ts", "utf8");
-const fiveAxisMetabolism = fs.readFileSync("src/memory/fiveAxis/mMetabolism.ts", "utf8");
 const fiveAxisNightly = fs.readFileSync("src/memory/fiveAxis/nightly.ts", "utf8");
 const fiveAxisProjection = fs.readFileSync("src/memory/fiveAxis/projection.ts", "utf8");
 const fiveAxisOutbox = fs.readFileSync("src/db/memoryFiveAxisOutbox.ts", "utf8");
+const fiveAxisRuns = fs.readFileSync("src/db/memoryFiveAxisRuns.ts", "utf8");
 const fiveAxisOutboxMigration = fs.readFileSync("migrations/20260713_memory_five_axis_outbox.sql", "utf8");
 const fiveAxisRevisionMigration = fs.readFileSync("migrations/20260715_five_axis_revision.sql", "utf8");
+const fiveAxisRunsMigration = fs.readFileSync("migrations/20260715_projection_axis_runs.sql", "utf8");
+const timelineSequenceMigration = fs.readFileSync("migrations/20260715_timeline_sequence_backfill.sql", "utf8");
 
 const checks = [
   [
@@ -133,11 +138,14 @@ const checks = [
     timelineBackfill.includes("type != 'dream_review'"),
   ],
   [
-    "X: temporal proposals require the same thread and fact",
-    timelineBackfill.includes("byFact") &&
-      timelineBackfill.includes("proposal.fact_key") &&
-      timelineBackfill.includes("source_date") &&
-      timelineBackfill.includes("target_date"),
+    "X: approved dates rebuild durable adjacent edges across the full thread/fact group",
+    timelineRelations.includes("WHERE namespace = ? AND status = 'active' AND thread = ? AND fact_key = ?") &&
+      timelineRelations.includes("replaceTimelineSequenceRelations") &&
+      timelineRelations.includes("previous.memory.id") &&
+      files.relations.includes("timeline_approved:") &&
+      files.relations.includes("DELETE FROM memory_relations") &&
+      timelineSequenceMigration.includes("LAG(id) OVER") &&
+      timelineSequenceMigration.includes("json_array(thread, fact_key)"),
   ],
   [
     "X: date proposals use an explicit review queue",
@@ -185,11 +193,10 @@ const checks = [
       files.relations.includes("relation.strength < 0.7"),
   ],
   [
-    "Y: review-only relations are excluded from safe expansion",
-    files.relations.includes("REVIEW_RELATION_TYPES") &&
-      files.relations.includes(
-        "SAFE_RELATION_TYPES.has(relation.relation_type)",
-      ),
+    "Y: risky relations enter expansion only after reviewed persistence",
+    files.relations.includes("PERSISTED_RELATION_TYPES") &&
+      files.relations.includes("createReviewedMemoryRelation") &&
+      relationReviewActions.includes("createReviewedMemoryRelation"),
   ],
   [
     "Recall: lexical evidence is never vector-gated",
@@ -310,10 +317,10 @@ const checks = [
       memoriesApi.includes("enqueueDiarySplitIfNeeded(env, memory)"),
   ],
   [
-    "Five-axis: nightly Y/Z/M is independent from narrative Dream and Z/M stay review-first",
+    "Five-axis: nightly Y/Z/M is independent from narrative Dream and stays review-first",
     workerIndex.includes("config.fiveAxis.enabled") &&
       workerIndex.includes("config.fiveAxis.dryRun") &&
-      workerIndex.includes("scanOperationalReviewCandidates") &&
+      fiveAxisNightly.includes("scanOperationalReviewCandidates") &&
       workerIndex.includes('skipped: "five_axis_disabled"'),
   ],
   [
@@ -384,7 +391,7 @@ const checks = [
     !queueConsumer.includes('case "metabolism_scan"') &&
       !workerTypes.includes('type: "metabolism_scan"') &&
       operationalReview.includes("scanMetabolismReviewCandidates") &&
-      workerIndex.includes("scanOperationalReviewCandidates"),
+      fiveAxisNightly.includes("scanOperationalReviewCandidates"),
   ],
   [
     "Architecture: Queue contract contains only six actively produced background jobs",
@@ -430,11 +437,13 @@ const checks = [
       workerIndex.includes("runScheduledCoordinateBackfill"),
   ],
   [
-    "Architecture: five-axis Y Z M projectors and nightly orchestration have separate owners",
+    "Architecture: Y and the unified Z/M review scanner have separate owners without dead patrol modules",
     !fs.existsSync("src/memory/xyzem.ts") &&
       fiveAxisRelations.includes("export async function runRelationBuild") &&
-      fiveAxisFacts.includes("export async function runZAudit") &&
-      fiveAxisMetabolism.includes("export async function runMetabolismPatrol") &&
+      factTransitionReview.includes("scanFactTransitionReviewCandidates") &&
+      metabolismReview.includes("scanMetabolismReviewCandidates") &&
+      !fs.existsSync("src/memory/fiveAxis/mMetabolism.ts") &&
+      !fiveAxisFacts.includes("runZAudit") &&
       fiveAxisNightly.includes("export async function runFiveAxisNightlyMaintenance") &&
       workerIndex.includes('from "./memory/fiveAxis/nightly"'),
   ],
@@ -472,6 +481,16 @@ const checks = [
       fiveAxisProjection.includes("dryRun: false") &&
       factTransitionReview.includes('action: "z_supersede"') &&
       metabolismReview.includes('action: "m_archive"'),
+  ],
+  [
+    "Ingest: each axis persists terminal state so retries rerun only failed axes",
+    fiveAxisRunsMigration.includes("CREATE TABLE IF NOT EXISTS memory_five_axis_runs") &&
+      fiveAxisRunsMigration.includes("PRIMARY KEY (namespace, memory_id, memory_revision, axis)") &&
+      fiveAxisRuns.includes("attempts = memory_five_axis_runs.attempts + 1") &&
+      fiveAxisProjection.includes("runAxisStage") &&
+      fiveAxisProjection.includes("reused: true") &&
+      queueConsumer.includes("result?.failedAxes.length") &&
+      fiveAxisOutbox.includes("result_json = COALESCE"),
   ],
   [
     "E ingest: partial coordinate bundles are completed field-by-field without overwriting supplied values",
@@ -592,11 +611,10 @@ const checks = [
       !adminView.includes("E_AXIS_STARTED_AT\" value="),
   ],
   [
-    "Night: Y runs before Z and M",
+    "Night: Y runs once before the single unified Z/M candidate scan",
     fiveAxisNightly.indexOf("const relations = await dependencies.runRelations") <
-      fiveAxisNightly.indexOf("const zAudit = await dependencies.runFactAudit") &&
-      fiveAxisNightly.indexOf("const zAudit = await dependencies.runFactAudit") <
-        fiveAxisNightly.indexOf("const patrol = await dependencies.runMetabolism"),
+      fiveAxisNightly.indexOf("const operationalReview = await dependencies.scanOperational") &&
+      !workerIndex.includes("scanOperationalReviewCandidates"),
   ],
   [
     "Safety: coordinate backfill apply=false is read-only",
@@ -629,21 +647,27 @@ const checks = [
         .includes("coordinate-backfill/toggle"),
   ],
   [
-    "Safety: five-axis dry-run does not persist audit events",
-    fiveAxisNightly.includes(
-      "dependencies.runFactAudit(env, namespace, { dryRun: options.dryRun })",
-    ) &&
-      fiveAxisNightly.includes(
-        "dependencies.runMetabolism(env, namespace, { dryRun: options.dryRun })",
-      ),
+    "Safety: nightly dry-run reaches the unified candidate projectors without dead audit-event pipes",
+    fiveAxisNightly.includes("dependencies.scanOperational(env, namespace") &&
+      fiveAxisNightly.includes("dryRun: options.dryRun") &&
+      !fiveAxisFacts.includes('eventType: "z_audit"') &&
+      !fs.existsSync("src/memory/fiveAxis/mMetabolism.ts"),
   ],
   [
     "Y: nightly relation build auto-creates safe edges and queues risky edges",
     fiveAxisNightly.includes("runRelations: runRelationBuild") &&
       fiveAxisRelations.includes("SAFE_RELATION_TYPES.has(relationType)") &&
       fiveAxisRelations.includes("await createMemoryRelation") &&
+      fiveAxisRelations.includes('relationType !== "temporal_sequence"') &&
+      files.digest.includes('relationType !== "temporal_sequence"') &&
       fiveAxisRelations.includes("REVIEW_RELATION_TYPES.has(relationType)") &&
-      fiveAxisRelations.includes('eventType: "y_relation_review"'),
+      fiveAxisRelations.includes("queueRelationReviewCandidate") &&
+      relationReview.includes('action: "y_relation_review"') &&
+      files.digest.includes("queueRelationReviewCandidate") &&
+      !files.digest.includes('eventType: "y_relation_review"') &&
+      relationReviewActions.includes("approveRelationReviewCandidate") &&
+      relationReviewActions.includes("rejectRelationReviewCandidate") &&
+      relationReviewActions.includes("rollbackRelationReviewCandidate"),
   ],
   [
     "M: patrol findings become explicit review candidates",
@@ -657,13 +681,15 @@ const checks = [
       factTransitionReview.includes("for (const weaker of review.weaker)") &&
       operationalReview.includes("scanFactTransitionReviewCandidates") &&
       operationalReview.includes("scanMetabolismReviewCandidates") &&
-      fs.readFileSync("src/index.ts", "utf8").includes("scanOperationalReviewCandidates"),
+      fiveAxisNightly.includes("scanOperationalReviewCandidates"),
   ],
   [
-    "Z/M: one admin skeleton dispatches approve reject and rollback by proposal action",
+    "Z/Y/M: one admin skeleton dispatches approve reject and rollback by proposal action",
     operationalReviewActions.includes('action === "z_supersede"') &&
+      operationalReviewActions.includes('action === "y_relation_review"') &&
       operationalReviewActions.includes("approveMetabolismCandidate") &&
       operationalReviewActions.includes("approveFactTransitionCandidate") &&
+      operationalReviewActions.includes("approveRelationReviewCandidate") &&
       adminBoard.includes("approveOperationalReviewCandidate") &&
       adminBoard.includes("rejectOperationalReviewCandidate") &&
       adminBoard.includes("rollbackOperationalReviewCandidate") &&

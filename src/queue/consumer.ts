@@ -135,13 +135,20 @@ export async function handleQueueMessage(message: QueueMessage, env: Env): Promi
         const result = await projectMemoryIntoFiveAxes(env, {
           namespace: message.namespace,
           memoryId: message.memoryId,
+          memoryRevision: outboxRevision,
           projectionKey: message.idempotencyKey
         });
+        if (result?.failedAxes.length) {
+          const error = new Error(`five_axis_stages_failed:${result.failedAxes.join(",")}`);
+          await markFiveAxisOutboxFailed(env.DB, message.outboxId, error, result);
+          throw error;
+        }
         await markFiveAxisOutboxCompleted(env.DB, message.outboxId, result ? "completed" : "skipped", result ?? {
           reason: "memory_not_projectable"
         });
       } catch (error) {
-        await markFiveAxisOutboxFailed(env.DB, message.outboxId, error);
+        const latest = await getFiveAxisOutbox(env.DB, message.outboxId);
+        if (latest?.status !== "failed") await markFiveAxisOutboxFailed(env.DB, message.outboxId, error);
         throw error;
       }
       return;

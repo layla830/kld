@@ -15,11 +15,13 @@ import { scanOperationalReviewCandidates } from "../memory/operationalReview";
 import { batchReviewMetabolismCandidates } from "./adminBoard/metabolismActions";
 import { approveOperationalReviewCandidate, rejectOperationalReviewCandidate, rollbackOperationalReviewCandidate } from "./adminBoard/operationalReviewActions";
 import type { MemoryCandidateRecord } from "../db/memoryCandidates";
+import { loadDreamConfig } from "../config/runtime";
 
 export async function handleAdminBoard(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   if (!isAuthorized(request, env)) return unauthorized();
   if (!isSameOriginAdminPost(request)) return forbidden();
   const url = new URL(request.url);
+  const namespace = loadDreamConfig(env).namespace;
   const scheduleVectorSync = (...memories: Parameters<typeof enqueueMemoryVectorSync>[1]) => {
     if (memories.length > 0) ctx.waitUntil(enqueueMemoryVectorSync(env, memories));
   };
@@ -107,14 +109,14 @@ export async function handleAdminBoard(request: Request, env: Env, ctx: Executio
   if (request.method === "POST" && url.pathname === "/admin/memories/coordinate-backfill/toggle") {
     const form = await request.formData();
     const enabled = readFormText(form, "enabled") === "true";
-    await setCoordinateBackfillEnabled(env, "default", enabled);
+    await setCoordinateBackfillEnabled(env, namespace, enabled);
     return Response.redirect(`${url.origin}/admin/memories?tab=lmc5&notice=${enabled ? "backfill-resumed" : "backfill-paused"}`, 303);
   }
 
   if (request.method === "POST" && url.pathname === "/admin/memories/x-timeline/scan") {
     try {
       const form = await request.formData();
-      const result = await scanTimelineBackfillPage(env, "default", readFormText(form, "reset") === "true");
+      const result = await scanTimelineBackfillPage(env, namespace, readFormText(form, "reset") === "true");
       return Response.redirect(`${url.origin}/admin/memories?tab=x-review&notice=${result.complete ? "x-complete" : "x-scanned"}`, 303);
     } catch (error) {
       console.error("admin timeline scan failed", error);
@@ -187,7 +189,7 @@ export async function handleAdminBoard(request: Request, env: Env, ctx: Executio
 
   if (request.method === "POST" && url.pathname === "/admin/memories/m-review/scan") {
     try {
-      await scanOperationalReviewCandidates(env, "default");
+      await scanOperationalReviewCandidates(env, namespace);
       return Response.redirect(`${url.origin}/admin/memories?tab=m-review&notice=m-scanned`, 303);
     } catch (error) {
       console.error("admin metabolism scan failed", error);
@@ -263,23 +265,23 @@ export async function handleAdminBoard(request: Request, env: Env, ctx: Executio
   let candidateTotal = 0;
   let operationalPending = 0;
   let resolvedCandidates: MemoryCandidateRecord[] = [];
-  let candidates = input.tab === "review" ? await listMemoryCandidates(env.DB, "default", 100) : [];
+  let candidates = input.tab === "review" ? await listMemoryCandidates(env.DB, namespace, 100) : [];
   if (input.tab === "x-review") {
     [candidateTotal, candidates] = await Promise.all([
-      countMemoryCandidatesByAction(env.DB, "default", "timeline_date"),
-      listMemoryCandidatesByAction(env.DB, "default", "timeline_date", PAGE_SIZE, (input.page - 1) * PAGE_SIZE)
+      countMemoryCandidatesByAction(env.DB, namespace, "timeline_date"),
+      listMemoryCandidatesByAction(env.DB, namespace, "timeline_date", PAGE_SIZE, (input.page - 1) * PAGE_SIZE)
     ]);
   }
   if (input.tab === "m-review") {
     [operationalPending, candidates, resolvedCandidates] = await Promise.all([
-      countPendingOperationalReviewCandidates(env.DB, "default"),
-      listOperationalReviewCandidates(env.DB, "default", 30),
-      listRecentApprovedOperationalReviewCandidates(env.DB, "default", 12)
+      countPendingOperationalReviewCandidates(env.DB, namespace),
+      listOperationalReviewCandidates(env.DB, namespace, 30),
+      listRecentApprovedOperationalReviewCandidates(env.DB, namespace, 12)
     ]);
     candidateTotal = candidates.length;
   }
-  const coordinateBackfill = input.tab === "lmc5" ? await getCoordinateBackfillStatus(env, "default") : null;
-  const timelineBackfill = input.tab === "x-review" ? await getTimelineBackfillStatus(env, "default") : null;
+  const coordinateBackfill = input.tab === "lmc5" ? await getCoordinateBackfillStatus(env, namespace) : null;
+  const timelineBackfill = input.tab === "x-review" ? await getTimelineBackfillStatus(env, namespace) : null;
   return new Response(renderPage(input, { stats, types, quoteCategories, total: input.tab === "x-review" || input.tab === "m-review" ? candidateTotal : memories.total, records: memories.records, candidates, resolvedCandidates, heatmap, timelineDates, lmc5, coordinateBackfill, timelineBackfill, operationalPending }), {
     headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" }
   });

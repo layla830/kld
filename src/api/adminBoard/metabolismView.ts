@@ -31,6 +31,12 @@ const RELATION_TYPES: Record<string, RelationTypeInfo> = {
   origin_split: { label: "同源拆分", meaning: "两条记忆来自同一条原始记录的拆分", direction: "对称关系" }
 };
 
+Object.assign(RELATION_TYPES, {
+  contradicts: { label: "相互矛盾", meaning: "两条记忆对同一事实给出了不兼容的描述", direction: "对称关系" },
+  cause_effect: { label: "因果关系", meaning: "起点记忆描述原因，终点记忆描述结果", direction: "有向关系" },
+  supports: { label: "支持关系", meaning: "起点记忆为终点记忆提供证据或支撑", direction: "有向关系" }
+} satisfies Record<string, RelationTypeInfo>);
+
 function payloadOf(value: string): Record<string, unknown> {
   try {
     const parsed = JSON.parse(value);
@@ -180,6 +186,28 @@ function renderRelationCandidate(candidate: MemoryCandidateRecord, payload: Reco
   return `<article class="memory-card review-card ${issue.code === "unknown" ? "muted" : ""}"><div class="message-header"><strong>Y 关系清理 · M 巡检</strong><div class="m-review-status">${batchSelector}<span class="tag-pill">${approved ? "已执行，可回滚" : "等待审核"}</span></div></div><div class="memory-meta"><span class="score-pill">问题类型：${htmlEscape(issue.label)}</span><span class="score-pill">关系：${htmlEscape(typeInfo.label)}</span><span class="tag-pill">${htmlEscape(typeInfo.direction)}</span>${strength === null ? "" : `<span class="tag-pill">强度 ${strength.toFixed(2)}</span>`}</div><div class="lmc-explain"><p><strong>这条线表示：</strong>${htmlEscape(typeInfo.meaning)}</p><p><strong>为什么建议删：</strong>${htmlEscape(issue.explanation)}</p><p><strong>审核建议：</strong>${htmlEscape(issue.recommendation)}</p><p><strong>批准影响：</strong>${htmlEscape(effect)}</p></div>${renderRelationEndpoints(candidate, before)}<section class="review-diff"><div class="review-section-title">批准前后</div><div class="review-diff-row"><div class="review-before"><strong>批准前</strong><p>A 和 B 之间保存着这条关系边。</p></div><div class="review-arrow">→</div><div class="review-after"><strong>批准后</strong><p>只移除这条边；A、B 两条记忆仍原样保留。</p></div></div></section><details class="memory-detail"><summary>查看技术快照与巡检原始原因</summary><p class="char-count">${htmlEscape(rawReason || "没有原始原因")}</p><pre style="white-space:pre-wrap;overflow-wrap:anywhere">${htmlEscape(JSON.stringify(before, null, 2))}</pre></details><div class="actions review-actions">${actionButtons}</div><div class="char-count">relation：${htmlEscape(readString(before, "id") || "未知")} · candidate：${htmlEscape(candidate.id)}</div></article>`;
 }
 
+function renderRelationReviewCandidate(
+  candidate: MemoryCandidateRecord,
+  payload: Record<string, unknown>,
+  approved: boolean
+): string {
+  const relationType = readString(payload, "relation_type");
+  const typeInfo = relationTypeInfo(relationType);
+  const strength = readNumber(payload, "strength");
+  const relation = {
+    source_memory_id: readString(payload, "source_id"),
+    target_memory_id: readString(payload, "target_id"),
+    relation_type: relationType,
+    strength,
+    reason: readString(payload, "reason")
+  };
+  const effect = `新增一条 ${relationType || "待确认"} 关系边；两端记忆正文和状态都不会改变。`;
+  const actionButtons = approved
+    ? `<form method="POST" action="/admin/memories/m-review/rollback" onsubmit="return confirm('撤销这次关系批准？只会移除本次新建的边。')"><input type="hidden" name="id" value="${attr(candidate.id)}"><button class="action-btn approve-review">回滚这次建边</button></form>`
+    : `<form method="POST" action="/admin/memories/m-review/approve" onsubmit="return confirm('${attr(effect)}')"><input type="hidden" name="id" value="${attr(candidate.id)}"><button class="action-btn approve-review">批准建立关系</button></form><form method="POST" action="/admin/memories/m-review/reject" onsubmit="return confirm('拒绝这条关系建议？不会修改任何记忆。')"><input type="hidden" name="id" value="${attr(candidate.id)}"><button class="action-btn delete">拒绝关系</button></form>`;
+  return `<article class="memory-card review-card"><div class="message-header"><strong>Y 关系判断 · 人工审核</strong><span class="tag-pill">${approved ? "已批准，可回滚" : "等待审核"}</span></div><div class="memory-meta"><span class="score-pill">关系：${htmlEscape(typeInfo.label)}</span><span class="tag-pill">${htmlEscape(typeInfo.direction)}</span>${strength === null ? "" : `<span class="tag-pill">强度 ${strength.toFixed(2)}</span>`}</div><div class="lmc-explain"><p><strong>模型判断：</strong>${htmlEscape(typeInfo.meaning)}</p><p><strong>理由：</strong>${htmlEscape(readString(payload, "reason") || "没有提供额外理由")}</p><p><strong>批准影响：</strong>${htmlEscape(effect)}</p></div>${renderRelationEndpoints(candidate, relation)}<details class="memory-detail"><summary>查看技术载荷</summary><pre style="white-space:pre-wrap;overflow-wrap:anywhere">${htmlEscape(JSON.stringify(payload, null, 2))}</pre></details><div class="actions review-actions">${actionButtons}</div><div class="char-count">candidate：${htmlEscape(candidate.id)}</div></article>`;
+}
+
 function renderFactMemory(label: string, value: unknown, state: string): string {
   const memory = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
   const importance = readNumber(memory, "importance");
@@ -203,6 +231,7 @@ export function renderMetabolismCandidate(candidate: MemoryCandidateRecord): str
   const before = beforeOf(payload);
   const approved = candidate.status === "approved";
   if (candidate.action === "z_supersede") return renderFactTransitionCandidate(candidate, payload, approved);
+  if (candidate.action === "y_relation_review") return renderRelationReviewCandidate(candidate, payload, approved);
   return candidate.action === "m_archive"
     ? renderArchiveCandidate(candidate, payload, before, approved)
     : renderRelationCandidate(candidate, payload, before, approved);

@@ -1,4 +1,5 @@
 import { createMemoryEvent } from "../../db/memoryEvents";
+import { loadDreamConfig } from "../../config/runtime";
 import { getMemoryCandidate, resolveMemoryCandidate } from "../../db/memoryCandidates";
 import { getMemoryById, updateMemory } from "../../db/memories";
 import { listFactKeyConflictsForReview } from "../../memory/fiveAxis/zFacts";
@@ -23,8 +24,8 @@ export interface FactTransitionResult {
   memories: MemoryRecord[];
 }
 
-function candidateNamespace(form: FormData): string {
-  return readFormText(form, "namespace") || "default";
+function candidateNamespace(env: Env, form: FormData): string {
+  return readFormText(form, "namespace") || loadDreamConfig(env).namespace;
 }
 
 function payloadOf(value: string): Record<string, unknown> {
@@ -65,7 +66,7 @@ function matchesPendingSnapshot(memory: MemoryRecord | null, snapshot: Snapshot)
 export async function approveFactTransitionCandidate(env: Env, form: FormData): Promise<FactTransitionResult | null> {
   const id = readFormText(form, "id");
   if (!id) return null;
-  const candidate = await getMemoryCandidate(env.DB, candidateNamespace(form), id);
+  const candidate = await getMemoryCandidate(env.DB, candidateNamespace(env, form), id);
   if (!candidate || candidate.status !== "pending" || candidate.action !== "z_supersede") return null;
   const payload = payloadOf(candidate.payload_json);
   const factKey = typeof payload.fact_key === "string" ? payload.fact_key : "";
@@ -105,7 +106,7 @@ export async function approveFactTransitionCandidate(env: Env, form: FormData): 
 export async function rejectFactTransitionCandidate(env: Env, form: FormData): Promise<boolean> {
   const id = readFormText(form, "id");
   if (!id) return false;
-  const candidate = await getMemoryCandidate(env.DB, candidateNamespace(form), id);
+  const candidate = await getMemoryCandidate(env.DB, candidateNamespace(env, form), id);
   return Boolean(candidate && candidate.action === "z_supersede" && candidate.status === "pending"
     && await resolveMemoryCandidate(env.DB, candidate.namespace, candidate.id, "rejected"));
 }
@@ -113,7 +114,7 @@ export async function rejectFactTransitionCandidate(env: Env, form: FormData): P
 export async function rollbackFactTransitionCandidate(env: Env, form: FormData): Promise<FactTransitionResult | null> {
   const id = readFormText(form, "id");
   if (!id) return null;
-  const candidate = await getMemoryCandidate(env.DB, candidateNamespace(form), id);
+  const candidate = await getMemoryCandidate(env.DB, candidateNamespace(env, form), id);
   if (!candidate || candidate.status !== "approved" || candidate.action !== "z_supersede") return null;
   const payload = payloadOf(candidate.payload_json);
   const factKey = typeof payload.fact_key === "string" ? payload.fact_key : "";

@@ -21,7 +21,6 @@ import { runFiveAxisNightlyMaintenance } from "./memory/fiveAxis/nightly";
 import { runNarrativeTimeline, runTimelineSweep } from "./memory/narrativeTimeline";
 import { retryStaleVectorSyncs } from "./memory/state";
 import { getCoordinateBackfillControl, recordCoordinateBackfillRun } from "./memory/coordinateBackfillControl";
-import { scanOperationalReviewCandidates } from "./memory/operationalReview";
 import { handleQueueMessage } from "./queue/consumer";
 import { enqueueMissedDiarySplits, enqueuePendingFiveAxisProjections } from "./queue/producer";
 import type { Env, QueueMessage } from "./types";
@@ -229,10 +228,7 @@ export default {
         runDreamBatches(env, namespace, config.dream).then(async (digest) => ({
           digest,
           xyzem: config.fiveAxis.enabled
-            ? await runFiveAxisNightlyMaintenance(env, namespace, { dryRun: config.fiveAxis.dryRun }).then(async (result) => ({
-                ...result,
-                operationalReview: await scanOperationalReviewCandidates(env, namespace)
-              }))
+            ? await runFiveAxisNightlyMaintenance(env, namespace, { dryRun: config.fiveAxis.dryRun })
             : { skipped: "five_axis_disabled" as const },
           narrative: config.dream.enabled
             ? await runNarrativeTimeline(env, namespace)
