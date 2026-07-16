@@ -14,7 +14,7 @@ export async function queueRelationReviewCandidate(
     vectorScore?: number | null;
     projectionKey?: string;
   }
-): Promise<void> {
+): Promise<string> {
   const pair = normalizeRelationPair(input.source.id, input.target.id, input.relationType);
   const sourceUpdatedAt = input.source.id === pair.sourceMemoryId
     ? input.source.updated_at
@@ -22,15 +22,16 @@ export async function queueRelationReviewCandidate(
   const targetUpdatedAt = input.target.id === pair.targetMemoryId
     ? input.target.updated_at
     : input.source.updated_at;
+  const candidateExternalKey = [
+    "y-review",
+    pair.relationType,
+    pair.sourceMemoryId,
+    pair.targetMemoryId,
+    sourceUpdatedAt,
+    targetUpdatedAt
+  ].map(encodeURIComponent).join(":");
   await upsertMemoryCandidate(env.DB, namespace, {
-    externalKey: [
-      "y-review",
-      pair.relationType,
-      pair.sourceMemoryId,
-      pair.targetMemoryId,
-      sourceUpdatedAt,
-      targetUpdatedAt
-    ].map(encodeURIComponent).join(":"),
+    externalKey: candidateExternalKey,
     dreamDate: new Date().toISOString().slice(0, 10),
     action: "y_relation_review",
     subject: "system",
@@ -51,4 +52,5 @@ export async function queueRelationReviewCandidate(
     sourceChunks: [],
     status: "pending"
   });
+  return candidateExternalKey;
 }

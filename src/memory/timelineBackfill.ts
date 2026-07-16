@@ -32,7 +32,12 @@ export interface TimelineMemoryProjectionResult {
   outcome: "already_dated" | "reconciled" | "no_explicit_date" | "ambiguous" | "queued";
   dates: string[];
   queued: number;
+  candidateExternalKeys?: string[];
   sequence?: Awaited<ReturnType<typeof rebuildTimelineSequenceForMemory>>;
+}
+
+function timelineCandidateExternalKey(memoryId: string, date: string): string {
+  return `timeline-date:${memoryId}:${date}`;
 }
 
 function parseTags(value: string | null): string[] {
@@ -84,8 +89,9 @@ export async function queueTimelineCandidateForMemory(
 
   const date = dates[0];
   const tags = [...new Set([...beforeTags, `date:${date}`, "timeline"])];
+  const candidateExternalKey = timelineCandidateExternalKey(memory.id, date);
   await upsertMemoryCandidate(env.DB, memory.namespace, {
-    externalKey: `timeline-date:${memory.id}:${date}`,
+    externalKey: candidateExternalKey,
     dreamDate: new Date().toISOString().slice(0, 10),
     action: "timeline_date",
     subject: "memory_timeline",
@@ -102,7 +108,7 @@ export async function queueTimelineCandidateForMemory(
     sourceChunks: [],
     status: "pending"
   });
-  return { scanned: 1, outcome: "queued", dates, queued: 1 };
+  return { scanned: 1, outcome: "queued", dates, queued: 1, candidateExternalKeys: [candidateExternalKey] };
 }
 
 export async function runTimelineBackfill(env: Env, namespace: string, options: { cursor?: string | null; limit?: number } = {}): Promise<{
@@ -170,7 +176,7 @@ export async function queueTimelineBackfill(env: Env, namespace: string, cursor:
   const dreamDate = new Date().toISOString().slice(0, 10);
   for (const proposal of result.proposals) {
     await upsertMemoryCandidate(env.DB, namespace, {
-      externalKey: `timeline-date:${proposal.id}:${proposal.date}`,
+      externalKey: timelineCandidateExternalKey(proposal.id, proposal.date),
       dreamDate,
       action: "timeline_date",
       subject: "memory_timeline",

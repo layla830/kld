@@ -39,6 +39,7 @@ export interface CoordinateBackfillResult {
   processed: number;
   applied: number;
   queued: number;
+  candidateExternalKeys?: string[];
   message?: string;
   results?: Array<{
     id: string;
@@ -207,6 +208,7 @@ export async function runCoordinateBackfill(
   const results: NonNullable<CoordinateBackfillResult["results"]> = [];
   let applied = 0;
   let queued = 0;
+  const candidateExternalKeys: string[] = [];
 
   for (const record of updates) {
     const id = typeof record.id === "string" ? record.id : null;
@@ -232,8 +234,9 @@ export async function runCoordinateBackfill(
         if (updated) applied += 1;
       }
       if (reviewFields.length > 0) {
+        const candidateExternalKey = `coordinate-backfill:${id}`;
         await upsertMemoryCandidate(env.DB, namespace, {
-          externalKey: `coordinate-backfill:${id}`,
+          externalKey: candidateExternalKey,
           dreamDate: systemClock.today(),
           action: "update",
           subject: "memory_coordinates",
@@ -241,6 +244,7 @@ export async function runCoordinateBackfill(
           payload: { _kind: "coordinate_backfill", _before: before, _review_reasons: split.reasons, ...coordinatePayload(split.review) },
           sourceChunkIds: [], sourceChunks: [], status: "pending"
         });
+        candidateExternalKeys.push(candidateExternalKey);
         queued += 1;
       } else {
         await dismissPendingMemoryCandidateByExternalKey(env.DB, namespace, `coordinate-backfill:${id}`);
@@ -255,6 +259,8 @@ export async function runCoordinateBackfill(
   return {
     ok: true, mode, scanned: allMemories.length, needBackfill: needBackfill.length, offset,
     nextOffset: offset + batch.length < needBackfill.length ? offset + batch.length : null,
-    processed: batch.length, applied, queued, results
+    processed: batch.length, applied, queued,
+    ...(candidateExternalKeys.length > 0 ? { candidateExternalKeys } : {}),
+    results
   };
 }

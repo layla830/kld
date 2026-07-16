@@ -326,6 +326,7 @@ export async function listGuidanceSeedMemories(
         AND (r.source_memory_id = m.id OR r.target_memory_id = m.id)
        WHERE m.namespace = ?
          AND m.status = 'active'
+         AND m.active_fact != 0
          AND m.fact_key IS NOT NULL AND m.fact_key != ''
          AND m.response_posture IS NOT NULL AND m.response_posture != ''
          AND m.type IN ('rule','lesson','core','preference')
@@ -356,6 +357,7 @@ export async function listActiveMemoriesByFactKeys(
         `SELECT * FROM memories
          WHERE namespace = ?
            AND status = 'active'
+           AND active_fact != 0
            AND fact_key IN (${placeholders})
            ${typeClause}
          ORDER BY pinned DESC, importance DESC, updated_at DESC
@@ -497,7 +499,7 @@ export async function searchMemoriesByText(
 ): Promise<Array<MemoryRecord & { score: number }>> {
   const query = input.query.trim().replace(/\s+/g, " ").slice(0, 500);
   const tokens = tokenizeQuery(query);
-  let sql = "SELECT * FROM memories WHERE namespace = ? AND status = 'active'";
+  let sql = "SELECT * FROM memories WHERE namespace = ? AND status = 'active' AND active_fact != 0";
   const binds: unknown[] = [input.namespace];
 
   const typeBudget = Math.max(0, D1_BIND_LIMIT - binds.length - 6);

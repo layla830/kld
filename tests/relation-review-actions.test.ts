@@ -80,13 +80,14 @@ function candidateFor(source: MemoryRecord, target: MemoryRecord): MemoryCandida
   };
 }
 
-function harness(options: { failApprovalUpdate?: boolean } = {}) {
+function harness(options: { failApprovalUpdate?: boolean; concurrentApprovalOnRetry?: boolean } = {}) {
   const source = endpoint("mem_a", "2026-07-15T00:00:01.000Z");
   const target = endpoint("mem_b", "2026-07-15T00:00:02.000Z");
   const candidate = candidateFor(source, target);
   const memories = new Map([[source.id, source], [target.id, target]]);
   const relations = new Map<string, MemoryRelationRecord>();
   const events: string[] = [];
+  let proposalRelationReads = 0;
 
   function statement(sql: string, args: unknown[]) {
     return {
@@ -96,6 +97,27 @@ function harness(options: { failApprovalUpdate?: boolean } = {}) {
         if (sql.includes("FROM memory_candidates")) return candidate;
         if (sql.includes("FROM memories")) return memories.get(String(args[1])) ?? null;
         if (sql.includes("FROM memory_relations") && sql.includes("source_memory_id = ?")) {
+          proposalRelationReads += 1;
+          if (options.concurrentApprovalOnRetry && proposalRelationReads === 2) {
+            const relation: MemoryRelationRecord = {
+              id: `rel_yreview_${candidate.id}`,
+              namespace: "default",
+              source_memory_id: source.id,
+              target_memory_id: target.id,
+              relation_type: "supports",
+              strength: 0.8,
+              reason: "A supports B",
+              created_at: source.updated_at
+            };
+            relations.set(relation.id, relation);
+            candidate.status = "approved";
+            candidate.result_memory_id = relation.id;
+            candidate.payload_json = JSON.stringify({
+              ...JSON.parse(candidate.payload_json) as Record<string, unknown>,
+              approval: { relation_id: relation.id, inserted: true, token: "concurrent" }
+            });
+            return relation;
+          }
           return [...relations.values()].find((relation) => relation.namespace === args[0]
             && relation.source_memory_id === args[1]
             && relation.target_memory_id === args[2]
@@ -114,6 +136,7 @@ function harness(options: { failApprovalUpdate?: boolean } = {}) {
           return { meta: { changes: 1 } };
         }
         if (sql.includes("INSERT INTO memory_relations")) {
+          if (options.concurrentApprovalOnRetry) throw new Error("UNIQUE constraint failed");
           if (candidate.status !== "pending") return { meta: { changes: 0 } };
           const duplicate = [...relations.values()].some((relation) => relation.namespace === args[1]
             && relation.source_memory_id === args[2] && relation.target_memory_id === args[3]
@@ -225,5 +248,20 @@ describe("Y relation review actions", () => {
     expect(state.candidate.status).toBe("pending");
     expect(state.relations.size).toBe(0);
     expect(state.events).toEqual([]);
+  });
+
+  it("treats a concurrent approval discovered after an insert conflict as success", async () => {
+    const state = harness({ concurrentApprovalOnRetry: true });
+    const form = new FormData();
+    form.set("id", state.candidate.id);
+
+    await expect(approveRelationReviewCandidate(state.env, form)).resolves.toMatchObject({
+      axis: "Y",
+      action: "approve",
+      relationId: `rel_yreview_${state.candidate.id}`,
+      changed: true
+    });
+    expect(state.candidate.status).toBe("approved");
+    expect(state.relations.size).toBe(1);
   });
 });

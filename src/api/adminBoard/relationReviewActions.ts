@@ -7,6 +7,7 @@ import {
   type MemoryRelationRecord
 } from "../../db/memoryRelations";
 import { getMemoryById } from "../../db/memories";
+import { prepareCandidateAxisRunReconciliation } from "../../db/memoryFiveAxisRuns";
 import type { Env } from "../../types";
 import { newId } from "../../utils/ids";
 import { nowIso } from "../../utils/time";
@@ -145,8 +146,30 @@ async function commitApproval(
     relationId,
     approvedPayload
   ));
+  statements.push(prepareCandidateAxisRunReconciliation(
+    env.DB,
+    candidate.namespace,
+    candidate.id,
+    now
+  ));
   const results = await env.DB.batch(statements);
   return (results[updateIndex]?.meta.changes ?? 0) === 1;
+}
+
+async function readApprovedResult(
+  env: Env,
+  namespace: string,
+  candidateId: string
+): Promise<RelationReviewResult | null> {
+  const current = await getMemoryCandidate(env.DB, namespace, candidateId);
+  if (current?.status !== "approved" || !current.result_memory_id) return null;
+  const approval = payloadOf(current.payload_json).approval as Record<string, unknown> | undefined;
+  return {
+    axis: "Y",
+    action: "approve",
+    relationId: current.result_memory_id,
+    changed: approval?.inserted === true
+  };
 }
 
 export async function approveRelationReviewCandidate(env: Env, form: FormData): Promise<RelationReviewResult | null> {
@@ -174,16 +197,8 @@ export async function approveRelationReviewCandidate(env: Env, form: FormData): 
     try {
       const changed = await commitApproval(env, candidate, proposal, deterministicId, true);
       if (!changed) {
-        const current = await getMemoryCandidate(env.DB, namespace, candidate.id);
-        if (current?.status === "approved" && current.result_memory_id) {
-          const approval = payloadOf(current.payload_json).approval as Record<string, unknown> | undefined;
-          return {
-            axis: "Y",
-            action: "approve",
-            relationId: current.result_memory_id,
-            changed: approval?.inserted === true
-          };
-        }
+        const approved = await readApprovedResult(env, namespace, candidate.id);
+        if (approved) return approved;
         throw new Error("relation_review_candidate_changed");
       }
       return { axis: "Y", action: "approve", relationId: deterministicId, changed: true };
@@ -194,6 +209,8 @@ export async function approveRelationReviewCandidate(env: Env, form: FormData): 
   }
 
   if (!await commitApproval(env, candidate, proposal, relation.id, inserted)) {
+    const approved = await readApprovedResult(env, namespace, candidate.id);
+    if (approved) return approved;
     throw new Error("relation_review_candidate_changed");
   }
   return { axis: "Y", action: "approve", relationId: relation.id, changed: false };
@@ -269,6 +286,12 @@ export async function rollbackRelationReviewCandidate(env: Env, form: FormData):
     candidate.id,
     candidate.result_memory_id,
     rolledBackPayload
+  ));
+  statements.push(prepareCandidateAxisRunReconciliation(
+    env.DB,
+    namespace,
+    candidate.id,
+    now
   ));
   const results = await env.DB.batch(statements);
   if ((results[updateIndex]?.meta.changes ?? 0) !== 1) {

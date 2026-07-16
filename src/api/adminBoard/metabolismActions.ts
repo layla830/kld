@@ -1,9 +1,8 @@
 import { createMemoryEvent } from "../../db/memoryEvents";
 import { loadDreamConfig } from "../../config/runtime";
-import { getMemoryCandidate, resolveMemoryCandidate } from "../../db/memoryCandidates";
+import { getMemoryCandidate, resolveMemoryCandidate, rollbackMemoryCandidate } from "../../db/memoryCandidates";
 import { getMemoryById, updateMemory } from "../../db/memories";
 import type { Env, MemoryRecord } from "../../types";
-import { nowIso } from "../../utils/time";
 import {
   COLD_MEMORY_MAX_CONFIDENCE,
   COLD_MEMORY_MAX_IMPORTANCE,
@@ -207,10 +206,9 @@ export async function rollbackMetabolismCandidate(env: Env, form: FormData): Pro
     if ((restored.meta.changes ?? 0) !== 1) throw new Error("metabolism_relation_rollback_conflict");
   }
 
-  const updated = await env.DB.prepare(
-    "UPDATE memory_candidates SET status = 'rolled_back', resolved_at = ?, updated_at = ? WHERE namespace = ? AND id = ? AND status = 'approved'"
-  ).bind(nowIso(), nowIso(), namespace, candidate.id).run();
-  if ((updated.meta.changes ?? 0) !== 1) throw new Error("metabolism_rollback_state_conflict");
+  if (!await rollbackMemoryCandidate(env.DB, namespace, candidate.id)) {
+    throw new Error("metabolism_rollback_state_conflict");
+  }
   await createMemoryEvent(env.DB, {
     namespace,
     eventType: "m_rollback",

@@ -767,7 +767,8 @@ const checks = [
   [
     "M: approved operations expose rollback closure",
     metabolismActions.includes('eventType: "m_rollback"') &&
-      metabolismActions.includes("rolled_back") &&
+      metabolismActions.includes("rollbackMemoryCandidate") &&
+      candidateDb.includes("status = 'rolled_back'") &&
       metabolismView.includes("回滚这次操作"),
   ],
   [

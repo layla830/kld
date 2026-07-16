@@ -1,11 +1,10 @@
 import { createMemoryEvent } from "../../db/memoryEvents";
 import { loadDreamConfig } from "../../config/runtime";
-import { getMemoryCandidate, resolveMemoryCandidate } from "../../db/memoryCandidates";
+import { getMemoryCandidate, resolveMemoryCandidate, rollbackMemoryCandidate } from "../../db/memoryCandidates";
 import { getMemoryById, updateMemory } from "../../db/memories";
 import { listFactKeyConflictsForReview } from "../../memory/fiveAxis/zFacts";
 import { markMemorySupersededSynced, syncMemoryVector } from "../../memory/state";
 import type { Env, MemoryRecord } from "../../types";
-import { nowIso } from "../../utils/time";
 import { readFormText } from "./utils";
 
 interface Snapshot {
@@ -141,10 +140,9 @@ export async function rollbackFactTransitionCandidate(env: Env, form: FormData):
   });
   if (!restored) return null;
   await syncMemoryVector(env, restored);
-  const updated = await env.DB.prepare(
-    "UPDATE memory_candidates SET status = 'rolled_back', resolved_at = ?, updated_at = ? WHERE namespace = ? AND id = ? AND status = 'approved'"
-  ).bind(nowIso(), nowIso(), candidate.namespace, candidate.id).run();
-  if ((updated.meta.changes ?? 0) !== 1) throw new Error("fact_transition_rollback_candidate_changed");
+  if (!await rollbackMemoryCandidate(env.DB, candidate.namespace, candidate.id)) {
+    throw new Error("fact_transition_rollback_candidate_changed");
+  }
   await createMemoryEvent(env.DB, {
     namespace: candidate.namespace,
     eventType: "z_rollback",

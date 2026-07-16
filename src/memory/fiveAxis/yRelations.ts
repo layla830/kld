@@ -183,7 +183,15 @@ export async function runRelationBuild(
   env: Env,
   namespace: string,
   options: { sinceIso?: string; dryRun?: boolean; memoryIds?: string[]; projectionKey?: string } = {}
-): Promise<{ scanned: number; inserted: number; review: number; proposed: number; candidates: number; error?: string }> {
+): Promise<{
+  scanned: number;
+  inserted: number;
+  review: number;
+  proposed: number;
+  candidates: number;
+  candidateExternalKeys?: string[];
+  error?: string;
+}> {
   const dryRun = options.dryRun ?? true;
   const memoryIds = [...new Set((options.memoryIds ?? []).map((id) => id.trim()).filter(Boolean))].slice(0, 10);
   const memories = memoryIds.length > 0
@@ -196,6 +204,7 @@ export async function runRelationBuild(
   let inserted = 0;
   let review = 0;
   let proposed = 0;
+  const candidateExternalKeys: string[] = [];
 
   const candidates = await findRelationCandidates(env, namespace, memories);
   const candidateMap = new Map(candidates.map((candidate) => [candidate.pairId, candidate]));
@@ -222,7 +231,7 @@ export async function runRelationBuild(
       }
     } else if (REVIEW_RELATION_TYPES.has(relationType)) {
       if (!dryRun) {
-        await queueRelationReviewCandidate(env, namespace, {
+        candidateExternalKeys.push(await queueRelationReviewCandidate(env, namespace, {
           relationType,
           source: candidate.source,
           target: candidate.target,
@@ -230,13 +239,21 @@ export async function runRelationBuild(
           reason: hint.reason,
           vectorScore: candidate.vectorScore,
           projectionKey: options.projectionKey
-        });
+        }));
       }
       review += 1;
     }
   }
 
-  return { scanned: memories.length, inserted, review, proposed, candidates: candidates.length, error };
+  return {
+    scanned: memories.length,
+    inserted,
+    review,
+    proposed,
+    candidates: candidates.length,
+    ...(candidateExternalKeys.length > 0 ? { candidateExternalKeys } : {}),
+    error
+  };
 }
 
 export type RelationBuildResult = Awaited<ReturnType<typeof runRelationBuild>>;

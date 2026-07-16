@@ -27,6 +27,103 @@ export interface FiveAxisRunKey {
   axis: FiveAxisName;
 }
 
+function candidateReviewStatusSql(runAlias: string): string {
+  return `CASE
+    WHEN EXISTS (
+      SELECT 1
+      FROM memory_candidate_axis_runs links
+      JOIN memory_candidates candidates
+        ON candidates.namespace = links.namespace
+       AND candidates.external_key = links.candidate_external_key
+      WHERE links.namespace = ${runAlias}.namespace
+        AND links.memory_id = ${runAlias}.memory_id
+        AND links.memory_revision = ${runAlias}.memory_revision
+        AND links.axis = ${runAlias}.axis
+        AND candidates.status IN ('pending', 'needs_subject_review', 'deferred_relation')
+    ) THEN 'pending_review'
+    WHEN EXISTS (
+      SELECT 1
+      FROM memory_candidate_axis_runs links
+      JOIN memory_candidates candidates
+        ON candidates.namespace = links.namespace
+       AND candidates.external_key = links.candidate_external_key
+      WHERE links.namespace = ${runAlias}.namespace
+        AND links.memory_id = ${runAlias}.memory_id
+        AND links.memory_revision = ${runAlias}.memory_revision
+        AND links.axis = ${runAlias}.axis
+        AND candidates.status = 'approved'
+    ) THEN 'applied'
+    ELSE 'skipped'
+  END`;
+}
+
+export function prepareCandidateAxisRunReconciliation(
+  db: D1Database,
+  namespace: string,
+  candidateId: string,
+  now = nowIso()
+): D1PreparedStatement {
+  return db.prepare(
+    `UPDATE memory_five_axis_runs AS runs
+     SET status = ${candidateReviewStatusSql("runs")},
+         claim_token = NULL, lease_expires_at = NULL,
+         completed_at = ?, updated_at = ?
+     WHERE runs.status IN ('pending_review', 'applied', 'skipped')
+       AND EXISTS (
+         SELECT 1
+         FROM memory_candidate_axis_runs changed_link
+         JOIN memory_candidates changed_candidate
+           ON changed_candidate.namespace = changed_link.namespace
+          AND changed_candidate.external_key = changed_link.candidate_external_key
+         WHERE changed_candidate.namespace = ? AND changed_candidate.id = ?
+           AND changed_link.namespace = runs.namespace
+           AND changed_link.memory_id = runs.memory_id
+           AND changed_link.memory_revision = runs.memory_revision
+           AND changed_link.axis = runs.axis
+       )`
+  ).bind(now, now, namespace, candidateId);
+}
+
+export function prepareCandidateAxisRunReconciliationByExternalKey(
+  db: D1Database,
+  namespace: string,
+  candidateExternalKey: string,
+  now = nowIso()
+): D1PreparedStatement {
+  return db.prepare(
+    `UPDATE memory_five_axis_runs AS runs
+     SET status = ${candidateReviewStatusSql("runs")},
+         claim_token = NULL, lease_expires_at = NULL,
+         completed_at = ?, updated_at = ?
+     WHERE runs.status IN ('pending_review', 'applied', 'skipped')
+       AND EXISTS (
+         SELECT 1 FROM memory_candidate_axis_runs changed_link
+         WHERE changed_link.namespace = ?
+           AND changed_link.candidate_external_key = ?
+           AND changed_link.namespace = runs.namespace
+           AND changed_link.memory_id = runs.memory_id
+           AND changed_link.memory_revision = runs.memory_revision
+           AND changed_link.axis = runs.axis
+       )`
+  ).bind(now, now, namespace, candidateExternalKey);
+}
+
+function prepareAxisRunReconciliation(
+  db: D1Database,
+  key: FiveAxisRunKey,
+  now: string
+): D1PreparedStatement {
+  return db.prepare(
+    `UPDATE memory_five_axis_runs AS runs
+     SET status = ${candidateReviewStatusSql("runs")},
+         claim_token = NULL, lease_expires_at = NULL,
+         completed_at = ?, updated_at = ?
+     WHERE runs.namespace = ? AND runs.memory_id = ?
+       AND runs.memory_revision = ? AND runs.axis = ?
+       AND runs.status = 'pending_review'`
+  ).bind(now, now, key.namespace, key.memoryId, key.memoryRevision, key.axis);
+}
+
 export async function getFiveAxisRun(
   db: D1Database,
   key: FiveAxisRunKey
@@ -77,10 +174,13 @@ export async function completeFiveAxisRun(
   key: FiveAxisRunKey,
   claimToken: string,
   status: Exclude<FiveAxisRunStatus, "running" | "failed">,
-  result: unknown
+  result: unknown,
+  candidateExternalKeys: string[] = []
 ): Promise<boolean> {
   const now = nowIso();
-  const write = await db.prepare(
+  const uniqueCandidateKeys = [...new Set(candidateExternalKeys.map((value) => value.trim()).filter(Boolean))];
+  if (status === "pending_review" && uniqueCandidateKeys.length === 0) return false;
+  const writeStatement = db.prepare(
     `UPDATE memory_five_axis_runs
      SET status = ?, result_json = ?, last_error = NULL, claim_token = NULL,
          lease_expires_at = NULL, completed_at = ?, updated_at = ?
@@ -96,8 +196,48 @@ export async function completeFiveAxisRun(
     key.memoryRevision,
     key.axis,
     claimToken
-  ).run();
-  return (write.meta.changes ?? 0) === 1;
+  );
+  if (status !== "pending_review") {
+    const write = await writeStatement.run();
+    return (write.meta.changes ?? 0) === 1;
+  }
+
+  const linkStatements = uniqueCandidateKeys.map((candidateExternalKey) => db.prepare(
+    `INSERT OR IGNORE INTO memory_candidate_axis_runs (
+       namespace, candidate_external_key, memory_id, memory_revision, axis, created_at
+     )
+     SELECT ?, ?, ?, ?, ?, ?
+     WHERE EXISTS (
+       SELECT 1 FROM memory_five_axis_runs
+       WHERE namespace = ? AND memory_id = ? AND memory_revision = ? AND axis = ?
+         AND status = 'running' AND claim_token = ?
+     )
+       AND EXISTS (
+         SELECT 1 FROM memory_candidates
+         WHERE namespace = ? AND external_key = ?
+       )`
+  ).bind(
+    key.namespace,
+    candidateExternalKey,
+    key.memoryId,
+    key.memoryRevision,
+    key.axis,
+    now,
+    key.namespace,
+    key.memoryId,
+    key.memoryRevision,
+    key.axis,
+    claimToken,
+    key.namespace,
+    candidateExternalKey
+  ));
+  const updateIndex = linkStatements.length;
+  const writes = await db.batch([
+    ...linkStatements,
+    writeStatement,
+    prepareAxisRunReconciliation(db, key, now)
+  ]);
+  return (writes[updateIndex]?.meta.changes ?? 0) === 1;
 }
 
 export async function failFiveAxisRun(

@@ -51,7 +51,14 @@ type CoordinateProjectionResult = CoordinateBackfillResult | { skipped: "coordin
 interface AxisRunStore {
   get(env: Env, key: FiveAxisRunKey): Promise<MemoryFiveAxisRunRecord | null>;
   claim(env: Env, key: FiveAxisRunKey): Promise<string | null>;
-  complete(env: Env, key: FiveAxisRunKey, claimToken: string, status: AxisTerminalStatus, result: unknown): Promise<boolean>;
+  complete(
+    env: Env,
+    key: FiveAxisRunKey,
+    claimToken: string,
+    status: AxisTerminalStatus,
+    result: unknown,
+    candidateExternalKeys?: string[]
+  ): Promise<boolean>;
   fail(env: Env, key: FiveAxisRunKey, claimToken: string, error: unknown): Promise<boolean>;
 }
 
@@ -69,7 +76,14 @@ export interface MemoryFiveAxisProjectionDependencies {
 const defaultAxisRunStore: AxisRunStore = {
   get: (env, key) => getFiveAxisRun(env.DB, key),
   claim: (env, key) => claimFiveAxisRun(env.DB, key),
-  complete: (env, key, claimToken, status, result) => completeFiveAxisRun(env.DB, key, claimToken, status, result),
+  complete: (env, key, claimToken, status, result, candidateExternalKeys) => completeFiveAxisRun(
+    env.DB,
+    key,
+    claimToken,
+    status,
+    result,
+    candidateExternalKeys
+  ),
   fail: (env, key, claimToken, error) => failFiveAxisRun(env.DB, key, claimToken, error)
 };
 
@@ -121,7 +135,8 @@ async function runAxisStage<T>(
   store: AxisRunStore | undefined,
   key: FiveAxisRunKey,
   statusOf: (result: T) => AxisTerminalStatus,
-  run: () => Promise<T>
+  run: () => Promise<T>,
+  candidateExternalKeysOf: (result: T) => string[] = () => []
 ): Promise<AxisStageResult<T>> {
   const previous = store ? await store.get(env, key) : null;
   const reusable = terminalStoredResult<T>(previous);
@@ -136,8 +151,23 @@ async function runAxisStage<T>(
   try {
     const value = await run();
     const status = statusOf(value);
-    if (store && claimToken && !await store.complete(env, key, claimToken, status, value)) {
-      return { value, outcome: { status: "deferred", reused: false } };
+    if (store && claimToken) {
+      if (!await store.complete(
+        env,
+        key,
+        claimToken,
+        status,
+        value,
+        candidateExternalKeysOf(value)
+      )) {
+        return { value, outcome: { status: "deferred", reused: false } };
+      }
+      if (status === "pending_review") {
+        const completed = await store.get(env, key);
+        if (completed && ["pending_review", "applied", "skipped"].includes(completed.status)) {
+          return { value, outcome: { status: completed.status, reused: false } };
+        }
+      }
     }
     return { value, outcome: { status, reused: false } };
   } catch (error) {
@@ -180,7 +210,10 @@ export async function projectMemoryIntoFiveAxes(
         await dependencies.syncVector(env, updated);
       }
       return result;
-    }
+    },
+    (result) => "candidateExternalKeys" in result && Array.isArray(result.candidateExternalKeys)
+      ? result.candidateExternalKeys
+      : []
   );
 
   const eBlocksX = e.outcome.status === "failed" || e.outcome.status === "deferred";
@@ -197,7 +230,8 @@ export async function projectMemoryIntoFiveAxes(
         (result) => result.queued > 0
           ? "pending_review"
           : result.outcome === "reconciled" ? "applied" : "skipped",
-        () => dependencies.projectTimeline(env, current)
+        () => dependencies.projectTimeline(env, current),
+        (result) => result.candidateExternalKeys ?? []
       );
 
   const y = await runAxisStage(
@@ -213,7 +247,8 @@ export async function projectMemoryIntoFiveAxes(
       });
       if (result.error) throw new Error(`y_relation_projection_failed:${result.error}`);
       return result;
-    }
+    },
+    (result) => result.candidateExternalKeys ?? []
   );
 
   const z = await runAxisStage(
@@ -223,7 +258,8 @@ export async function projectMemoryIntoFiveAxes(
     (result) => result.candidates > 0 ? "pending_review" : "skipped",
     () => current.fact_key
       ? dependencies.projectFacts(env, input.namespace, { factKeys: [current.fact_key] })
-      : Promise.resolve({ conflicts: 0, candidates: 0 })
+      : Promise.resolve({ conflicts: 0, candidates: 0, candidateExternalKeys: [] }),
+    (result) => result.candidateExternalKeys ?? []
   );
 
   const m = await runAxisStage(
@@ -231,7 +267,8 @@ export async function projectMemoryIntoFiveAxes(
     store,
     axisKey(input, memoryRevision, "M"),
     (result) => result.archive > 0 || result.relations > 0 ? "pending_review" : "skipped",
-    () => dependencies.projectMetabolism(env, input.namespace, { memoryIds: [input.memoryId] })
+    () => dependencies.projectMetabolism(env, input.namespace, { memoryIds: [input.memoryId] }),
+    (result) => result.candidateExternalKeys ?? []
   );
 
   const axes: Record<FiveAxisName, AxisProjectionOutcome> = {

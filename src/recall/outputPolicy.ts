@@ -1,7 +1,15 @@
 import type { MemoryApiRecord } from "../types";
 
 export const RECALL_EXCLUDED_TYPES = new Set(["diary", "layla_diary", "auto_diary"]);
-export function isRecallEligible<T extends { type: string }>(record: T): boolean { return !RECALL_EXCLUDED_TYPES.has(record.type.toLowerCase()); }
+export function isRecallEligible<T extends {
+  type: string;
+  status?: string;
+  active_fact?: number | boolean;
+}>(record: T): boolean {
+  if (RECALL_EXCLUDED_TYPES.has(record.type.toLowerCase())) return false;
+  if (record.status !== undefined && record.status !== "active") return false;
+  return record.active_fact !== 0 && record.active_fact !== false;
+}
 
 export function keepRelatedContext(primary: MemoryApiRecord[], related: MemoryApiRecord[], topK: number): MemoryApiRecord[] {
   const kept = new Set(primary.map((memory) => memory.id));

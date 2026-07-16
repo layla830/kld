@@ -1,5 +1,9 @@
 import { newId } from "../utils/ids";
 import { nowIso } from "../utils/time";
+import {
+  prepareCandidateAxisRunReconciliation,
+  prepareCandidateAxisRunReconciliationByExternalKey
+} from "./memoryFiveAxisRuns";
 
 export interface MemoryCandidateRecord {
   id: string;
@@ -243,16 +247,36 @@ export async function updateMemoryCandidateEvidence(
 
 export async function resolveMemoryCandidate(db: D1Database, namespace: string, id: string, status: "approved" | "rejected", resultMemoryId?: string | null): Promise<boolean> {
   const now = nowIso();
-  const result = await db.prepare(
+  const update = db.prepare(
     "UPDATE memory_candidates SET status = ?, result_memory_id = ?, resolved_at = ?, updated_at = ? WHERE namespace = ? AND id = ? AND status IN ('pending','needs_subject_review')"
-  ).bind(status, resultMemoryId ?? null, now, now, namespace, id).run();
-  return (result.meta.changes ?? 0) > 0;
+  ).bind(status, resultMemoryId ?? null, now, now, namespace, id);
+  const results = await db.batch([
+    update,
+    prepareCandidateAxisRunReconciliation(db, namespace, id, now)
+  ]);
+  return (results[0]?.meta.changes ?? 0) > 0;
+}
+
+export async function rollbackMemoryCandidate(db: D1Database, namespace: string, id: string): Promise<boolean> {
+  const now = nowIso();
+  const update = db.prepare(
+    "UPDATE memory_candidates SET status = 'rolled_back', resolved_at = ?, updated_at = ? WHERE namespace = ? AND id = ? AND status = 'approved'"
+  ).bind(now, now, namespace, id);
+  const results = await db.batch([
+    update,
+    prepareCandidateAxisRunReconciliation(db, namespace, id, now)
+  ]);
+  return (results[0]?.meta.changes ?? 0) > 0;
 }
 
 export async function dismissPendingMemoryCandidateByExternalKey(db: D1Database, namespace: string, externalKey: string): Promise<boolean> {
   const now = nowIso();
-  const result = await db.prepare(
+  const update = db.prepare(
     "UPDATE memory_candidates SET status = 'rejected', resolved_at = ?, updated_at = ? WHERE namespace = ? AND external_key = ? AND status IN ('pending','needs_subject_review')"
-  ).bind(now, now, namespace, externalKey).run();
-  return (result.meta.changes ?? 0) > 0;
+  ).bind(now, now, namespace, externalKey);
+  const results = await db.batch([
+    update,
+    prepareCandidateAxisRunReconciliationByExternalKey(db, namespace, externalKey, now)
+  ]);
+  return (results[0]?.meta.changes ?? 0) > 0;
 }

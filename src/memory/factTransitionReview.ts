@@ -40,14 +40,16 @@ export async function scanFactTransitionReviewCandidates(
   env: Env,
   namespace = "default",
   options: { factKeys?: string[]; dryRun?: boolean } = {}
-): Promise<{ conflicts: number; candidates: number }> {
+): Promise<{ conflicts: number; candidates: number; candidateExternalKeys?: string[] }> {
   const reviews = await listFactKeyConflictsForReview(env, namespace, 200, options.factKeys);
   let candidates = 0;
+  const candidateExternalKeys: string[] = [];
   for (const review of reviews) {
     if (review.reason !== "pending_supersede_review" || !review.best) continue;
     for (const weaker of review.weaker) {
+      const candidateExternalKey = externalKey(review.fact_key, review.best, weaker);
       if (!options.dryRun) await upsertMemoryCandidate(env.DB, namespace, {
-        externalKey: externalKey(review.fact_key, review.best, weaker),
+        externalKey: candidateExternalKey,
         dreamDate: new Date().toISOString().slice(0, 10),
         action: "z_supersede",
         subject: "system",
@@ -62,8 +64,13 @@ export async function scanFactTransitionReviewCandidates(
         sourceChunkIds: [],
         status: "pending"
       });
+      if (!options.dryRun) candidateExternalKeys.push(candidateExternalKey);
       candidates += 1;
     }
   }
-  return { conflicts: reviews.filter((review) => review.reason === "pending_supersede_review").length, candidates };
+  return {
+    conflicts: reviews.filter((review) => review.reason === "pending_supersede_review").length,
+    candidates,
+    ...(candidateExternalKeys.length > 0 ? { candidateExternalKeys } : {})
+  };
 }

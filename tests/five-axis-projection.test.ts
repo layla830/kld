@@ -358,4 +358,83 @@ describe("per-memory five-axis projection", () => {
     expect(calls).toEqual({ X: 1, Y: 2, Z: 0, E: 1, M: 1 });
     expect(records.get("Y")?.attempts).toBe(2);
   });
+
+  it("links every review-producing axis to its candidate external keys", async () => {
+    const initial = memory({ thread: "kld", valence: 0.2 });
+    const records = new Map<FiveAxisName, MemoryFiveAxisRunRecord>();
+    const linked = new Map<FiveAxisName, string[]>();
+    const dependencies: MemoryFiveAxisProjectionDependencies = {
+      getMemory: async () => initial,
+      projectTimeline: async () => ({
+        scanned: 1,
+        outcome: "queued",
+        dates: ["2026-07-20"],
+        queued: 1,
+        candidateExternalKeys: ["timeline:1"]
+      }),
+      projectCoordinates: async () => ({ skipped: "coordinates_present" }),
+      syncVector: async () => "synced",
+      projectRelations: async () => ({
+        scanned: 1,
+        inserted: 0,
+        review: 1,
+        proposed: 0,
+        candidates: 1,
+        candidateExternalKeys: ["relation:1"]
+      }),
+      projectFacts: async () => ({
+        conflicts: 1,
+        candidates: 1,
+        candidateExternalKeys: ["fact:1"]
+      }),
+      projectMetabolism: async () => ({
+        archive: 1,
+        relations: 0,
+        candidateExternalKeys: ["metabolism:1"]
+      }),
+      axisRuns: {
+        get: async (_env, key) => records.get(key.axis) ?? null,
+        claim: async (_env, key) => `claim-${key.axis}`,
+        complete: async (_env, key, _claimToken, status, value, candidateExternalKeys) => {
+          linked.set(key.axis, candidateExternalKeys ?? []);
+          records.set(key.axis, {
+            namespace: key.namespace,
+            memory_id: key.memoryId,
+            memory_revision: key.memoryRevision,
+            axis: key.axis,
+            status,
+            attempts: 1,
+            result_json: JSON.stringify(value),
+            last_error: null,
+            claim_token: null,
+            lease_expires_at: null,
+            started_at: "2026-07-16T00:00:00.000Z",
+            completed_at: "2026-07-16T00:00:01.000Z",
+            updated_at: "2026-07-16T00:00:01.000Z"
+          });
+          return true;
+        },
+        fail: async () => true
+      }
+    };
+
+    const result = await projectMemoryIntoFiveAxes({} as Env, {
+      namespace: "default",
+      memoryId: initial.id,
+      memoryRevision: 9,
+      projectionKey: "five-axis:candidate-links:v9"
+    }, dependencies);
+
+    expect(result?.axes.X.status).toBe("pending_review");
+    expect(result?.axes.Y.status).toBe("pending_review");
+    expect(result?.axes.Z.status).toBe("pending_review");
+    expect(result?.axes.M.status).toBe("pending_review");
+    expect(linked).toEqual(new Map([
+      ["E", []],
+      ["X", ["timeline:1"]],
+      ["Y", ["relation:1"]],
+      ["Z", ["fact:1"]],
+      ["M", ["metabolism:1"]]
+    ]));
+  });
 });

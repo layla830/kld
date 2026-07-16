@@ -83,6 +83,8 @@ function toLegacyMemoryRecord(match: VectorizeMatch, input: { namespace: string 
   const metadata = (match.metadata || {}) as MetadataMap;
   const status = readMetadataString(metadata, "status");
   if (status && status !== "active") return null;
+  const activeFact = readMetadataActiveFact(metadata);
+  if (activeFact === 0) return null;
 
   const content = readMetadataText(metadata);
   if (!content) return null;
@@ -96,7 +98,7 @@ function toLegacyMemoryRecord(match: VectorizeMatch, input: { namespace: string 
     content,
     summary: readMetadataString(metadata, "summary"),
     fact_key: readMetadataString(metadata, "fact_key"),
-    active_fact: readMetadataActiveFact(metadata),
+    active_fact: activeFact,
     thread: readMetadataString(metadata, "thread"),
     risk_level: readMetadataString(metadata, "risk_level"),
     urgency_level: readMetadataString(metadata, "urgency_level"),
@@ -163,7 +165,7 @@ export async function searchVectorMemories(
   }
 
   const allRecords = await fetchMemoriesByIds(env.DB, { namespace: input.namespace, ids: [...scoredIds.keys()] });
-  const activeRecords = allRecords.filter((record) => record.status === "active");
+  const activeRecords = allRecords.filter((record) => record.status === "active" && record.active_fact !== 0);
   const foundD1Ids = new Set(allRecords.map((record) => record.id));
   const d1Records = activeRecords.map((record) => {
     const score = scoredIds.get(record.id) ?? 0;

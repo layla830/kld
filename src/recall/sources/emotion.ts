@@ -29,7 +29,7 @@ export async function searchEmotionMemories(env: Env, namespace: string, rawQuer
   if (!coord) return [];
   try {
     const rows = await env.DB.prepare(
-      `SELECT * FROM memories WHERE namespace = ? AND status = 'active'
+      `SELECT * FROM memories WHERE namespace = ? AND status = 'active' AND active_fact != 0
        AND valence IS NOT NULL AND arousal IS NOT NULL
        ORDER BY importance DESC, updated_at DESC LIMIT ?`
     ).bind(namespace, Math.min(limit * 4, 80)).all<MemoryRecord>();

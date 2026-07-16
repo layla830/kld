@@ -28,12 +28,17 @@ function dateKey(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
+interface QueuedCandidates {
+  count: number;
+  candidateExternalKeys: string[];
+}
+
 async function queueArchiveCandidates(
   env: { DB: D1Database },
   namespace: string,
   memoryIds: string[] = [],
   dryRun = false
-): Promise<number> {
+): Promise<QueuedCandidates> {
   const now = new Date().toISOString();
   const coldBefore = new Date(Date.now() - COLD_MEMORY_DAYS * 86_400_000).toISOString();
   const ids = [...new Set(memoryIds.map((id) => id.trim()).filter(Boolean))].slice(0, 20);
@@ -70,13 +75,15 @@ async function queueArchiveCandidates(
   ).all<MemoryRecord>();
 
   let queued = 0;
+  const candidateExternalKeys: string[] = [];
   for (const memory of rows.results ?? []) {
     if (PROTECTED_MEMORY_TYPES.has(memory.type)) continue;
     const policy = memory.type === "project_state" && memory.expires_at && memory.expires_at < now
       ? "expired_project_state"
       : "cold_low_signal";
+    const candidateExternalKey = `m-review:archive:${policy}:${memory.id}:${memory.updated_at}`;
     if (!dryRun) await upsertMemoryCandidate(env.DB, namespace, {
-      externalKey: `m-review:archive:${policy}:${memory.id}:${memory.updated_at}`,
+      externalKey: candidateExternalKey,
       dreamDate: dateKey(),
       action: "m_archive",
       subject: "system",
@@ -93,9 +100,10 @@ async function queueArchiveCandidates(
       sourceChunkIds: [],
       status: "pending"
     });
+    if (!dryRun) candidateExternalKeys.push(candidateExternalKey);
     queued += 1;
   }
-  return queued;
+  return { count: queued, candidateExternalKeys };
 }
 
 async function relationCleanupRows(
@@ -168,12 +176,14 @@ async function queueRelationCandidates(
   namespace: string,
   memoryIds: string[] = [],
   dryRun = false
-): Promise<number> {
+): Promise<QueuedCandidates> {
   const rows = await relationCleanupRows(env, namespace, memoryIds);
-  if (dryRun) return rows.length;
+  if (dryRun) return { count: rows.length, candidateExternalKeys: [] };
+  const candidateExternalKeys: string[] = [];
   for (const row of rows) {
+    const candidateExternalKey = `m-review:relation:${row.relation.id}`;
     await upsertMemoryCandidate(env.DB, namespace, {
-      externalKey: `m-review:relation:${row.relation.id}`,
+      externalKey: candidateExternalKey,
       dreamDate: dateKey(),
       action: "m_relation_cleanup",
       subject: "system",
@@ -181,18 +191,24 @@ async function queueRelationCandidates(
       sourceChunkIds: [],
       status: "pending"
     });
+    candidateExternalKeys.push(candidateExternalKey);
   }
-  return rows.length;
+  return { count: rows.length, candidateExternalKeys };
 }
 
 export async function scanMetabolismReviewCandidates(
   env: { DB: D1Database },
   namespace = "default",
   options: { memoryIds?: string[]; dryRun?: boolean } = {}
-): Promise<{ archive: number; relations: number }> {
+): Promise<{ archive: number; relations: number; candidateExternalKeys?: string[] }> {
   const [archive, relations] = await Promise.all([
     queueArchiveCandidates(env, namespace, options.memoryIds, options.dryRun === true),
     queueRelationCandidates(env, namespace, options.memoryIds, options.dryRun === true)
   ]);
-  return { archive, relations };
+  const candidateExternalKeys = [...archive.candidateExternalKeys, ...relations.candidateExternalKeys];
+  return {
+    archive: archive.count,
+    relations: relations.count,
+    ...(candidateExternalKeys.length > 0 ? { candidateExternalKeys } : {})
+  };
 }
