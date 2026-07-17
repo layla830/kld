@@ -125,6 +125,47 @@ export async function putCacheEntry(db: D1Database, input: PutCacheEntryInput): 
   };
 }
 
+export async function putCacheEntryIfAbsent(
+  db: D1Database,
+  input: PutCacheEntryInput
+): Promise<CacheEntryRecord> {
+  const now = nowIso();
+  const serialized = serializeValue(input.value);
+  const expiresAt = getExpiresAt(input.ttlSeconds);
+  const tags = JSON.stringify(input.tags ?? []);
+
+  await db
+    .prepare(
+      `INSERT INTO cache_entries (
+        id, namespace, key, value_json, value_text, content_type, tags,
+        size_bytes, expires_at, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(namespace, key) DO NOTHING`
+    )
+    .bind(
+      newId("cache"),
+      input.namespace,
+      input.key,
+      serialized.valueJson,
+      serialized.valueText,
+      input.contentType ?? null,
+      tags,
+      serialized.sizeBytes,
+      expiresAt,
+      now,
+      now
+    )
+    .run();
+
+  const record = await getCacheEntry(db, {
+    namespace: input.namespace,
+    key: input.key,
+    includeExpired: true
+  });
+  if (!record) throw new Error("cache_entry_insert_lost");
+  return record;
+}
+
 export async function getCacheEntry(
   db: D1Database,
   input: { namespace: string; key: string; includeExpired?: boolean }

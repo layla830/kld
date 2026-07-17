@@ -1,5 +1,10 @@
 import { loadEAxisConfig, systemClock } from "../config/runtime";
-import { getCacheEntry, parseCacheEntryValue } from "../db/cacheEntries";
+import {
+  getCacheEntry,
+  parseCacheEntryValue,
+  putCacheEntryIfAbsent,
+  type CacheEntryRecord
+} from "../db/cacheEntries";
 import type { Env } from "../types";
 
 export const E_AXIS_STATE_KEY = "lmc5:e-axis:runtime-state";
@@ -50,12 +55,29 @@ export function evaluateShadowState(
   };
 }
 
-async function readStartedAt(db: D1Database, namespace: string): Promise<string | null> {
-  const record = await getCacheEntry(db, { namespace, key: E_AXIS_STATE_KEY });
-  const value = record ? parseCacheEntryValue(record) : null;
+function startedAtOf(record: CacheEntryRecord): string | null {
+  const value = parseCacheEntryValue(record);
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const startedAt = (value as Record<string, unknown>).started_at;
   return typeof startedAt === "string" && Number.isFinite(Date.parse(startedAt)) ? startedAt : null;
+}
+
+async function readOrInitializeStartedAt(
+  db: D1Database,
+  namespace: string,
+  now: number
+): Promise<string | null> {
+  const existing = await getCacheEntry(db, { namespace, key: E_AXIS_STATE_KEY });
+  if (existing) return startedAtOf(existing);
+
+  const created = await putCacheEntryIfAbsent(db, {
+    namespace,
+    key: E_AXIS_STATE_KEY,
+    value: { started_at: new Date(now).toISOString() },
+    contentType: "application/json",
+    tags: ["lmc5", "e-axis", "runtime-state"]
+  });
+  return startedAtOf(created);
 }
 
 export async function readShadowState(
@@ -65,7 +87,7 @@ export async function readShadowState(
 ): Promise<ShadowState> {
   const config = loadEAxisConfig(env);
   return evaluateShadowState({
-    startedAt: await readStartedAt(env.DB, namespace),
+    startedAt: await readOrInitializeStartedAt(env.DB, namespace, now),
     shadowDays: config.shadowDays,
     rankingEnabled: config.rankingEnabled
   }, now);

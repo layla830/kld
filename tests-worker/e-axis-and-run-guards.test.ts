@@ -16,6 +16,29 @@ import { mergeSearchResults } from "../src/recall/fusion";
 import type { Env } from "../src/types";
 
 describe("E-axis Worker runtime state", () => {
+  it("starts a fresh database shadow window at first use and keeps the first start time", async () => {
+    const startedAt = "2026-07-17T09:30:00.000Z";
+    await expect(env.DB.prepare(
+      "SELECT id FROM cache_entries WHERE namespace = 'default' AND key = ?"
+    ).bind(E_AXIS_STATE_KEY).first()).resolves.toBeNull();
+
+    const runtimeEnv: Env = {
+      DB: env.DB,
+      E_AXIS_SHADOW_DAYS: "7",
+      E_AXIS_RANKING_ENABLED: "true"
+    };
+    await expect(readShadowState(runtimeEnv, "default", Date.parse(startedAt))).resolves.toMatchObject({
+      configured: true,
+      startedAt,
+      inShadow: true,
+      readyForPromotion: false,
+      daysElapsed: 0,
+      daysRemaining: 7
+    });
+    await expect(readShadowState(runtimeEnv, "default", Date.parse("2026-07-18T09:30:00.000Z")))
+      .resolves.toMatchObject({ startedAt, daysElapsed: 1, daysRemaining: 6 });
+  });
+
   it("reads the durable D1 shadow start and switches the actual fusion order only when promotion is enabled", async () => {
     await putCacheEntry(env.DB, {
       namespace: "default",

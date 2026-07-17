@@ -1,5 +1,5 @@
 import { env } from "cloudflare:workers";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   approveFactTransitionCandidate,
   rollbackFactTransitionCandidate
@@ -37,6 +37,10 @@ const coordinates = {
   valence: 0.2,
   arousal: 0.3
 };
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe("Z-axis Worker circuit", () => {
   it("creates a conflict candidate, supersedes with vector deletion, and rolls back with vector upsert", async () => {
@@ -145,7 +149,89 @@ describe("Z-axis Worker circuit", () => {
       best.id
     )).resolves.toMatchObject({ status: "active", active_fact: 1 });
     expect(fetchSpy).toHaveBeenCalledTimes(1);
-    fetchSpy.mockRestore();
+  });
+
+  it("completes rollback while marking vector sync failed when the embedding adapter is unavailable", async () => {
+    const best = await createMemory(env.DB, {
+      namespace: "default",
+      type: "project_state",
+      content: "current runtime fact with unavailable embedding",
+      factKey: "runtime:z:embedding-failure",
+      importance: 0.95,
+      confidence: 0.95,
+      ...coordinates
+    });
+    const weaker = await createMemory(env.DB, {
+      namespace: "default",
+      type: "project_state",
+      content: "older runtime fact with unavailable embedding",
+      factKey: "runtime:z:embedding-failure",
+      importance: 0.4,
+      confidence: 0.7,
+      ...coordinates
+    });
+    const upsertedIds: string[] = [];
+    const vectorize = {
+      deleteByIds: async (_ids: string[]) => ({ mutationId: "delete-runtime-z-failure" }),
+      upsert: async (vectors: VectorizeVector[]) => {
+        upsertedIds.push(...vectors.map((vector) => vector.id));
+        return { mutationId: "upsert-runtime-z-failure" };
+      }
+    };
+    const runtimeEnv: Env = {
+      DB: env.DB,
+      DREAM_NAMESPACE: "default",
+      EMBEDDING_MODEL: "runtime-test-embedding",
+      UPSTREAM_BASE_URL: "https://runtime.test/v1",
+      UPSTREAM_API_KEY: "runtime-test-key",
+      VECTORIZE: vectorize as Env["VECTORIZE"]
+    };
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("embedding adapter unavailable"));
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    await projectMemoryIntoFiveAxes(runtimeEnv, {
+      namespace: "default",
+      memoryId: weaker.id,
+      memoryRevision: 1,
+      projectionKey: "runtime-z-embedding-failure"
+    }, {
+      projectRelations: async () => ({
+        scanned: 1,
+        inserted: 0,
+        review: 0,
+        proposed: 0,
+        candidates: 0,
+        candidateExternalKeys: []
+      })
+    });
+    const candidate = await first<CandidateRow>(
+      `SELECT id, status, action FROM memory_candidates
+       WHERE namespace = 'default' AND action = 'z_supersede' AND target_id = ?`,
+      weaker.id
+    );
+
+    await approveFactTransitionCandidate(runtimeEnv, formFor(candidate!.id));
+    await expect(rollbackFactTransitionCandidate(runtimeEnv, formFor(candidate!.id)))
+      .resolves.toMatchObject({ axis: "Z", action: "rollback" });
+    await expect(first<Pick<MemoryRecord, "status" | "active_fact" | "vector_sync_status">>(
+      "SELECT status, active_fact, vector_sync_status FROM memories WHERE namespace = 'default' AND id = ?",
+      weaker.id
+    )).resolves.toMatchObject({ status: "active", active_fact: 1, vector_sync_status: "failed" });
+    await expect(first<CandidateRow>(
+      "SELECT id, status, action FROM memory_candidates WHERE id = ?",
+      candidate!.id
+    )).resolves.toMatchObject({ status: "rolled_back" });
+    await expect(first<{ status: string }>(
+      `SELECT status FROM memory_five_axis_runs
+       WHERE namespace = 'default' AND memory_id = ? AND memory_revision = 1 AND axis = 'Z'`,
+      weaker.id
+    )).resolves.toMatchObject({ status: "skipped" });
+    await expect(first<MemoryRecord>(
+      "SELECT * FROM memories WHERE namespace = 'default' AND id = ?",
+      best.id
+    )).resolves.toMatchObject({ status: "active", active_fact: 1 });
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(upsertedIds).toEqual([]);
   });
 });
 
@@ -228,7 +314,8 @@ describe("M-axis Worker circuit", () => {
     });
     const candidate = await first<CandidateRow>(
       `SELECT id, status, action FROM memory_candidates
-       WHERE namespace = 'default' AND action = 'm_relation_cleanup'`
+       WHERE namespace = 'default' AND action = 'm_relation_cleanup' AND external_key = ?`,
+      `m-review:relation:${relationId}`
     );
     expect(candidate).toMatchObject({ status: "pending", action: "m_relation_cleanup" });
 
