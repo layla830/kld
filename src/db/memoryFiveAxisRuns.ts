@@ -136,6 +136,7 @@ export async function getFiveAxisRun(
 }
 
 const AXIS_RUN_LEASE_MS = 15 * 60 * 1000;
+export const MAX_FIVE_AXIS_RUN_ATTEMPTS = 5;
 
 export async function claimFiveAxisRun(db: D1Database, key: FiveAxisRunKey): Promise<string | null> {
   const now = nowIso();
@@ -152,10 +153,13 @@ export async function claimFiveAxisRun(db: D1Database, key: FiveAxisRunKey): Pro
        result_json = NULL, last_error = NULL, claim_token = excluded.claim_token,
        lease_expires_at = excluded.lease_expires_at, started_at = excluded.started_at,
        completed_at = NULL, updated_at = excluded.updated_at
-     WHERE memory_five_axis_runs.status = 'failed'
-        OR (memory_five_axis_runs.status = 'running'
-            AND (memory_five_axis_runs.lease_expires_at IS NULL
-                 OR memory_five_axis_runs.lease_expires_at <= excluded.started_at))`
+     WHERE memory_five_axis_runs.attempts < ?
+       AND (
+         memory_five_axis_runs.status = 'failed'
+         OR (memory_five_axis_runs.status = 'running'
+             AND (memory_five_axis_runs.lease_expires_at IS NULL
+                  OR memory_five_axis_runs.lease_expires_at <= excluded.started_at))
+       )`
   ).bind(
     key.namespace,
     key.memoryId,
@@ -164,7 +168,8 @@ export async function claimFiveAxisRun(db: D1Database, key: FiveAxisRunKey): Pro
     claimToken,
     leaseExpiresAt,
     now,
-    now
+    now,
+    MAX_FIVE_AXIS_RUN_ATTEMPTS
   ).run();
   return (result.meta.changes ?? 0) === 1 ? claimToken : null;
 }

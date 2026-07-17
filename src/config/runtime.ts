@@ -214,14 +214,12 @@ export function loadRetentionConfig(env: Env): RetentionConfig {
 }
 
 export interface EAxisConfig {
-  startedAt: string | null;
   shadowDays: number;
   rankingEnabled: boolean;
 }
 
-export function loadEAxisConfig(env: Pick<Env, "E_AXIS_STARTED_AT" | "E_AXIS_SHADOW_DAYS" | "E_AXIS_RANKING_ENABLED">): EAxisConfig {
+export function loadEAxisConfig(env: Pick<Env, "E_AXIS_SHADOW_DAYS" | "E_AXIS_RANKING_ENABLED">): EAxisConfig {
   return {
-    startedAt: clean(env.E_AXIS_STARTED_AT) ?? null,
     shadowDays: integer(env.E_AXIS_SHADOW_DAYS, 30, 0, 365),
     rankingEnabled: strictFlag(env.E_AXIS_RANKING_ENABLED)
   };

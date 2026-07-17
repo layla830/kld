@@ -10,7 +10,7 @@ import {
 } from "../../memory/metabolismReview";
 import { readFormText } from "./utils";
 
-type MetabolismAction = "m_archive" | "m_relation_cleanup";
+export type MetabolismAction = "m_archive" | "m_relation_cleanup";
 type MetabolismResult = { memory: MemoryRecord | null; action: MetabolismAction | "rollback" };
 type MetabolismBatchDecision = "approve" | "reject";
 

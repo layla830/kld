@@ -95,6 +95,7 @@ export async function searchMemories(env: Env, input: SearchMemoriesInput): Prom
     .map((record) => ({ ...record, score: Math.max(record.score, 0.82), keywordScore: Math.max(record.score, 0.82) })) : [];
 
   const emotionRecords = (await searchEmotionMemories(env, input.namespace, plan.rawQuery)).filter(isRecallEligible);
+  const applyEAxis = await shouldApplyEAxisToRanking(env, input.namespace);
   const fusion = mergeSearchResults(vectorRecords, [
     ...keywordRecords,
     ...hintedRecords.map((record) => ({ ...record, score: QUERY_HINT_SCORE, keywordScore: QUERY_HINT_SCORE })),
@@ -105,7 +106,7 @@ export async function searchMemories(env: Env, input: SearchMemoriesInput): Prom
     ...messageRecords, ...literalRecords, ...emotionRecords
   ], {
     query: plan.searchQuery, expandedQuery: plan.expandedQuery, limit,
-    timeIntent: plan.timeIntent, applyEAxis: shouldApplyEAxisToRanking(env), observeTopK: topK
+    timeIntent: plan.timeIntent, applyEAxis, observeTopK: topK
   });
   input.onEAxisTrace?.(fusion.eAxis);
   const fused = fusion.records;

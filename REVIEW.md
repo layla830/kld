@@ -1,6 +1,6 @@
 # Code Review Status
 
-Updated: 2026-05-24
+Updated: 2026-07-17
 
 This file tracks the quick review that originally focused on running this Worker without Cloudflare AI Gateway as the default path. It is now a status note rather than a list of still-open findings.
 
@@ -73,23 +73,15 @@ Recommended follow-up:
 2. Confirm the admin page accepts that password.
 3. Remove the `MEMORY_MCP_API_KEY` fallback in a later PR.
 
-## Still Open
+## Current Verification
 
-### README is stale
-
-The README still describes AI Gateway as the main required setup in some places and has older memory filter defaults. It should be updated to make direct upstream mode the default deployment path.
-
-### Some assembler comments are stale
-
-A few comments still mention later integration phases even though the assembler is already wired into the main chat path. This is low-risk documentation cleanup.
-
-### Deployment verification still needed
-
-These fixes were made through GitHub and reviewed by diff. A deployment verification pass should still check:
+The repository-level verification for the current code is:
 
 ```bash
 npm run typecheck
-npm run dev
+npm run types:check
+npm test
+npm run test:lmc5-circuits
 ```
 
-Then test non-streaming chat, streaming chat, memory recall, MCP, admin login, and image requests against the deployed Worker.
+README wording, historical assembler phase comments, and per-deployment production smoke checks are no longer tracked as open findings in this historical review note. Deployment health belongs to the build/deploy run and its production verification record.

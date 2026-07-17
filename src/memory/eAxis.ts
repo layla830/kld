@@ -1,4 +1,13 @@
 import { loadEAxisConfig, systemClock } from "../config/runtime";
+import {
+  getCacheEntry,
+  parseCacheEntryValue,
+  putCacheEntryIfAbsent,
+  type CacheEntryRecord
+} from "../db/cacheEntries";
+import type { Env } from "../types";
+
+export const E_AXIS_STATE_KEY = "lmc5:e-axis:runtime-state";
 
 export interface ShadowState {
   configured: boolean;
@@ -11,20 +20,19 @@ export interface ShadowState {
   daysRemaining: number;
 }
 
-export function readShadowState(
-  env: { E_AXIS_STARTED_AT?: string; E_AXIS_SHADOW_DAYS?: string; E_AXIS_RANKING_ENABLED?: string },
+export function evaluateShadowState(
+  input: { startedAt: string | null; shadowDays: number; rankingEnabled: boolean },
   now = systemClock.nowMs()
 ): ShadowState {
-  const config = loadEAxisConfig(env);
-  const startedAt = config.startedAt ? Date.parse(config.startedAt) : NaN;
-  const { shadowDays } = config;
+  const startedAt = input.startedAt ? Date.parse(input.startedAt) : NaN;
+  const { shadowDays } = input;
 
   if (!Number.isFinite(startedAt)) {
     return {
       configured: false,
       startedAt: null,
       shadowDays,
-      rankingEnabled: config.rankingEnabled,
+      rankingEnabled: input.rankingEnabled,
       readyForPromotion: false,
       inShadow: true,
       daysElapsed: 0,
@@ -39,7 +47,7 @@ export function readShadowState(
     configured: true,
     startedAt: new Date(startedAt).toISOString(),
     shadowDays,
-    rankingEnabled: config.rankingEnabled,
+    rankingEnabled: input.rankingEnabled,
     readyForPromotion: !inShadow,
     inShadow,
     daysElapsed,
@@ -47,9 +55,48 @@ export function readShadowState(
   };
 }
 
-export function shouldApplyEAxisToRanking(
-  env: { E_AXIS_STARTED_AT?: string; E_AXIS_SHADOW_DAYS?: string; E_AXIS_RANKING_ENABLED?: string }
-): boolean {
-  const state = readShadowState(env);
+function startedAtOf(record: CacheEntryRecord): string | null {
+  const value = parseCacheEntryValue(record);
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const startedAt = (value as Record<string, unknown>).started_at;
+  return typeof startedAt === "string" && Number.isFinite(Date.parse(startedAt)) ? startedAt : null;
+}
+
+async function readOrInitializeStartedAt(
+  db: D1Database,
+  namespace: string,
+  now: number
+): Promise<string | null> {
+  const existing = await getCacheEntry(db, { namespace, key: E_AXIS_STATE_KEY });
+  if (existing) return startedAtOf(existing);
+
+  const created = await putCacheEntryIfAbsent(db, {
+    namespace,
+    key: E_AXIS_STATE_KEY,
+    value: { started_at: new Date(now).toISOString() },
+    contentType: "application/json",
+    tags: ["lmc5", "e-axis", "runtime-state"]
+  });
+  return startedAtOf(created);
+}
+
+export async function readShadowState(
+  env: Pick<Env, "DB" | "E_AXIS_SHADOW_DAYS" | "E_AXIS_RANKING_ENABLED">,
+  namespace = "default",
+  now = systemClock.nowMs()
+): Promise<ShadowState> {
+  const config = loadEAxisConfig(env);
+  return evaluateShadowState({
+    startedAt: await readOrInitializeStartedAt(env.DB, namespace, now),
+    shadowDays: config.shadowDays,
+    rankingEnabled: config.rankingEnabled
+  }, now);
+}
+
+export async function shouldApplyEAxisToRanking(
+  env: Pick<Env, "DB" | "E_AXIS_SHADOW_DAYS" | "E_AXIS_RANKING_ENABLED">,
+  namespace = "default"
+): Promise<boolean> {
+  const state = await readShadowState(env, namespace);
   return state.rankingEnabled && state.readyForPromotion;
 }
