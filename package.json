@@ -12,7 +12,10 @@
     "memory:fact-key-audit": "node scripts/fact-key-audit.mjs",
     "memory:relations-audit": "node scripts/memory-relations-audit.mjs",
     "memory:lmc5-coordinates": "node scripts/lmc5-coordinate-audit.mjs",
-    "test": "vitest run",
+    "test": "npm run test:unit && npm run test:worker",
+    "test:unit": "vitest run --config vitest.config.ts",
+    "test:worker": "vitest run --config vitest.worker.config.ts",
+    "test:all": "npm test",
     "test:lmc5-circuits": "node scripts/lmc5-circuit-audit.mjs",
     "test:legacy-relations": "node scripts/run-legacy-relations-audit.mjs",
     "test:recall-regression": "node scripts/recall-regression.mjs",
@@ -22,9 +25,10 @@
     "db:migrate:remote": "wrangler d1 migrations apply companion_memory_proxy --remote"
   },
   "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.18.5",
     "@cloudflare/workers-types": "^4.20250927.0",
     "typescript": "^5.9.3",
-    "vitest": "^3.2.4",
+    "vitest": "^4.1.0",
     "wrangler": "^4.40.2"
   }
 }
