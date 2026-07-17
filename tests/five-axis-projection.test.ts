@@ -88,7 +88,8 @@ describe("per-memory five-axis projection", () => {
       projectMetabolism: async (_env, namespace, options) => {
         calls.push(`M:${namespace}:${options?.memoryIds?.join(",")}`);
         return { archive: 0, relations: 0 };
-      }
+      },
+      axisRuns: undefined
     };
 
     const result = await projectMemoryIntoFiveAxes({} as Env, {
@@ -121,7 +122,8 @@ describe("per-memory five-axis projection", () => {
       syncVector: unreachable,
       projectRelations: unreachable,
       projectFacts: unreachable,
-      projectMetabolism: unreachable
+      projectMetabolism: unreachable,
+      axisRuns: undefined
     };
     await expect(projectMemoryIntoFiveAxes({} as Env, {
       namespace: "default",
@@ -146,7 +148,8 @@ describe("per-memory five-axis projection", () => {
         error: "invalid_json"
       }),
       projectFacts: async () => ({ conflicts: 0, candidates: 0 }),
-      projectMetabolism: async () => ({ archive: 0, relations: 0 })
+      projectMetabolism: async () => ({ archive: 0, relations: 0 }),
+      axisRuns: undefined
     };
 
     const result = await projectMemoryIntoFiveAxes({} as Env, {

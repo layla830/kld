@@ -263,7 +263,7 @@ function renderEAxisObservability(data: EAxisObservabilityData): string {
   const timing = active
     ? `E 轴 tension/risk 已进入正式排序；仍保留基线对照。`
     : !state.configured
-      ? `E_AXIS_STARTED_AT 尚未配置。当前只记录假设启用后的排名变化，不会自动结束 shadow。`
+      ? `D1 中尚未配置 E 轴 shadow 起点。当前只记录假设启用后的排名变化，不会自动结束 shadow。`
       : state.inShadow
         ? `距离 shadow 观察完成还剩 ${state.daysRemaining} 天。当前只比较排名，不改变召回结果。`
         : `观察窗口已完成，E_AXIS_RANKING_ENABLED 仍为 false。审核误召与排名偏移后再显式放量。`;

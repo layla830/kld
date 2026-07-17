@@ -141,7 +141,7 @@ export async function fetchEAxisObservability(
   const changedQueries = observations.filter((item) => item.trace.top_k_changed).length;
   const boostedTotal = observations.reduce((sum, item) => sum + item.trace.boosted_count, 0);
   return {
-    state: readShadowState(env),
+    state: await readShadowState(env, namespace),
     windowDays,
     samples: observations.length,
     changedQueries,

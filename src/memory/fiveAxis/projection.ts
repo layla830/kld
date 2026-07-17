@@ -189,8 +189,12 @@ function axisKey(input: MemoryFiveAxisProjectionInput, memoryRevision: number, a
 export async function projectMemoryIntoFiveAxes(
   env: Env,
   input: MemoryFiveAxisProjectionInput,
-  dependencies: MemoryFiveAxisProjectionDependencies = defaultDependencies
+  dependencyOverrides: Partial<MemoryFiveAxisProjectionDependencies> = {}
 ): Promise<MemoryFiveAxisProjectionResult | null> {
+  const dependencies: MemoryFiveAxisProjectionDependencies = {
+    ...defaultDependencies,
+    ...dependencyOverrides
+  };
   const initial = await dependencies.getMemory(env, input.namespace, input.memoryId);
   if (!initial || initial.status !== "active") return null;
   const memoryRevision = input.memoryRevision ?? initial.five_axis_revision ?? 1;

@@ -14,14 +14,14 @@ import { queueRelationReviewCandidate } from "../relationReview";
 function dayAgoIso(): string {
   return new Date(Date.now() - 86_400_000).toISOString();
 }
-interface RelationCandidate {
+export interface RelationCandidate {
   pairId: string;
   source: MemoryRecord;
   target: MemoryRecord;
   vectorScore: number;
 }
 
-interface RelationHint {
+export interface RelationHint {
   pair_id: string;
   relation_type: string;
   strength: number;
@@ -179,10 +179,25 @@ async function proposeRelationsViaLlm(
   }
 }
 
+export interface RelationBuildDependencies {
+  findCandidates: typeof findRelationCandidates;
+  proposeRelations: typeof proposeRelationsViaLlm;
+  createRelation: typeof createMemoryRelation;
+  queueReviewCandidate: typeof queueRelationReviewCandidate;
+}
+
+const defaultRelationBuildDependencies: RelationBuildDependencies = {
+  findCandidates: findRelationCandidates,
+  proposeRelations: proposeRelationsViaLlm,
+  createRelation: createMemoryRelation,
+  queueReviewCandidate: queueRelationReviewCandidate
+};
+
 export async function runRelationBuild(
   env: Env,
   namespace: string,
-  options: { sinceIso?: string; dryRun?: boolean; memoryIds?: string[]; projectionKey?: string } = {}
+  options: { sinceIso?: string; dryRun?: boolean; memoryIds?: string[]; projectionKey?: string } = {},
+  dependencies: RelationBuildDependencies = defaultRelationBuildDependencies
 ): Promise<{
   scanned: number;
   inserted: number;
@@ -206,9 +221,9 @@ export async function runRelationBuild(
   let proposed = 0;
   const candidateExternalKeys: string[] = [];
 
-  const candidates = await findRelationCandidates(env, namespace, memories);
+  const candidates = await dependencies.findCandidates(env, namespace, memories);
   const candidateMap = new Map(candidates.map((candidate) => [candidate.pairId, candidate]));
-  const { hints, error } = await proposeRelationsViaLlm(env, candidates);
+  const { hints, error } = await dependencies.proposeRelations(env, candidates);
 
   for (const hint of hints) {
     const candidate = candidateMap.get(hint.pair_id);
@@ -219,7 +234,7 @@ export async function runRelationBuild(
     if (SAFE_RELATION_TYPES.has(relationType) && relationType !== "temporal_sequence") {
       if (dryRun) {
         proposed += 1;
-      } else if (await createMemoryRelation(env.DB, {
+      } else if (await dependencies.createRelation(env.DB, {
         namespace,
         sourceMemoryId: candidate.source.id,
         targetMemoryId: candidate.target.id,
@@ -230,8 +245,10 @@ export async function runRelationBuild(
         inserted += 1;
       }
     } else if (REVIEW_RELATION_TYPES.has(relationType)) {
-      if (!dryRun) {
-        candidateExternalKeys.push(await queueRelationReviewCandidate(env, namespace, {
+      if (dryRun) {
+        proposed += 1;
+      } else {
+        candidateExternalKeys.push(await dependencies.queueReviewCandidate(env, namespace, {
           relationType,
           source: candidate.source,
           target: candidate.target,
@@ -240,8 +257,8 @@ export async function runRelationBuild(
           vectorScore: candidate.vectorScore,
           projectionKey: options.projectionKey
         }));
+        review += 1;
       }
-      review += 1;
     }
   }
 

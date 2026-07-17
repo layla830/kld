@@ -112,7 +112,6 @@ export interface DreamVariables {
 export interface FiveAxisVariables {
   ENABLE_FIVE_AXIS?: string;
   FIVE_AXIS_DRY_RUN?: string;
-  E_AXIS_STARTED_AT?: string;
   E_AXIS_SHADOW_DAYS?: string;
   E_AXIS_RANKING_ENABLED?: string;
   TIMELINE_THREADS?: string;

@@ -59,7 +59,6 @@ CUSTOM_ANTHROPIC_MESSAGES_PATH = "messages"
 COORDINATE_BACKFILL_ENABLED = "true"
 # E-axis shadow comparisons began with the first observability deployment.
 # Keep the gate explicit so an unset variable cannot mean indefinite shadow.
-E_AXIS_STARTED_AT = "2026-07-13T12:22:37.508657Z"
 E_AXIS_SHADOW_DAYS = "7"
 E_AXIS_RANKING_ENABLED = "false"
 

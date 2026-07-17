@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { readShadowState, shouldApplyEAxisToRanking } from "../src/memory/eAxis";
+import { evaluateShadowState } from "../src/memory/eAxis";
 import { mergeSearchResults } from "../src/recall/fusion";
 import type { ScoredMemoryRecord } from "../src/memory/vectorStore";
 
@@ -86,20 +86,13 @@ describe("E-axis shadow ranking", () => {
 
   it("does not activate when the start time is missing or the shadow window is incomplete", () => {
     const now = Date.parse("2026-07-13T00:00:00.000Z");
-    expect(readShadowState({}, now)).toMatchObject({ configured: false, inShadow: true, daysRemaining: 30 });
-    expect(readShadowState({ E_AXIS_STARTED_AT: "2026-07-10T00:00:00.000Z", E_AXIS_SHADOW_DAYS: "7" }, now))
+    expect(evaluateShadowState({ startedAt: null, shadowDays: 30, rankingEnabled: false }, now))
+      .toMatchObject({ configured: false, inShadow: true, daysRemaining: 30 });
+    expect(evaluateShadowState({ startedAt: "2026-07-10T00:00:00.000Z", shadowDays: 7, rankingEnabled: false }, now))
       .toMatchObject({ configured: true, inShadow: true, daysElapsed: 3, daysRemaining: 4 });
-    expect(readShadowState({ E_AXIS_STARTED_AT: "2026-07-01T00:00:00.000Z", E_AXIS_SHADOW_DAYS: "7" }, now))
+    expect(evaluateShadowState({ startedAt: "2026-07-01T00:00:00.000Z", shadowDays: 7, rankingEnabled: false }, now))
       .toMatchObject({ inShadow: false, readyForPromotion: true, rankingEnabled: false });
-    expect(shouldApplyEAxisToRanking({})).toBe(false);
-    expect(shouldApplyEAxisToRanking({
-      E_AXIS_STARTED_AT: "2026-07-01T00:00:00.000Z",
-      E_AXIS_SHADOW_DAYS: "7"
-    })).toBe(false);
-    expect(shouldApplyEAxisToRanking({
-      E_AXIS_STARTED_AT: "2026-07-01T00:00:00.000Z",
-      E_AXIS_SHADOW_DAYS: "7",
-      E_AXIS_RANKING_ENABLED: "true"
-    })).toBe(true);
+    expect(evaluateShadowState({ startedAt: "2026-07-01T00:00:00.000Z", shadowDays: 7, rankingEnabled: true }, now))
+      .toMatchObject({ readyForPromotion: true, rankingEnabled: true });
   });
 });

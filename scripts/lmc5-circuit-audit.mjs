@@ -68,6 +68,7 @@ const injection = fs.readFileSync("src/memory/inject.ts", "utf8");
 const coordinateBackfill = fs.readFileSync("src/memory/coordinateBackfill.ts", "utf8");
 const recallFusion = fs.readFileSync("src/recall/fusion.ts", "utf8");
 const eAxisObservability = fs.readFileSync("src/memory/eAxisObservability.ts", "utf8");
+const eAxisRuntime = fs.readFileSync("src/memory/eAxis.ts", "utf8");
 const recallOutputPolicy = fs.readFileSync("src/recall/outputPolicy.ts", "utf8");
 const vpsDreamCandidate = fs.readFileSync("ops/vps/kld_dream_candidate_shadow.py", "utf8");
 const workerTypes = fs.readFileSync("src/types.ts", "utf8");
@@ -83,6 +84,7 @@ const fiveAxisNightly = fs.readFileSync("src/memory/fiveAxis/nightly.ts", "utf8"
 const fiveAxisProjection = fs.readFileSync("src/memory/fiveAxis/projection.ts", "utf8");
 const fiveAxisOutboxMigration = fs.readFileSync("migrations/20260713_memory_five_axis_outbox.sql", "utf8");
 const fiveAxisDependencyMigration = fs.readFileSync("migrations/20260716_five_axis_dependency_triggers.sql", "utf8");
+const eAxisRuntimeMigration = fs.readFileSync("migrations/20260718_e_axis_runtime_state.sql", "utf8");
 const timelineSequenceMigration = fiveAxisDependencyMigration;
 
 const checks = [
@@ -487,14 +489,17 @@ const checks = [
       coordinateBackfill.includes("current.valence === null"),
   ],
   [
-    "E: production shadow window is explicit and promotion remains manual",
-    wranglerConfig.includes('E_AXIS_STARTED_AT = "2026-07-13T12:22:37.508657Z"') &&
+    "E: production shadow state is durable and promotion remains manual",
+    !wranglerConfig.includes("E_AXIS_STARTED_AT") &&
       wranglerConfig.includes('E_AXIS_SHADOW_DAYS = "7"') &&
       wranglerConfig.includes('E_AXIS_RANKING_ENABLED = "false"') &&
-      generatedBindings.includes("E_AXIS_STARTED_AT: string") &&
+      !generatedBindings.includes("E_AXIS_STARTED_AT: string") &&
       generatedBindings.includes("E_AXIS_SHADOW_DAYS: string") &&
       generatedBindings.includes("E_AXIS_RANKING_ENABLED: string") &&
-      runtimeConfig.includes("rankingEnabled: strictFlag(env.E_AXIS_RANKING_ENABLED)"),
+      runtimeConfig.includes("rankingEnabled: strictFlag(env.E_AXIS_RANKING_ENABLED)") &&
+      eAxisRuntime.includes('E_AXIS_STATE_KEY = "lmc5:e-axis:runtime-state"') &&
+      eAxisRuntime.includes("getCacheEntry") &&
+      eAxisRuntimeMigration.includes("ON CONFLICT(namespace, key) DO NOTHING"),
   ],
   [
     "Recall: fact-intent rule memories lead before milestone context",
@@ -568,7 +573,7 @@ const checks = [
   ],
   [
     "E: shadow gate controls ranking",
-    files.search.includes("shouldApplyEAxisToRanking(env)") &&
+    files.search.includes("await shouldApplyEAxisToRanking(env, input.namespace)") &&
       recallFusion.includes("applyEAxis ? eAxisBoost(record) : 0"),
   ],
   [
@@ -640,13 +645,13 @@ const checks = [
   ],
   [
     "Y: nightly relation build auto-creates safe edges and queues risky edges",
-    fiveAxisNightly.includes("runRelations: runRelationBuild") &&
+      fiveAxisNightly.includes("runRelations: runRelationBuild") &&
       fiveAxisRelations.includes("SAFE_RELATION_TYPES.has(relationType)") &&
-      fiveAxisRelations.includes("await createMemoryRelation") &&
+      fiveAxisRelations.includes("await dependencies.createRelation") &&
       fiveAxisRelations.includes('relationType !== "temporal_sequence"') &&
       files.digest.includes('relationType !== "temporal_sequence"') &&
       fiveAxisRelations.includes("REVIEW_RELATION_TYPES.has(relationType)") &&
-      fiveAxisRelations.includes("queueRelationReviewCandidate") &&
+      fiveAxisRelations.includes("dependencies.queueReviewCandidate") &&
       relationReview.includes('action: "y_relation_review"') &&
       files.digest.includes("queueRelationReviewCandidate") &&
       !files.digest.includes('eventType: "y_relation_review"') &&
@@ -670,8 +675,11 @@ const checks = [
   ],
   [
     "Z/Y/M: one admin skeleton dispatches approve reject and rollback by proposal action",
-    operationalReviewActions.includes('action === "z_supersede"') &&
-      operationalReviewActions.includes('action === "y_relation_review"') &&
+    operationalReviewActions.includes('case "z_supersede"') &&
+      operationalReviewActions.includes('case "y_relation_review"') &&
+      operationalReviewActions.includes('case "m_archive"') &&
+      operationalReviewActions.includes('case "m_relation_cleanup"') &&
+      operationalReviewActions.includes("parseOperationalCandidateAction") &&
       operationalReviewActions.includes("approveMetabolismCandidate") &&
       operationalReviewActions.includes("approveFactTransitionCandidate") &&
       operationalReviewActions.includes("approveRelationReviewCandidate") &&
