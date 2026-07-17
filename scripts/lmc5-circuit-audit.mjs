@@ -75,16 +75,13 @@ const runtimeVariables = fs.readFileSync("src/config/variables.ts", "utf8");
 const generatedBindings = fs.readFileSync("src/generated/worker-configuration.d.ts", "utf8");
 const runtimeConfig = fs.readFileSync("src/config/runtime.ts", "utf8");
 const packageJson = fs.readFileSync("package.json", "utf8");
+const packageConfig = JSON.parse(packageJson);
 const wranglerConfig = fs.readFileSync("wrangler.toml", "utf8");
 const fiveAxisRelations = fs.readFileSync("src/memory/fiveAxis/yRelations.ts", "utf8");
 const fiveAxisFacts = fs.readFileSync("src/memory/fiveAxis/zFacts.ts", "utf8");
 const fiveAxisNightly = fs.readFileSync("src/memory/fiveAxis/nightly.ts", "utf8");
 const fiveAxisProjection = fs.readFileSync("src/memory/fiveAxis/projection.ts", "utf8");
-const fiveAxisOutbox = fs.readFileSync("src/db/memoryFiveAxisOutbox.ts", "utf8");
-const fiveAxisRuns = fs.readFileSync("src/db/memoryFiveAxisRuns.ts", "utf8");
 const fiveAxisOutboxMigration = fs.readFileSync("migrations/20260713_memory_five_axis_outbox.sql", "utf8");
-const fiveAxisRevisionMigration = fs.readFileSync("migrations/20260715_five_axis_revision.sql", "utf8");
-const fiveAxisRunsMigration = fs.readFileSync("migrations/20260715_projection_axis_runs.sql", "utf8");
 const fiveAxisDependencyMigration = fs.readFileSync("migrations/20260716_five_axis_dependency_triggers.sql", "utf8");
 const timelineSequenceMigration = fiveAxisDependencyMigration;
 
@@ -456,56 +453,20 @@ const checks = [
       workerIndex.includes('from "./memory/fiveAxis/nightly"'),
   ],
   [
-    "Ingest: every active non-diary memory write creates a durable five-axis outbox job",
+    "Ingest wiring: trigger, scheduled producer, and Queue consumer remain connected",
     fiveAxisOutboxMigration.includes("trg_memories_five_axis_after_insert") &&
-      fiveAxisOutboxMigration.includes("trg_memories_five_axis_after_material_update") &&
       fiveAxisOutboxMigration.includes("memory_five_axis_outbox") &&
-      fiveAxisOutboxMigration.includes("NEW.type NOT IN ('diary', 'layla_diary', 'auto_diary', 'dream_review')"),
-  ],
-  [
-    "Ingest: five-minute maintenance drains five-axis outbox through Queue",
-    queueProducer.includes("enqueuePendingFiveAxisProjections") &&
-      queueProducer.includes('type: "memory_five_axis_projection"') &&
+      queueProducer.includes("enqueuePendingFiveAxisProjections") &&
       queueConsumer.includes('case "memory_five_axis_projection"') &&
-      workerIndex.includes("enqueuePendingFiveAxisProjections(env, 5)") &&
-      fiveAxisOutbox.includes("attempts < 5") &&
-      fiveAxisOutbox.includes("status = 'queued'") &&
-      fiveAxisOutbox.includes("status = 'failed'"),
+      workerIndex.includes("enqueuePendingFiveAxisProjections(env, 5)"),
   ],
   [
-    "Ingest: material revisions prevent stale outbox projection",
-    fiveAxisRevisionMigration.includes("five_axis_revision") &&
-      fiveAxisRevisionMigration.includes("memory_revision") &&
-      fiveAxisRevisionMigration.includes("OLD.five_axis_revision + 1") &&
-      queueConsumer.includes("currentRevision !== outboxRevision"),
-  ],
-  [
-    "Ingest: per-memory projection feeds X E Y Z M without bypassing review",
-    fiveAxisProjection.includes("projectTimeline") &&
-      fiveAxisProjection.includes("projectCoordinates") &&
-      fiveAxisProjection.includes("projectRelations") &&
-      fiveAxisProjection.includes("projectFacts") &&
-      fiveAxisProjection.includes("projectMetabolism") &&
-      fiveAxisProjection.includes("dryRun: false") &&
-      factTransitionReview.includes('action: "z_supersede"') &&
-      metabolismReview.includes('action: "m_archive"'),
-  ],
-  [
-    "Ingest: each axis persists terminal state so retries rerun only failed axes",
-    fiveAxisRunsMigration.includes("CREATE TABLE IF NOT EXISTS memory_five_axis_runs") &&
-      fiveAxisRunsMigration.includes("PRIMARY KEY (namespace, memory_id, memory_revision, axis)") &&
-      fiveAxisDependencyMigration.includes("ADD COLUMN claim_token TEXT") &&
-      fiveAxisDependencyMigration.includes("ADD COLUMN lease_expires_at TEXT") &&
-      fiveAxisDependencyMigration.includes("CREATE TABLE IF NOT EXISTS memory_timeline_memberships") &&
-      fiveAxisDependencyMigration.includes("DELETE FROM memory_timeline_memberships") &&
-      fiveAxisDependencyMigration.includes("reason LIKE 'timeline_approved:%'") &&
-      fiveAxisRuns.includes("attempts = memory_five_axis_runs.attempts + 1") &&
-      fiveAxisRuns.includes("AND status = 'running' AND claim_token = ?") &&
-      fiveAxisProjection.includes("runAxisStage") &&
-      fiveAxisProjection.includes("reused: true") &&
-      fiveAxisProjection.includes('status: "blocked"') &&
-      queueConsumer.includes("result.deferredAxes.length") &&
-      fiveAxisOutbox.includes("result_json = COALESCE"),
+    "Ingest behavior: the default test command runs the Workers runtime circuit",
+    packageConfig.scripts?.test === "npm run test:unit && npm run test:worker" &&
+      packageConfig.scripts?.["test:worker"] === "vitest run --config vitest.worker.config.ts" &&
+      packageConfig.devDependencies?.["@cloudflare/vitest-pool-workers"] &&
+      fs.existsSync("vitest.worker.config.ts") &&
+      fs.existsSync("tests-worker/five-axis-circuit.test.ts"),
   ],
   [
     "Ingest: type transitions enqueue cleanup before excluded memories leave five-axis ownership",
