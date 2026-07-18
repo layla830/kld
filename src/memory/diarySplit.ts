@@ -52,6 +52,7 @@ interface DiarySplitDebug {
   raw_type_sample: string[];
   raw_key_sample: string[][];
   text_preview?: string;
+  fallback?: "verbatim_timeline_day";
 }
 
 export interface DiarySplitPlan {
@@ -423,6 +424,7 @@ async function callSplitModel(env: Env, record: MemoryRecord, date: string, incl
   const model = env.CC_CONNECT_CHUNK_EXTRACT_MODEL || env.MEMORY_MODEL || env.AUTO_CHUNK_SUMMARY_MODEL || env.CHAT_MODEL || DEFAULT_SPLIT_MODEL;
   const basePrompt = buildSplitPrompt(record, date, allowedDates);
   let lastMissingDates: string[] = [];
+  let lastResult: { items: DiarySplitItem[]; debug?: DiarySplitDebug } = { items: [] };
 
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const request: OpenAIChatRequest = {
@@ -451,6 +453,7 @@ async function callSplitModel(env: Env, record: MemoryRecord, date: string, incl
     const reasoningContent = typeof message?.reasoning_content === "string" ? message.reasoning_content.trim() : "";
     const text = content || reasoningContent;
     const result = parseItemsWithDebug(text, date, allowedDates, record.id, record.content, includeDebug);
+    lastResult = result;
     const representedDates = new Set(result.items.map((item) => item.date));
     const timelineDates = new Set(result.items.filter((item) => item.type === "timeline_day").map((item) => item.date));
     const requiredDates = new Set([date, ...representedDates]);
@@ -458,7 +461,35 @@ async function callSplitModel(env: Env, record: MemoryRecord, date: string, incl
     if (lastMissingDates.length === 0) return result;
   }
 
-  throw new Error(`split_model_missing_timeline_day:${lastMissingDates.join(",")}`);
+  const lines = record.content.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const evidence = (lines.find((line, index) => index > 0 && line.length >= 4) ?? lines[0] ?? date).slice(0, 80);
+  const fallbacks = lastMissingDates.map((itemDate): DiarySplitItem => ({
+    date: itemDate,
+    type: "timeline_day",
+    content: `${itemDate}：${evidence}`.slice(0, 360),
+    summary: "正式日记原文日节点（模型摘要不可用）",
+    importance: 0.55,
+    confidence: 1,
+    tags: [
+      "timeline",
+      `date:${itemDate}`,
+      "timeline_day",
+      "timeline_day_fallback:verbatim",
+      `origin:${record.id}`,
+      `source_label:${sourceLabel(itemDate)}`,
+      "temporal_scope:day",
+      splitBatchTag(itemDate),
+      SPLIT_VERSION_TAG
+    ],
+    fact_key: null,
+    evidence,
+    temporal_scope: "day",
+    review_required: false
+  }));
+  return {
+    items: [...fallbacks, ...lastResult.items].slice(0, MAX_ITEMS_PER_DIARY),
+    debug: lastResult.debug ? { ...lastResult.debug, fallback: "verbatim_timeline_day" } : undefined
+  };
 }
 
 async function existingSplitCount(db: D1Database, input: { namespace: string; originId: string }): Promise<number> {

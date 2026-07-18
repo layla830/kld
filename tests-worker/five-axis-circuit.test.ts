@@ -413,7 +413,7 @@ describe("five-axis Worker circuit", () => {
     expect(plans[0].items.every((item) => item.date === "2026-07-14")).toBe(true);
   });
 
-  it("writes nothing when both diary split attempts omit the timeline day", async () => {
+  it("adds a verbatim day anchor when both model attempts omit the timeline day", async () => {
     const diary = await createMemory(env.DB, {
       namespace: "default",
       type: "diary",
@@ -438,23 +438,29 @@ describe("five-axis Worker circuit", () => {
       MEMORY_MODEL: "runtime-test-model"
     } as Env;
 
-    await expect(splitDiaryMemories(runtimeEnv, {
+    const plans = await splitDiaryMemories(runtimeEnv, {
       namespace: "default",
       ids: [diary.id],
       apply: true,
       force: true
-    })).rejects.toThrow("split_model_missing_timeline_day:2026-07-13");
+    });
+    expect(plans[0].items[0]).toMatchObject({
+      type: "timeline_day",
+      date: "2026-07-13",
+      evidence: "只记住这一句话。"
+    });
+    expect(plans[0].items[0].tags).toContain("timeline_day_fallback:verbatim");
     await expect(first<{ count: number }>(
       `SELECT COUNT(*) AS count FROM memories
        WHERE namespace = 'default' AND source = 'timeline_split'
          AND EXISTS (SELECT 1 FROM json_each(tags) WHERE value = ?)`,
       `origin:${diary.id}`
-    )).resolves.toMatchObject({ count: 0 });
+    )).resolves.toMatchObject({ count: 2 });
     await expect(first<{ count: number }>(
       `SELECT COUNT(*) AS count FROM memory_events
        WHERE namespace = 'default' AND event_type = 'diary_split_v2_complete' AND memory_id = ?`,
       diary.id
-    )).resolves.toMatchObject({ count: 0 });
+    )).resolves.toMatchObject({ count: 1 });
   });
 
   it("retries an empty formal diary split until the default date has a day node", async () => {
