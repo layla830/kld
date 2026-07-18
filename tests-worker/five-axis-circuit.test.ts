@@ -6,6 +6,7 @@ import { approveTimelineCandidate } from "../src/api/adminBoard/timelineActions"
 import { enqueuePendingFiveAxisProjections } from "../src/queue/producer";
 import { createMemory } from "../src/db/memories";
 import { scanDiaryTimelineBackfill } from "../src/memory/diaryTimelineBackfill";
+import { splitDiaryMemories } from "../src/memory/diarySplit";
 import type { DiarySplitQueueMessage, Env, MemoryFiveAxisProjectionQueueMessage, MemoryRecord } from "../src/types";
 
 interface OutboxRow {
@@ -352,6 +353,107 @@ describe("five-axis Worker circuit", () => {
       `SELECT COUNT(*) AS count FROM memory_diary_timeline_memberships
        WHERE namespace = 'default' AND memory_id = ?`,
       sparseQuote.id
+    )).resolves.toMatchObject({ count: 0 });
+  });
+
+  it("retries a non-empty diary split that omits its required timeline day", async () => {
+    const diary = await createMemory(env.DB, {
+      namespace: "default",
+      type: "diary",
+      content: "7月14日日记\n她说：先查证据，再下结论。",
+      source: "mcp"
+    });
+    let attempts = 0;
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+      attempts += 1;
+      const items = attempts === 1
+        ? [{
+            date: "2026-07-14",
+            type: "quote",
+            content: "先查证据，再下结论",
+            evidence: "先查证据，再下结论",
+            temporal_scope: "day"
+          }]
+        : [
+            {
+              date: "2026-07-14",
+              type: "timeline_day",
+              content: "7月14日，她提醒先查证据再下结论。",
+              evidence: "先查证据，再下结论",
+              temporal_scope: "day"
+            },
+            {
+              date: "2026-07-14",
+              type: "quote",
+              content: "先查证据，再下结论",
+              evidence: "先查证据，再下结论",
+              temporal_scope: "day"
+            }
+          ];
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: JSON.stringify({ items }) } }]
+      }), { status: 200 });
+    });
+    const runtimeEnv = {
+      ...env,
+      UPSTREAM_BASE_URL: "https://runtime.test/v1",
+      UPSTREAM_API_KEY: "runtime-test-key",
+      MEMORY_MODEL: "runtime-test-model"
+    } as Env;
+
+    const plans = await splitDiaryMemories(runtimeEnv, {
+      namespace: "default",
+      ids: [diary.id],
+      apply: false,
+      force: true
+    });
+
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(plans[0].items.map((item) => item.type)).toEqual(["timeline_day", "quote"]);
+    expect(plans[0].items.every((item) => item.date === "2026-07-14")).toBe(true);
+  });
+
+  it("writes nothing when both diary split attempts omit the timeline day", async () => {
+    const diary = await createMemory(env.DB, {
+      namespace: "default",
+      type: "diary",
+      content: "7月13日日记\n只记住这一句话。",
+      source: "mcp"
+    });
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify({
+      choices: [{ message: { content: JSON.stringify({
+        items: [{
+          date: "2026-07-13",
+          type: "quote",
+          content: "只记住这一句话",
+          evidence: "只记住这一句话",
+          temporal_scope: "day"
+        }]
+      }) } }]
+    }), { status: 200 }));
+    const runtimeEnv = {
+      ...env,
+      UPSTREAM_BASE_URL: "https://runtime.test/v1",
+      UPSTREAM_API_KEY: "runtime-test-key",
+      MEMORY_MODEL: "runtime-test-model"
+    } as Env;
+
+    await expect(splitDiaryMemories(runtimeEnv, {
+      namespace: "default",
+      ids: [diary.id],
+      apply: true,
+      force: true
+    })).rejects.toThrow("split_model_missing_timeline_day:2026-07-13");
+    await expect(first<{ count: number }>(
+      `SELECT COUNT(*) AS count FROM memories
+       WHERE namespace = 'default' AND source = 'timeline_split'
+         AND EXISTS (SELECT 1 FROM json_each(tags) WHERE value = ?)`,
+      `origin:${diary.id}`
+    )).resolves.toMatchObject({ count: 0 });
+    await expect(first<{ count: number }>(
+      `SELECT COUNT(*) AS count FROM memory_events
+       WHERE namespace = 'default' AND event_type = 'diary_split_v2_complete' AND memory_id = ?`,
+      diary.id
     )).resolves.toMatchObject({ count: 0 });
   });
 });
