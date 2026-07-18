@@ -34,7 +34,7 @@ describe("five-axis outbox policy", () => {
     let bound: unknown[] = [];
     const db = {
       prepare(sql: string) {
-        expect(sql).toContain("id > ?");
+        expect(sql).toContain("memory_revision > ?");
         return {
           bind(...values: unknown[]) {
             bound = values;
@@ -47,9 +47,10 @@ describe("five-axis outbox policy", () => {
     await expect(hasNewerFiveAxisOutboxVersion(db, {
       id: 11,
       namespace: "default",
-      memory_id: "mem_1"
+      memory_id: "mem_1",
+      memory_revision: 7
     })).resolves.toBe(true);
-    expect(bound).toEqual(["default", "mem_1", 11]);
+    expect(bound).toEqual(["default", "mem_1", 7]);
   });
 
   it("skips an outbox job when the material memory revision has advanced", async () => {

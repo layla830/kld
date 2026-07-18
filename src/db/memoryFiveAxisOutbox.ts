@@ -64,13 +64,21 @@ export async function getFiveAxisOutbox(
 
 export async function hasNewerFiveAxisOutboxVersion(
   db: D1Database,
-  record: Pick<MemoryFiveAxisOutboxRecord, "id" | "namespace" | "memory_id">
+  record: Pick<MemoryFiveAxisOutboxRecord, "id" | "namespace" | "memory_id" | "memory_revision">
 ): Promise<boolean> {
+  if (record.memory_revision === undefined) {
+    const legacyNewer = await db.prepare(
+      `SELECT id FROM memory_five_axis_outbox
+       WHERE namespace = ? AND memory_id = ? AND id > ?
+       LIMIT 1`
+    ).bind(record.namespace, record.memory_id, record.id).first<{ id: number }>();
+    return Boolean(legacyNewer?.id);
+  }
   const newer = await db.prepare(
     `SELECT id FROM memory_five_axis_outbox
-     WHERE namespace = ? AND memory_id = ? AND id > ?
+     WHERE namespace = ? AND memory_id = ? AND memory_revision > ?
      LIMIT 1`
-  ).bind(record.namespace, record.memory_id, record.id).first<{ id: number }>();
+  ).bind(record.namespace, record.memory_id, record.memory_revision).first<{ id: number }>();
   return Boolean(newer?.id);
 }
 

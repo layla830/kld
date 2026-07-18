@@ -27,7 +27,7 @@ export class TimelineCandidateError extends Error {
 }
 
 export function timelineCandidateNotice(error: unknown): string {
-  return error instanceof TimelineCandidateError ? `timeline-${error.code.replace("_", "-")}` : "error";
+  return error instanceof TimelineCandidateError ? `timeline-${error.code.replaceAll("_", "-")}` : "error";
 }
 
 export async function approveTimelineCandidate(env: Env, form: FormData): Promise<MemoryRecord | null> {
