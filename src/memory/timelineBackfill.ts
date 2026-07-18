@@ -3,15 +3,21 @@ import { upsertMemoryCandidate } from "../db/memoryCandidates";
 import { getCacheEntry, parseCacheEntryValue, putCacheEntry } from "../db/cacheEntries";
 import { rebuildTimelineSequenceForMemory } from "./timelineRelations";
 import { rebuildDiaryTimelineForMemory, type DiaryTimelineProjectionResult } from "./diaryTimeline";
+import { analyzeTimelineDateTags, extractExplicitDates } from "./timelineDates";
+
+export { extractExplicitDates } from "./timelineDates";
 
 const TIMELINE_BACKFILL_KEY = "maintenance:timeline_backfill";
 const TIMELINE_BATCH_SIZE = 100;
 
 export interface TimelineDateProposal {
   id: string;
+  updated_at: string;
   thread: string | null;
   fact_key: string | null;
-  date: string;
+  date: string | null;
+  date_options: string[];
+  repair: boolean;
   before_tags: string[];
   tags: string[];
 }
@@ -38,8 +44,14 @@ export interface TimelineMemoryProjectionResult {
   diary?: DiaryTimelineProjectionResult;
 }
 
-function timelineCandidateExternalKey(memoryId: string, date: string): string {
-  return `timeline-date:${memoryId}:${date}`;
+function timelineCandidateExternalKey(
+  memory: Pick<MemoryRecord, "id" | "updated_at">,
+  date: string | null,
+  repair: boolean
+): string {
+  return repair
+    ? `timeline-date-repair:${memory.id}:${encodeURIComponent(memory.updated_at)}`
+    : `timeline-date:${memory.id}:${date}`;
 }
 
 function parseTags(value: string | null): string[] {
@@ -51,23 +63,44 @@ function parseTags(value: string | null): string[] {
   }
 }
 
-function validDate(year: number, month: number, day: number): string | null {
-  const date = new Date(Date.UTC(year, month - 1, day));
-  if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return null;
-  return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
-}
-
-export function extractExplicitDates(text: string): string[] {
-  const dates = new Set<string>();
-  for (const match of text.matchAll(/\b(20\d{2})[-/.](\d{1,2})[-/.](\d{1,2})\b/g)) {
-    const date = validDate(Number(match[1]), Number(match[2]), Number(match[3]));
-    if (date) dates.add(date);
-  }
-  for (const match of text.matchAll(/(20\d{2})年(\d{1,2})月(\d{1,2})日/g)) {
-    const date = validDate(Number(match[1]), Number(match[2]), Number(match[3]));
-    if (date) dates.add(date);
-  }
-  return [...dates].sort();
+async function queueTimelineDateCandidate(
+  env: Env,
+  memory: MemoryRecord,
+  input: { beforeTags: string[]; dateOptions: string[]; repair: boolean }
+): Promise<TimelineMemoryProjectionResult> {
+  const date = input.dateOptions.length === 1 ? input.dateOptions[0] : null;
+  const tags = date
+    ? [...new Set([...input.beforeTags.filter((tag) => !tag.startsWith("date:")), `date:${date}`, "timeline"])]
+    : [...input.beforeTags];
+  const candidateExternalKey = timelineCandidateExternalKey(memory, date, input.repair);
+  await upsertMemoryCandidate(env.DB, memory.namespace, {
+    externalKey: candidateExternalKey,
+    dreamDate: new Date().toISOString().slice(0, 10),
+    action: "timeline_date",
+    subject: "memory_timeline",
+    targetId: memory.id,
+    payload: {
+      _kind: input.repair ? "timeline_date_repair" : "timeline_date",
+      date,
+      date_options: input.dateOptions,
+      allow_manual_date: input.dateOptions.length === 0,
+      thread: memory.thread,
+      fact_key: memory.fact_key,
+      target_updated_at: memory.updated_at,
+      before_tags: input.beforeTags,
+      tags
+    },
+    sourceChunkIds: [],
+    sourceChunks: [],
+    status: "pending"
+  });
+  return {
+    scanned: 1,
+    outcome: "queued",
+    dates: input.dateOptions,
+    queued: 1,
+    candidateExternalKeys: [candidateExternalKey]
+  };
 }
 
 export async function queueTimelineCandidateForMemory(
@@ -75,10 +108,13 @@ export async function queueTimelineCandidateForMemory(
   memory: MemoryRecord
 ): Promise<TimelineMemoryProjectionResult> {
   const beforeTags = parseTags(memory.tags);
-  const approvedDates = beforeTags
-    .filter((tag) => /^date:20\d{2}-\d{2}-\d{2}$/.test(tag))
-    .map((tag) => tag.slice(5));
-  if (beforeTags.some((tag) => tag.startsWith("date:"))) {
+  const tagAnalysis = analyzeTimelineDateTags(beforeTags);
+  const approvedDates = tagAnalysis.validDates;
+  if (tagAnalysis.dateTags.length > 0 && !tagAnalysis.isCanonical) {
+    const options = [...new Set([...approvedDates, ...extractExplicitDates(memory.content)])].sort();
+    return queueTimelineDateCandidate(env, memory, { beforeTags, dateOptions: options, repair: true });
+  }
+  if (tagAnalysis.isCanonical) {
     if (approvedDates.length === 1 && memory.source === "timeline_split") {
       const diary = await rebuildDiaryTimelineForMemory(env.DB, memory);
       if (diary) {
@@ -99,30 +135,7 @@ export async function queueTimelineCandidateForMemory(
   }
   const dates = extractExplicitDates(memory.content);
   if (dates.length === 0) return { scanned: 1, outcome: "no_explicit_date", dates, queued: 0 };
-  if (dates.length > 1) return { scanned: 1, outcome: "ambiguous", dates, queued: 0 };
-
-  const date = dates[0];
-  const tags = [...new Set([...beforeTags, `date:${date}`, "timeline"])];
-  const candidateExternalKey = timelineCandidateExternalKey(memory.id, date);
-  await upsertMemoryCandidate(env.DB, memory.namespace, {
-    externalKey: candidateExternalKey,
-    dreamDate: new Date().toISOString().slice(0, 10),
-    action: "timeline_date",
-    subject: "memory_timeline",
-    targetId: memory.id,
-    payload: {
-      _kind: "timeline_date",
-      date,
-      thread: memory.thread,
-      fact_key: memory.fact_key,
-      before_tags: beforeTags,
-      tags
-    },
-    sourceChunkIds: [],
-    sourceChunks: [],
-    status: "pending"
-  });
-  return { scanned: 1, outcome: "queued", dates, queued: 1, candidateExternalKeys: [candidateExternalKey] };
+  return queueTimelineDateCandidate(env, memory, { beforeTags, dateOptions: dates, repair: dates.length > 1 });
 }
 
 export async function runTimelineBackfill(env: Env, namespace: string, options: { cursor?: string | null; limit?: number } = {}): Promise<{
@@ -138,8 +151,7 @@ export async function runTimelineBackfill(env: Env, namespace: string, options: 
   const rows = await env.DB.prepare(
     `SELECT * FROM memories
      WHERE namespace = ? AND status = 'active'
-       AND type != 'dream_review'
-       AND (tags IS NULL OR tags NOT LIKE '%"date:%')
+       AND type NOT IN ('diary', 'layla_diary', 'auto_diary', 'dream_review')
        AND id > ?
      ORDER BY id
      LIMIT ?`
@@ -151,20 +163,25 @@ export async function runTimelineBackfill(env: Env, namespace: string, options: 
   const proposals: TimelineDateProposal[] = [];
   let ambiguous = 0;
   for (const memory of pageRows) {
-    const dates = extractExplicitDates(memory.content);
-    if (dates.length > 1) {
-      ambiguous += 1;
-      continue;
-    }
-    if (dates.length !== 1) continue;
     const beforeTags = parseTags(memory.tags);
+    const tagAnalysis = analyzeTimelineDateTags(beforeTags);
+    if (tagAnalysis.isCanonical) continue;
+    const dates = [...new Set([...tagAnalysis.validDates, ...extractExplicitDates(memory.content)])].sort();
+    if (tagAnalysis.dateTags.length === 0 && dates.length === 0) continue;
+    if (dates.length !== 1) ambiguous += 1;
+    const date = dates.length === 1 ? dates[0] : null;
     proposals.push({
       id: memory.id,
+      updated_at: memory.updated_at,
       thread: memory.thread,
       fact_key: memory.fact_key,
-      date: dates[0],
+      date,
+      date_options: dates,
+      repair: tagAnalysis.dateTags.length > 0 || dates.length > 1,
       before_tags: beforeTags,
-      tags: [...new Set([...beforeTags, `date:${dates[0]}`, "timeline"])]
+      tags: date
+        ? [...new Set([...beforeTags.filter((tag) => !tag.startsWith("date:")), `date:${date}`, "timeline"])]
+        : [...beforeTags]
     });
   }
 
@@ -190,16 +207,19 @@ export async function queueTimelineBackfill(env: Env, namespace: string, cursor:
   const dreamDate = new Date().toISOString().slice(0, 10);
   for (const proposal of result.proposals) {
     await upsertMemoryCandidate(env.DB, namespace, {
-      externalKey: timelineCandidateExternalKey(proposal.id, proposal.date),
+      externalKey: timelineCandidateExternalKey(proposal, proposal.date, proposal.repair),
       dreamDate,
       action: "timeline_date",
       subject: "memory_timeline",
       targetId: proposal.id,
       payload: {
-        _kind: "timeline_date",
+        _kind: proposal.repair ? "timeline_date_repair" : "timeline_date",
         date: proposal.date,
+        date_options: proposal.date_options,
+        allow_manual_date: proposal.date_options.length === 0,
         thread: proposal.thread,
         fact_key: proposal.fact_key,
+        target_updated_at: proposal.updated_at,
         before_tags: proposal.before_tags,
         tags: proposal.tags
       },
@@ -242,8 +262,8 @@ export async function scanTimelineBackfillPage(env: Env, namespace: string, rese
   if (!status.startedAt) {
     const total = await env.DB.prepare(
       `SELECT COUNT(*) AS count FROM memories
-       WHERE namespace = ? AND status = 'active' AND type != 'dream_review'
-         AND (tags IS NULL OR tags NOT LIKE '%"date:%')`
+       WHERE namespace = ? AND status = 'active'
+         AND type NOT IN ('diary', 'layla_diary', 'auto_diary', 'dream_review')`
     ).bind(namespace).first<{ count: number }>();
     status = { ...status, total: total?.count ?? 0, startedAt: new Date().toISOString() };
   }

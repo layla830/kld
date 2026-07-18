@@ -9,13 +9,14 @@ import { renderPage } from "./adminBoard/view";
 import { countMemoryCandidatesByAction, countPendingOperationalReviewCandidates, listMemoryCandidates, listMemoryCandidatesByAction, listOperationalReviewCandidates, listRecentApprovedOperationalReviewCandidates } from "../db/memoryCandidates";
 import { approveCandidate, batchRejectLowQualityCandidates, batchReviewDiaryFactCandidates, rejectCandidate, repairCandidateEvidence } from "./adminBoard/candidateActions";
 import { getCoordinateBackfillStatus, setCoordinateBackfillEnabled } from "../memory/coordinateBackfillControl";
-import { approveTimelineCandidate, rejectTimelineCandidate } from "./adminBoard/timelineActions";
+import { approveTimelineCandidate, rejectTimelineCandidate, timelineCandidateNotice } from "./adminBoard/timelineActions";
 import { getTimelineBackfillStatus, scanTimelineBackfillPage } from "../memory/timelineBackfill";
 import { scanOperationalReviewCandidates } from "../memory/operationalReview";
 import { batchReviewMetabolismCandidates } from "./adminBoard/metabolismActions";
 import { approveOperationalReviewCandidate, rejectOperationalReviewCandidate, rollbackOperationalReviewCandidate } from "./adminBoard/operationalReviewActions";
 import type { MemoryCandidateRecord } from "../db/memoryCandidates";
 import { loadDreamConfig } from "../config/runtime";
+import { retryFiveAxisDeadLetter } from "../db/memoryFiveAxisOutbox";
 
 export async function handleAdminBoard(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   if (!isAuthorized(request, env)) return unauthorized();
@@ -132,7 +133,7 @@ export async function handleAdminBoard(request: Request, env: Env, ctx: Executio
       return Response.redirect(`${url.origin}${noticeUrl(ref, updated ? "x-approved" : "empty")}`, 303);
     } catch (error) {
       console.error("admin timeline approve failed", error);
-      return Response.redirect(`${url.origin}${noticeUrl(ref, "error")}`, 303);
+      return Response.redirect(`${url.origin}${noticeUrl(ref, timelineCandidateNotice(error))}`, 303);
     }
   }
 
@@ -145,6 +146,15 @@ export async function handleAdminBoard(request: Request, env: Env, ctx: Executio
       console.error("admin timeline reject failed", error);
       return Response.redirect(`${url.origin}${noticeUrl(ref, "error")}`, 303);
     }
+  }
+
+  if (request.method === "POST" && url.pathname === "/admin/memories/lmc5/retry-dead-letter") {
+    const form = await request.formData();
+    const id = Number(readFormText(form, "id"));
+    const retried = Number.isSafeInteger(id) && id > 0
+      ? await retryFiveAxisDeadLetter(env.DB, namespace, id)
+      : false;
+    return Response.redirect(`${url.origin}/admin/memories?tab=lmc5&notice=${retried ? "five-axis-retried" : "empty"}`, 303);
   }
 
   if (request.method === "POST" && url.pathname === "/admin/memories/candidates/repair-evidence") {

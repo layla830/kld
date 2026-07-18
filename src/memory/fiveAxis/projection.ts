@@ -28,7 +28,7 @@ export interface MemoryFiveAxisProjectionInput {
 type AxisTerminalStatus = Exclude<FiveAxisRunStatus, "running" | "failed">;
 
 export interface AxisProjectionOutcome {
-  status: FiveAxisRunStatus | "blocked" | "deferred";
+  status: FiveAxisRunStatus | "blocked" | "deferred" | "superseded";
   reused: boolean;
   error?: string;
 }
@@ -39,6 +39,7 @@ export interface MemoryFiveAxisProjectionResult {
   axes: Record<FiveAxisName, AxisProjectionOutcome>;
   failedAxes: FiveAxisName[];
   deferredAxes: FiveAxisName[];
+  supersededByRevision?: number;
   x?: TimelineMemoryProjectionResult;
   y?: Awaited<ReturnType<typeof runRelationBuild>>;
   z?: Awaited<ReturnType<typeof scanFactTransitionReviewCandidates>>;
@@ -224,6 +225,21 @@ export async function projectMemoryIntoFiveAxes(
   const current = eBlocksX
     ? initial
     : await dependencies.getMemory(env, input.namespace, input.memoryId) ?? initial;
+
+  const currentRevision = current.five_axis_revision ?? 1;
+  const initialRevision = initial.five_axis_revision ?? 1;
+  if (!eBlocksX && currentRevision !== initialRevision) {
+    const superseded = { status: "superseded", reused: false, error: `superseded_by_revision:${currentRevision}` } as const;
+    return {
+      memoryId: input.memoryId,
+      memoryRevision,
+      supersededByRevision: currentRevision,
+      axes: { X: superseded, Y: superseded, Z: superseded, E: e.outcome, M: superseded },
+      failedAxes: [],
+      deferredAxes: [],
+      e: e.value
+    };
+  }
 
   const x: AxisStageResult<TimelineMemoryProjectionResult> = eBlocksX
     ? { outcome: { status: "blocked", reused: false, error: "blocked_by_E" } }

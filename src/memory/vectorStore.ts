@@ -4,6 +4,10 @@ import { createEmbedding } from "./embedding";
 
 export type ScoredMemoryRecord = MemoryRecord & { score: number; vectorScore?: number; keywordScore?: number };
 
+export type VectorMemorySearchResult =
+  | { status: "ok"; records: ScoredMemoryRecord[] }
+  | { status: "unavailable"; reason: "missing_vectorize_binding" | "empty_query" | "embedding_unavailable" };
+
 type MetadataMap = Record<string, unknown>;
 
 function getMinScore(env: Env): number {
@@ -140,14 +144,15 @@ async function queryVectorize(
   return env.VECTORIZE!.query(vector, { topK: input.topK, namespace: input.namespace, returnMetadata: true, filter });
 }
 
-export async function searchVectorMemories(
+export async function searchVectorMemoriesWithStatus(
   env: Env,
   input: { namespace: string; query: string; types?: string[]; topK: number }
-): Promise<ScoredMemoryRecord[] | null> {
-  if (!env.VECTORIZE || !input.query.trim()) return null;
+): Promise<VectorMemorySearchResult> {
+  if (!env.VECTORIZE) return { status: "unavailable", reason: "missing_vectorize_binding" };
+  if (!input.query.trim()) return { status: "unavailable", reason: "empty_query" };
 
   const vector = await createEmbedding(env, input.query);
-  if (!vector) return null;
+  if (!vector) return { status: "unavailable", reason: "embedding_unavailable" };
 
   let result = await queryVectorize(env, vector, input, true);
   if (result.matches.length === 0) result = await queryVectorize(env, vector, input, false);
@@ -172,5 +177,17 @@ export async function searchVectorMemories(
     return { ...record, score, vectorScore: score };
   });
   const legacyOnlyRecords = legacyRecords.filter((record) => !foundD1Ids.has(record.id));
-  return [...d1Records, ...legacyOnlyRecords].sort((a, b) => b.score + b.importance * 0.05 - (a.score + a.importance * 0.05));
+  return {
+    status: "ok",
+    records: [...d1Records, ...legacyOnlyRecords]
+      .sort((a, b) => b.score + b.importance * 0.05 - (a.score + a.importance * 0.05))
+  };
+}
+
+export async function searchVectorMemories(
+  env: Env,
+  input: { namespace: string; query: string; types?: string[]; topK: number }
+): Promise<ScoredMemoryRecord[] | null> {
+  const result = await searchVectorMemoriesWithStatus(env, input);
+  return result.status === "ok" ? result.records : null;
 }

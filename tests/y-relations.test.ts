@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { proposeRelationsViaLlm, selectActiveD1RelationNeighbors } from "../src/memory/fiveAxis/yRelations";
+import { proposeRelationsViaLlm, runRelationBuild, selectActiveD1RelationNeighbors } from "../src/memory/fiveAxis/yRelations";
 import { queueRelationReviewCandidate } from "../src/memory/relationReview";
 import type { Env, MemoryRecord } from "../src/types";
 
@@ -108,5 +108,30 @@ describe("Y relation candidate boundary", () => {
 
     expect(fetchSpy).toHaveBeenCalledTimes(2);
     expect(result).toEqual({ hints: [], error: "invalid_json" });
+  });
+
+  it("surfaces candidate-search infrastructure failures instead of reporting a true empty result", async () => {
+    const memory = { id: "mem_a", status: "active" } as MemoryRecord;
+    const db = {
+      prepare() {
+        return {
+          bind() {
+            return { all: async () => ({ results: [memory] }) };
+          }
+        };
+      }
+    } as unknown as D1Database;
+    const result = await runRelationBuild({ DB: db } as Env, "default", { dryRun: false, memoryIds: [memory.id] }, {
+      findCandidates: async () => { throw new Error("vector_search_unavailable:embedding_unavailable"); },
+      proposeRelations: async () => ({ hints: [] }),
+      createRelation: async () => true,
+      queueReviewCandidate: async () => "unused"
+    });
+
+    expect(result).toMatchObject({
+      scanned: 1,
+      candidates: 0,
+      error: "vector_search_unavailable:embedding_unavailable"
+    });
   });
 });

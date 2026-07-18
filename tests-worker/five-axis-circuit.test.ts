@@ -74,6 +74,15 @@ describe("five-axis Worker circuit", () => {
   });
 
   it("closes ingest through X review and re-enters the outbox at the next revision", async () => {
+    const runtimeEnv = {
+      ...env,
+      AI: { run: vi.fn(async () => ({ data: [[0.1, 0.2, 0.3]] })) },
+      VECTORIZE: {
+        query: vi.fn(async () => ({ matches: [] })),
+        upsert: vi.fn(async () => undefined),
+        deleteByIds: vi.fn(async () => undefined)
+      }
+    } as unknown as Env;
     const memoryId = "runtime-circuit-memory";
     const createdAt = "2026-07-17T06:00:00.000Z";
     await env.DB.prepare(
@@ -94,7 +103,7 @@ describe("five-axis Worker circuit", () => {
     );
     expect(revisionOneOutbox).toMatchObject({ status: "pending", memory_revision: 1 });
 
-    await expect(enqueuePendingFiveAxisProjections(env, 5)).resolves.toBe(1);
+    await expect(enqueuePendingFiveAxisProjections(runtimeEnv, 5)).resolves.toBe(1);
     const queuedOutbox = await first<OutboxRow>(
       "SELECT * FROM memory_five_axis_outbox WHERE id = ?",
       revisionOneOutbox!.id
@@ -117,7 +126,7 @@ describe("five-axis Worker circuit", () => {
       body
     }]);
     const ctx = createExecutionContext();
-    await worker.queue(batch, env);
+    await worker.queue(batch, runtimeEnv);
     const queueResult = await getQueueResult(batch, ctx);
     expect(queueResult.explicitAcks).toStrictEqual(["runtime-circuit-message"]);
 
@@ -309,6 +318,40 @@ describe("five-axis Worker circuit", () => {
       await worker.queue(projectionBatch, runtimeEnv);
       await expect(getQueueResult(projectionBatch, createExecutionContext())).resolves.toMatchObject({
         explicitAcks: [`runtime-diary-projection-${outbox.id}`]
+      });
+    }
+
+    // E may fill coordinates and create a newer revision. The old revision must
+    // stop, and X is intentionally completed by the follow-up outbox.
+    await enqueuePendingFiveAxisProjections(runtimeEnv, 20);
+    const followUpOutboxes = await env.DB.prepare(
+      `SELECT outbox.* FROM memory_five_axis_outbox AS outbox
+       JOIN memories AS memory ON memory.namespace = outbox.namespace AND memory.id = outbox.memory_id
+       WHERE outbox.namespace = 'default' AND outbox.status = 'queued'
+         AND memory.source = 'timeline_split'
+         AND EXISTS (SELECT 1 FROM json_each(memory.tags) WHERE value = 'runtime-diary')
+       ORDER BY outbox.id`
+    ).all<OutboxRow>();
+    expect(followUpOutboxes.results).toHaveLength(4);
+    for (const outbox of followUpOutboxes.results ?? []) {
+      const projection: MemoryFiveAxisProjectionQueueMessage = {
+        type: "memory_five_axis_projection",
+        namespace: outbox.namespace,
+        memoryId: outbox.memory_id,
+        memoryUpdatedAt: outbox.memory_updated_at,
+        memoryRevision: outbox.memory_revision,
+        outboxId: outbox.id,
+        idempotencyKey: `five-axis:${outbox.id}:r${outbox.memory_revision}`
+      };
+      const projectionBatch = createMessageBatch<MemoryFiveAxisProjectionQueueMessage>("companion-memory", [{
+        id: `runtime-diary-follow-up-${outbox.id}`,
+        timestamp: new Date(),
+        attempts: 1,
+        body: projection
+      }]);
+      await worker.queue(projectionBatch, runtimeEnv);
+      await expect(getQueueResult(projectionBatch, createExecutionContext())).resolves.toMatchObject({
+        explicitAcks: [`runtime-diary-follow-up-${outbox.id}`]
       });
     }
 

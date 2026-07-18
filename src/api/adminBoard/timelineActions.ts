@@ -4,6 +4,7 @@ import { getMemoryById, updateMemory } from "../../db/memories";
 import { loadDreamConfig } from "../../config/runtime";
 import { extractExplicitDates } from "../../memory/timelineBackfill";
 import { rebuildTimelineSequenceForMemory } from "../../memory/timelineRelations";
+import { analyzeTimelineDateTags, parseTimelineDate } from "../../memory/timelineDates";
 import type { Env, MemoryRecord } from "../../types";
 import { parseTags, readFormText } from "./utils";
 
@@ -16,6 +17,19 @@ function payloadOf(value: string): Record<string, unknown> {
   }
 }
 
+export type TimelineCandidateErrorCode = "invalid_date" | "stale" | "date_conflict";
+
+export class TimelineCandidateError extends Error {
+  constructor(readonly code: TimelineCandidateErrorCode) {
+    super(`timeline_candidate_${code}`);
+    this.name = "TimelineCandidateError";
+  }
+}
+
+export function timelineCandidateNotice(error: unknown): string {
+  return error instanceof TimelineCandidateError ? `timeline-${error.code.replace("_", "-")}` : "error";
+}
+
 export async function approveTimelineCandidate(env: Env, form: FormData): Promise<MemoryRecord | null> {
   const id = readFormText(form, "id");
   if (!id) return null;
@@ -26,19 +40,38 @@ export async function approveTimelineCandidate(env: Env, form: FormData): Promis
   const target = await getMemoryById(env.DB, { namespace, id: candidate.target_id });
   if (!target || target.status !== "active" || target.type === "dream_review") return null;
   const payload = payloadOf(candidate.payload_json);
-  const date = typeof payload.date === "string" ? payload.date : "";
+  const repair = payload._kind === "timeline_date_repair";
+  const requestedDate = readFormText(form, "date") || (typeof payload.date === "string" ? payload.date : "");
+  const date = parseTimelineDate(requestedDate);
+  if (!date) throw new TimelineCandidateError("invalid_date");
   const currentDates = extractExplicitDates(target.content);
-  if (!/^20\d{2}-\d{2}-\d{2}$/.test(date) || currentDates.length !== 1 || currentDates[0] !== date) {
-    throw new Error("timeline_candidate_is_stale");
-  }
-
   const tags = parseTags(target.tags);
-  const conflictingDate = tags.find((tag) => tag.startsWith("date:") && tag !== `date:${date}`);
-  if (conflictingDate) throw new Error("timeline_candidate_conflicts_with_existing_date");
+  if (repair) {
+    const beforeTags = Array.isArray(payload.before_tags) ? payload.before_tags.map(String) : [];
+    const options = Array.isArray(payload.date_options)
+      ? payload.date_options.map(String).map(parseTimelineDate).filter((value): value is string => Boolean(value))
+      : [];
+    const currentOptions = [...new Set([
+      ...analyzeTimelineDateTags(tags).validDates,
+      ...currentDates
+    ])].sort();
+    if (JSON.stringify(tags) !== JSON.stringify(beforeTags)
+      || JSON.stringify(currentOptions) !== JSON.stringify([...new Set(options)].sort())
+      || (options.length > 0 && !options.includes(date))
+      || (options.length === 0 && payload.allow_manual_date !== true)) {
+      throw new TimelineCandidateError("stale");
+    }
+  } else if (currentDates.length !== 1 || currentDates[0] !== date) {
+    throw new TimelineCandidateError("stale");
+  } else if (tags.some((tag) => tag.startsWith("date:") && tag !== `date:${date}`)) {
+    throw new TimelineCandidateError("date_conflict");
+  }
   const updated = await updateMemory(env.DB, {
     namespace,
     id: target.id,
-    patch: { tags: [...new Set([...tags, `date:${date}`, "timeline"])] }
+    patch: {
+      tags: [...new Set([...tags.filter((tag) => !tag.startsWith("date:")), `date:${date}`, "timeline"])]
+    }
   });
   if (!updated) return null;
   const sequence = await rebuildTimelineSequenceForMemory(env.DB, updated);

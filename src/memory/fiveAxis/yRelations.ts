@@ -9,7 +9,7 @@ import { callOpenAICompat } from "../../proxy/openaiAdapter";
 import type { Env, MemoryRecord, OpenAIChatRequest, OpenAIChatResponse } from "../../types";
 import { extractJsonObject } from "../../utils/jsonHelpers";
 import { readAssistantTexts } from "../../adapters/llm/assistantText";
-import { searchVectorMemories } from "../vectorStore";
+import { searchVectorMemoriesWithStatus } from "../vectorStore";
 import { queueRelationReviewCandidate } from "../relationReview";
 
 function dayAgoIso(): string {
@@ -56,17 +56,18 @@ async function findRelationCandidates(
   namespace: string,
   memories: MemoryRecord[]
 ): Promise<RelationCandidate[]> {
-  if (!env.VECTORIZE || memories.length === 0) return [];
+  if (memories.length === 0) return [];
   const candidates: RelationCandidate[] = [];
   const seen = new Set<string>();
 
   for (const memory of memories) {
-    const neighbors = await searchVectorMemories(env, {
+    const search = await searchVectorMemoriesWithStatus(env, {
       namespace,
       query: memory.content,
       topK: RELATION_NEIGHBOR_TOP_K
     });
-    if (!neighbors) continue;
+    if (search.status !== "ok") throw new Error(`vector_search_${search.status}:${search.reason}`);
+    const neighbors = search.records;
     const d1Neighbors = await fetchMemoriesByIds(env.DB, {
       namespace,
       ids: [...new Set(neighbors.map((neighbor) => neighbor.id))]
@@ -244,7 +245,25 @@ export async function runRelationBuild(
   let proposed = 0;
   const candidateExternalKeys: string[] = [];
 
-  const candidates = await dependencies.findCandidates(env, namespace, memories);
+  let candidates: RelationCandidate[];
+  try {
+    candidates = await dependencies.findCandidates(env, namespace, memories);
+  } catch (cause) {
+    const error = cause instanceof Error ? cause.message : String(cause);
+    console.error("five-axis relation candidate search failed", {
+      namespace,
+      memory_ids: memories.map((memory) => memory.id),
+      error
+    });
+    return {
+      scanned: memories.length,
+      inserted: 0,
+      review: 0,
+      proposed: 0,
+      candidates: 0,
+      error
+    };
+  }
   const candidateMap = new Map(candidates.map((candidate) => [candidate.pairId, candidate]));
   const { hints, error } = await dependencies.proposeRelations(env, candidates);
 
