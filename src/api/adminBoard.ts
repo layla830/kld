@@ -16,6 +16,7 @@ import { batchReviewMetabolismCandidates } from "./adminBoard/metabolismActions"
 import { approveOperationalReviewCandidate, rejectOperationalReviewCandidate, rollbackOperationalReviewCandidate } from "./adminBoard/operationalReviewActions";
 import type { MemoryCandidateRecord } from "../db/memoryCandidates";
 import { loadDreamConfig } from "../config/runtime";
+import { retryFiveAxisDeadLetter } from "../db/memoryFiveAxisOutbox";
 
 export async function handleAdminBoard(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   if (!isAuthorized(request, env)) return unauthorized();
@@ -145,6 +146,15 @@ export async function handleAdminBoard(request: Request, env: Env, ctx: Executio
       console.error("admin timeline reject failed", error);
       return Response.redirect(`${url.origin}${noticeUrl(ref, "error")}`, 303);
     }
+  }
+
+  if (request.method === "POST" && url.pathname === "/admin/memories/lmc5/retry-dead-letter") {
+    const form = await request.formData();
+    const id = Number(readFormText(form, "id"));
+    const retried = Number.isSafeInteger(id) && id > 0
+      ? await retryFiveAxisDeadLetter(env.DB, namespace, id)
+      : false;
+    return Response.redirect(`${url.origin}/admin/memories?tab=lmc5&notice=${retried ? "five-axis-retried" : "empty"}`, 303);
   }
 
   if (request.method === "POST" && url.pathname === "/admin/memories/candidates/repair-evidence") {

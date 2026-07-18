@@ -1,6 +1,7 @@
 import { searchMemories } from "../../memory/search";
 import { fetchEAxisObservability, type EAxisObservabilityData } from "../../memory/eAxisObservability";
 import type { Env, MemoryApiRecord, MemoryRecord } from "../../types";
+import { listFiveAxisDeadLetters, type MemoryFiveAxisOutboxRecord } from "../../db/memoryFiveAxisOutbox";
 import {
   formatShanghaiDateKey,
   like,
@@ -82,6 +83,7 @@ export interface Lmc5DashboardData {
   highValueNodes: Lmc5MemoryNode[];
   reviewQueue: Lmc5MemoryNode[];
   duplicateFactKeys: Array<{ fact_key: string; count: number; types: string }>;
+  deadLetters: MemoryFiveAxisOutboxRecord[];
 }
 
 function appendBrowseHiddenRecordFilter(binds: unknown[]): string {
@@ -328,7 +330,7 @@ async function fetchLmc5DuplicateFactKeys(env: Env): Promise<Array<{ fact_key: s
 }
 
 export async function fetchLmc5Dashboard(env: Env): Promise<Lmc5DashboardData> {
-  const [stats, eAxisObservability, relationTypes, presenceEdges, selfShapeEdges, intimacyEdges, rawHighValueNodes, reviewQueue, duplicateFactKeys] = await Promise.all([
+  const [stats, eAxisObservability, relationTypes, presenceEdges, selfShapeEdges, intimacyEdges, rawHighValueNodes, reviewQueue, duplicateFactKeys, deadLetters] = await Promise.all([
     fetchLmc5Stats(env),
     fetchEAxisObservability(env),
     fetchLmc5RelationTypes(env),
@@ -337,7 +339,8 @@ export async function fetchLmc5Dashboard(env: Env): Promise<Lmc5DashboardData> {
     fetchLmc5Edges(env, LMC5_CLUSTER_FACT_KEYS.intimacy),
     fetchLmc5HighValueNodes(env),
     fetchLmc5ReviewQueue(env),
-    fetchLmc5DuplicateFactKeys(env)
+    fetchLmc5DuplicateFactKeys(env),
+    listFiveAxisDeadLetters(env.DB, "default", 20)
   ]);
   const highValueNodes = await attachLmc5NodeLinks(env, rawHighValueNodes);
 
@@ -352,7 +355,8 @@ export async function fetchLmc5Dashboard(env: Env): Promise<Lmc5DashboardData> {
     ],
     highValueNodes,
     reviewQueue,
-    duplicateFactKeys
+    duplicateFactKeys,
+    deadLetters
   };
 }
 export async function fetchHeatmap(env: Env): Promise<HeatDay[]> {

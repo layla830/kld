@@ -362,6 +362,64 @@ describe("per-memory five-axis projection", () => {
     expect(records.get("Y")?.attempts).toBe(2);
   });
 
+  it("stops the old revision after E writes a newer revision", async () => {
+    const initial = memory({ five_axis_revision: 4 });
+    const updated = memory({ five_axis_revision: 5, thread: "kld", risk_level: "low" });
+    let reads = 0;
+    const downstreamCalls: string[] = [];
+    const dependencies: MemoryFiveAxisProjectionDependencies = {
+      getMemory: async () => (++reads === 1 ? initial : updated),
+      projectTimeline: async () => {
+        downstreamCalls.push("X");
+        return { scanned: 1, outcome: "already_dated", dates: [], queued: 0 };
+      },
+      projectCoordinates: async () => ({
+        ok: true,
+        mode: "auto_apply_with_exception_review",
+        scanned: 1,
+        needBackfill: 1,
+        offset: 0,
+        nextOffset: null,
+        processed: 1,
+        applied: 1,
+        queued: 0
+      }),
+      syncVector: async () => "synced",
+      projectRelations: async () => {
+        downstreamCalls.push("Y");
+        return { scanned: 1, inserted: 0, review: 0, proposed: 0, candidates: 0 };
+      },
+      projectFacts: async () => {
+        downstreamCalls.push("Z");
+        return { conflicts: 0, candidates: 0 };
+      },
+      projectMetabolism: async () => {
+        downstreamCalls.push("M");
+        return { archive: 0, relations: 0 };
+      },
+      axisRuns: undefined
+    };
+
+    const result = await projectMemoryIntoFiveAxes({} as Env, {
+      namespace: "default",
+      memoryId: initial.id,
+      memoryRevision: 4,
+      projectionKey: "five-axis:e-superseded:r4"
+    }, dependencies);
+
+    expect(result?.supersededByRevision).toBe(5);
+    expect(result?.axes).toMatchObject({
+      E: { status: "applied" },
+      X: { status: "superseded" },
+      Y: { status: "superseded" },
+      Z: { status: "superseded" },
+      M: { status: "superseded" }
+    });
+    expect(result?.failedAxes).toEqual([]);
+    expect(result?.deferredAxes).toEqual([]);
+    expect(downstreamCalls).toEqual([]);
+  });
+
   it("links every review-producing axis to its candidate external keys", async () => {
     const initial = memory({ thread: "kld", valence: 0.2 });
     const records = new Map<FiveAxisName, MemoryFiveAxisRunRecord>();

@@ -136,7 +136,7 @@ const checks = [
   ],
   [
     "X: review records are excluded from timeline proposals",
-    timelineBackfill.includes("type != 'dream_review'"),
+    timelineBackfill.includes("type NOT IN ('diary', 'layla_diary', 'auto_diary', 'dream_review')"),
   ],
   [
     "X: approved dates rebuild durable adjacent edges across the full thread/fact group",
@@ -160,10 +160,10 @@ const checks = [
         .includes("extractExplicitDates(target.content)"),
   ],
   [
-    "X: approval preserves text and only appends timeline tags",
+    "X: approval preserves text and only replaces timeline date tags",
     fs
       .readFileSync("src/api/adminBoard/timelineActions.ts", "utf8")
-      .includes("patch: { tags:") &&
+      .includes('tags.filter((tag) => !tag.startsWith("date:"))') &&
       !fs
         .readFileSync("src/api/adminBoard/timelineActions.ts", "utf8")
         .includes("patch: { content:"),

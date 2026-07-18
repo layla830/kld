@@ -2,6 +2,7 @@ import { replaceTimelineSequenceRelations } from "../db/memoryRelations";
 import type { MemoryRecord } from "../types";
 import { nowIso } from "../utils/time";
 import { isFiveAxisMemoryTypeEligible } from "./fiveAxis/eligibility";
+import { analyzeTimelineDateTags } from "./timelineDates";
 
 interface TimelineGroup {
   thread: string;
@@ -24,10 +25,8 @@ function dateTag(tagsJson: string | null): string | null {
   try {
     const tags = JSON.parse(tagsJson || "[]") as unknown;
     if (!Array.isArray(tags)) return null;
-    const dates = tags
-      .filter((tag): tag is string => typeof tag === "string" && /^date:20\d{2}-\d{2}-\d{2}$/.test(tag))
-      .map((tag) => tag.slice(5));
-    return dates.length === 1 ? dates[0] : null;
+    const analysis = analyzeTimelineDateTags(tags.filter((tag): tag is string => typeof tag === "string"));
+    return analysis.isCanonical ? analysis.validDates[0] : null;
   } catch {
     return null;
   }
