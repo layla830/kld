@@ -9,7 +9,7 @@ import { renderPage } from "./adminBoard/view";
 import { countMemoryCandidatesByAction, countPendingOperationalReviewCandidates, listMemoryCandidates, listMemoryCandidatesByAction, listOperationalReviewCandidates, listRecentApprovedOperationalReviewCandidates } from "../db/memoryCandidates";
 import { approveCandidate, batchRejectLowQualityCandidates, batchReviewDiaryFactCandidates, rejectCandidate, repairCandidateEvidence } from "./adminBoard/candidateActions";
 import { getCoordinateBackfillStatus, setCoordinateBackfillEnabled } from "../memory/coordinateBackfillControl";
-import { approveTimelineCandidate, rejectTimelineCandidate } from "./adminBoard/timelineActions";
+import { approveTimelineCandidate, rejectTimelineCandidate, timelineCandidateNotice } from "./adminBoard/timelineActions";
 import { getTimelineBackfillStatus, scanTimelineBackfillPage } from "../memory/timelineBackfill";
 import { scanOperationalReviewCandidates } from "../memory/operationalReview";
 import { batchReviewMetabolismCandidates } from "./adminBoard/metabolismActions";
@@ -133,7 +133,7 @@ export async function handleAdminBoard(request: Request, env: Env, ctx: Executio
       return Response.redirect(`${url.origin}${noticeUrl(ref, updated ? "x-approved" : "empty")}`, 303);
     } catch (error) {
       console.error("admin timeline approve failed", error);
-      return Response.redirect(`${url.origin}${noticeUrl(ref, "error")}`, 303);
+      return Response.redirect(`${url.origin}${noticeUrl(ref, timelineCandidateNotice(error))}`, 303);
     }
   }
 

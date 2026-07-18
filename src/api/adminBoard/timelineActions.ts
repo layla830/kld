@@ -17,6 +17,19 @@ function payloadOf(value: string): Record<string, unknown> {
   }
 }
 
+export type TimelineCandidateErrorCode = "invalid_date" | "stale" | "date_conflict";
+
+export class TimelineCandidateError extends Error {
+  constructor(readonly code: TimelineCandidateErrorCode) {
+    super(`timeline_candidate_${code}`);
+    this.name = "TimelineCandidateError";
+  }
+}
+
+export function timelineCandidateNotice(error: unknown): string {
+  return error instanceof TimelineCandidateError ? `timeline-${error.code.replace("_", "-")}` : "error";
+}
+
 export async function approveTimelineCandidate(env: Env, form: FormData): Promise<MemoryRecord | null> {
   const id = readFormText(form, "id");
   if (!id) return null;
@@ -30,7 +43,7 @@ export async function approveTimelineCandidate(env: Env, form: FormData): Promis
   const repair = payload._kind === "timeline_date_repair";
   const requestedDate = readFormText(form, "date") || (typeof payload.date === "string" ? payload.date : "");
   const date = parseTimelineDate(requestedDate);
-  if (!date) throw new Error("timeline_candidate_has_invalid_date");
+  if (!date) throw new TimelineCandidateError("invalid_date");
   const currentDates = extractExplicitDates(target.content);
   const tags = parseTags(target.tags);
   if (repair) {
@@ -46,12 +59,12 @@ export async function approveTimelineCandidate(env: Env, form: FormData): Promis
       || JSON.stringify(currentOptions) !== JSON.stringify([...new Set(options)].sort())
       || (options.length > 0 && !options.includes(date))
       || (options.length === 0 && payload.allow_manual_date !== true)) {
-      throw new Error("timeline_candidate_is_stale");
+      throw new TimelineCandidateError("stale");
     }
   } else if (currentDates.length !== 1 || currentDates[0] !== date) {
-    throw new Error("timeline_candidate_is_stale");
+    throw new TimelineCandidateError("stale");
   } else if (tags.some((tag) => tag.startsWith("date:") && tag !== `date:${date}`)) {
-    throw new Error("timeline_candidate_conflicts_with_existing_date");
+    throw new TimelineCandidateError("date_conflict");
   }
   const updated = await updateMemory(env.DB, {
     namespace,

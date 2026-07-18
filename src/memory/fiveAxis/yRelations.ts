@@ -250,6 +250,11 @@ export async function runRelationBuild(
     candidates = await dependencies.findCandidates(env, namespace, memories);
   } catch (cause) {
     const error = cause instanceof Error ? cause.message : String(cause);
+    console.error("five-axis relation candidate search failed", {
+      namespace,
+      memory_ids: memories.map((memory) => memory.id),
+      error
+    });
     return {
       scanned: memories.length,
       inserted: 0,

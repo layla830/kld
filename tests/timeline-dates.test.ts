@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { TimelineCandidateError, timelineCandidateNotice } from "../src/api/adminBoard/timelineActions";
 import { analyzeTimelineDateTags, extractExplicitDates, parseTimelineDate } from "../src/memory/timelineDates";
 
 describe("timeline date contract", () => {
@@ -19,5 +20,12 @@ describe("timeline date contract", () => {
       "2026-07-20",
       "2026-07-21"
     ]);
+  });
+
+  it("maps actionable admin failures to distinct notice codes", () => {
+    expect(timelineCandidateNotice(new TimelineCandidateError("invalid_date"))).toBe("timeline-invalid-date");
+    expect(timelineCandidateNotice(new TimelineCandidateError("stale"))).toBe("timeline-stale");
+    expect(timelineCandidateNotice(new TimelineCandidateError("date_conflict"))).toBe("timeline-date-conflict");
+    expect(timelineCandidateNotice(new Error("unexpected"))).toBe("error");
   });
 });
