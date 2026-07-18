@@ -456,4 +456,43 @@ describe("five-axis Worker circuit", () => {
       diary.id
     )).resolves.toMatchObject({ count: 0 });
   });
+
+  it("retries an empty formal diary split until the default date has a day node", async () => {
+    const diary = await createMemory(env.DB, {
+      namespace: "default",
+      type: "diary",
+      content: "7月15日日记\n今天仍然值得留下一个日节点。",
+      source: "mcp"
+    });
+    let attempts = 0;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+      attempts += 1;
+      const items = attempts === 1 ? [] : [{
+        date: "2026-07-15",
+        type: "timeline_day",
+        content: "7月15日仍然值得被记住。",
+        evidence: "今天仍然值得留下一个日节点",
+        temporal_scope: "day"
+      }];
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: JSON.stringify({ items }) } }]
+      }), { status: 200 });
+    });
+    const runtimeEnv = {
+      ...env,
+      UPSTREAM_BASE_URL: "https://runtime.test/v1",
+      UPSTREAM_API_KEY: "runtime-test-key",
+      MEMORY_MODEL: "runtime-test-model"
+    } as Env;
+
+    const plans = await splitDiaryMemories(runtimeEnv, {
+      namespace: "default",
+      ids: [diary.id],
+      apply: false,
+      force: true
+    });
+
+    expect(attempts).toBe(2);
+    expect(plans[0].items).toMatchObject([{ type: "timeline_day", date: "2026-07-15" }]);
+  });
 });
