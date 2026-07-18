@@ -228,7 +228,7 @@ const checks = [
   [
     "Diary split: v2 requires a day node, verbatim evidence, and bounded sparse output",
     diarySplit.includes("Never return an empty items array for a formal diary") &&
-      diarySplit.includes("split_model_missing_timeline_day") &&
+      diarySplit.includes("timeline_day_fallback:verbatim") &&
       diarySplit.includes("Return 2-6 high-signal items") &&
       diarySplit.includes("the diary narrator '我' is KLD") &&
       diarySplit.includes("Never store KLD's own behavior") &&

@@ -9,6 +9,7 @@ Formal `diary` and `layla_diary` records remain source documents and are not pro
 - Canonical day anchors are connected by X-owned adjacent `temporal_sequence` relations in either `diary:kld` or `diary:layla`.
 - These relations use `diary_day:*` and `diary_timeline:*` reasons. Reconciliation replaces only edges with the exact owned reason.
 - Diary items do not receive synthetic `fact_key` values; Z-axis fact semantics remain separate.
+- If two model attempts still omit a required day node, the splitter creates a bounded verbatim anchor tagged `timeline_day_fallback:verbatim`; this keeps X structurally closed without inventing an extracted fact.
 
 ## Historical backfill
 
