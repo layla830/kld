@@ -1,4 +1,5 @@
 import type { MemoryRecord } from "../types";
+import { DIARY_SPLIT_SOURCE_TYPE } from "../memory/diaryPolicy";
 
 export const DIARY_SPLIT_COMPLETE_EVENT = "diary_split_v2_complete";
 export const DIARY_SPLIT_INCOMPLETE_EVENT = "diary_split_v2_incomplete";
@@ -43,7 +44,7 @@ export async function listMissedDiarySplitCandidates(
 ): Promise<MemoryRecord[]> {
   const result = await db.prepare(
     `SELECT m.* FROM memories AS m
-     WHERE m.namespace = ? AND m.status = 'active' AND m.type IN ('diary','layla_diary')
+     WHERE m.namespace = ? AND m.status = 'active' AND m.type = ?
        AND m.created_at <= ?
        AND NOT EXISTS (
          SELECT 1 FROM memory_events AS event
@@ -85,6 +86,7 @@ export async function listMissedDiarySplitCandidates(
      LIMIT ?`
   ).bind(
     input.namespace,
+    DIARY_SPLIT_SOURCE_TYPE,
     input.createdBefore,
     DIARY_SPLIT_COMPLETE_EVENT,
     Math.min(Math.max(Math.floor(input.limit), 1), 100)

@@ -2,6 +2,7 @@ import { listUnprocessedChunkMessages } from "../db/messages";
 import type { Env, MemoryRecord, QueueMessage } from "../types";
 import { handleQueueMessage } from "./consumer";
 import { dateFromDiary } from "../memory/diarySplit";
+import { isActiveDiarySplitSource } from "../memory/diaryPolicy";
 import { loadChunkingConfig, loadFiveAxisConfig, loadMemoryConfig, systemClock } from "../config/runtime";
 import { listDueFiveAxisOutbox, markFiveAxisOutboxQueued } from "../db/memoryFiveAxisOutbox";
 import { listMissedDiarySplitCandidates } from "../db/diarySplitState";
@@ -195,12 +196,8 @@ export async function enqueueMemoryVectorSync(env: Env, memories: MemoryRecord[]
   }
 }
 
-function isSplittableDiary(memory: MemoryRecord): boolean {
-  return memory.status === "active" && ["diary", "layla_diary"].includes(memory.type);
-}
-
 export async function enqueueDiarySplitIfNeeded(env: Env, memory: MemoryRecord): Promise<boolean> {
-  if (!isSplittableDiary(memory)) return false;
+  if (!isActiveDiarySplitSource(memory)) return false;
   await sendQueueMessage(env, {
     type: "diary_split",
     namespace: memory.namespace,
