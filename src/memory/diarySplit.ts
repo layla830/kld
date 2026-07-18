@@ -355,7 +355,7 @@ function buildSplitPrompt(record: MemoryRecord, date: string, allowedDates: stri
   return [
     "Split this Chinese diary into searchable long-term memory records.",
     "Return JSON only. Do not use markdown.",
-    "It is valid to return {\"items\":[]} when the diary has no durable or searchable memory.",
+    "Never return an empty items array for a formal diary. Always include a timeline_day for the default date.",
     "Return 2-6 high-signal items. Fewer is better than padding. Do not create one item for every allowed type.",
     "The goal is one compact day overview plus only the few atomic memories that would be useful in a future search.",
     "Do not repeat the same scene or conclusion across timeline_day, quote, lesson, insight, and rule records.",
@@ -433,7 +433,7 @@ async function callSplitModel(env: Env, record: MemoryRecord, date: string, incl
           role: "user",
           content: attempt === 0
             ? basePrompt
-            : `${basePrompt}\n\nYour previous non-empty output was invalid because these represented dates had no timeline_day: ${lastMissingDates.join(", ")}. Return exactly one timeline_day for every date represented by any item.`
+            : `${basePrompt}\n\nYour previous output was invalid because these required dates had no timeline_day: ${lastMissingDates.join(", ")}. Return exactly one timeline_day for the default date and every date represented by any item.`
         }
       ],
       temperature: 0.1,
@@ -451,11 +451,10 @@ async function callSplitModel(env: Env, record: MemoryRecord, date: string, incl
     const reasoningContent = typeof message?.reasoning_content === "string" ? message.reasoning_content.trim() : "";
     const text = content || reasoningContent;
     const result = parseItemsWithDebug(text, date, allowedDates, record.id, record.content, includeDebug);
-    if (result.items.length === 0) return result;
-
     const representedDates = new Set(result.items.map((item) => item.date));
     const timelineDates = new Set(result.items.filter((item) => item.type === "timeline_day").map((item) => item.date));
-    lastMissingDates = [...representedDates].filter((itemDate) => !timelineDates.has(itemDate));
+    const requiredDates = new Set([date, ...representedDates]);
+    lastMissingDates = [...requiredDates].filter((itemDate) => !timelineDates.has(itemDate));
     if (lastMissingDates.length === 0) return result;
   }
 
