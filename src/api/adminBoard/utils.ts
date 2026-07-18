@@ -43,6 +43,17 @@ export function attr(value: unknown): string {
   return htmlEscape(value).replaceAll("`", "&#96;");
 }
 
+export function payloadOf(value: string | null | undefined): Record<string, unknown> {
+  try {
+    const parsed = value ? JSON.parse(value) as unknown : null;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {};
+  } catch {
+    return {};
+  }
+}
+
 export function parseTags(value: string | null): string[] {
   if (!value) return [];
   try {

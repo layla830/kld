@@ -5,7 +5,7 @@ import { getMemoryById, updateMemory } from "../../db/memories";
 import { listFactKeyConflictsForReview } from "../../memory/fiveAxis/zFacts";
 import { markMemorySupersededSynced, syncMemoryVector } from "../../memory/state";
 import type { Env, MemoryRecord } from "../../types";
-import { readFormText } from "./utils";
+import { payloadOf, readFormText } from "./utils";
 
 interface Snapshot {
   id: string;
@@ -25,15 +25,6 @@ export interface FactTransitionResult {
 
 function candidateNamespace(env: Env, form: FormData): string {
   return readFormText(form, "namespace") || loadDreamConfig(env).namespace;
-}
-
-function payloadOf(value: string): Record<string, unknown> {
-  try {
-    const parsed = JSON.parse(value) as unknown;
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
-  } catch {
-    return {};
-  }
 }
 
 function snapshotOf(value: unknown): Snapshot | null {

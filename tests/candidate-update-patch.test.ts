@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { candidateUpdatePatch } from "../src/api/adminBoard/candidateActions";
+import { payloadOf } from "../src/api/adminBoard/utils";
 
 describe("candidate update patch", () => {
+  it("parses only JSON objects as candidate payloads", () => {
+    expect(payloadOf('{"action":"approve"}')).toEqual({ action: "approve" });
+    expect([undefined, null, "", "not-json", "null", "true", "[]"].map(payloadOf)).toEqual(Array(7).fill({}));
+  });
   it("preserves fields omitted from a partial coordinate proposal", () => {
     const patch = candidateUpdatePatch({
       _kind: "coordinate_backfill",

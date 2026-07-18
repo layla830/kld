@@ -8,7 +8,7 @@ import {
   COLD_MEMORY_MAX_IMPORTANCE,
   PROTECTED_MEMORY_TYPES
 } from "../../memory/metabolismReview";
-import { readFormText } from "./utils";
+import { payloadOf, readFormText } from "./utils";
 
 export type MetabolismAction = "m_archive" | "m_relation_cleanup";
 type MetabolismResult = { memory: MemoryRecord | null; action: MetabolismAction | "rollback" };
@@ -22,15 +22,6 @@ export interface MetabolismBatchResult {
 }
 
 const MAX_METABOLISM_BATCH_SIZE = 30;
-
-function payloadOf(value: string): Record<string, unknown> {
-  try {
-    const parsed = JSON.parse(value);
-    return parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : {};
-  } catch {
-    return {};
-  }
-}
 
 function beforeOf(payload: Record<string, unknown>): Record<string, unknown> {
   return payload.before && typeof payload.before === "object" ? payload.before as Record<string, unknown> : {};
