@@ -135,6 +135,7 @@ describe("five-axis failure semantics", () => {
     await env.DB.prepare(
       `UPDATE memory_five_axis_outbox
        SET status = 'failed', attempts = 5,
+           last_error = 'embedding unavailable',
            created_at = '2000-01-01T00:00:00.000Z', updated_at = '2026-07-18T00:00:00.000Z'
        WHERE id = ?`
     ).bind(outbox!.id).run();
@@ -167,6 +168,7 @@ describe("five-axis failure semantics", () => {
       source: "admin_board",
       outbox_id: outbox!.id,
       previous_attempts: 5,
+      previous_error: "embedding unavailable",
       axis_runs_reset: [{ axis: "Y", status: "failed", attempts: 5 }]
     });
 
@@ -252,5 +254,106 @@ describe("five-axis failure semantics", () => {
 
     await expect(hasNewerFiveAxisOutboxVersion(env.DB, first!)).resolves.toBe(true);
     await expect(hasNewerFiveAxisOutboxVersion(env.DB, second!)).resolves.toBe(false);
+  });
+
+  it("preserves and processes the latest revision when material updates share a timestamp", async () => {
+    const memory = await createMemory(env.DB, {
+      namespace: "default",
+      type: "project_state",
+      content: "Same-millisecond outbox revision contract.",
+      factKey: `same-millisecond-runtime:${crypto.randomUUID()}`,
+      thread: "same-millisecond-runtime",
+      riskLevel: "low",
+      urgencyLevel: "normal",
+      tensionScore: 0.2,
+      responsePosture: "supportive",
+      valence: 0.3,
+      arousal: 0.4,
+      tags: ["timeline", "date:2026-07-18"]
+    });
+    const initial = await env.DB.prepare(
+      `SELECT * FROM memory_five_axis_outbox
+       WHERE namespace = 'default' AND memory_id = ? AND memory_revision = 1`
+    ).bind(memory.id).first<MemoryFiveAxisOutboxRecord>();
+    expect(initial).toBeTruthy();
+    await env.DB.prepare(
+      `UPDATE memory_five_axis_outbox
+       SET status = 'completed', completed_at = updated_at
+       WHERE id = ?`
+    ).bind(initial!.id).run();
+
+    const sharedTimestamp = "2026-07-18T12:34:56.789Z";
+    await env.DB.prepare(
+      `UPDATE memories SET tags = ?, updated_at = ?
+       WHERE namespace = 'default' AND id = ?`
+    ).bind(JSON.stringify(["timeline", "date:2026-07-18", "revision:2"]), sharedTimestamp, memory.id).run();
+    await env.DB.prepare(
+      `UPDATE memories SET tags = ?, updated_at = ?
+       WHERE namespace = 'default' AND id = ?`
+    ).bind(JSON.stringify(["timeline", "date:2026-07-18", "revision:3"]), sharedTimestamp, memory.id).run();
+
+    const revisions = await env.DB.prepare(
+      `SELECT * FROM memory_five_axis_outbox
+       WHERE namespace = 'default' AND memory_id = ?
+       ORDER BY memory_revision`
+    ).bind(memory.id).all<MemoryFiveAxisOutboxRecord>();
+    expect((revisions.results ?? []).map((item) => ({
+      memory_revision: item.memory_revision,
+      memory_updated_at: item.memory_updated_at,
+      status: item.status
+    }))).toEqual([
+      { memory_revision: 1, memory_updated_at: memory.updated_at, status: "completed" },
+      { memory_revision: 2, memory_updated_at: sharedTimestamp, status: "pending" },
+      { memory_revision: 3, memory_updated_at: sharedTimestamp, status: "pending" }
+    ]);
+    await expect(getMemoryById(env.DB, { namespace: "default", id: memory.id }))
+      .resolves.toMatchObject({ five_axis_revision: 3, tags: expect.stringContaining("revision:3") });
+
+    const runtimeEnv = {
+      ...env,
+      AI: { run: async () => ({ data: [[0.1, 0.2, 0.3]] }) },
+      VECTORIZE: {
+        query: async () => ({ matches: [] }),
+        upsert: async () => undefined,
+        deleteByIds: async () => undefined
+      }
+    } as unknown as Env;
+    const pending = (revisions.results ?? []).filter((item) => item.status === "pending");
+    for (const item of pending) {
+      await env.DB.prepare(
+        "UPDATE memory_five_axis_outbox SET status = 'queued', attempts = 1 WHERE id = ?"
+      ).bind(item.id).run();
+      const body: MemoryFiveAxisProjectionQueueMessage = {
+        type: "memory_five_axis_projection",
+        namespace: item.namespace,
+        memoryId: item.memory_id,
+        memoryUpdatedAt: item.memory_updated_at,
+        memoryRevision: item.memory_revision ?? 1,
+        outboxId: item.id,
+        idempotencyKey: `five-axis:${item.id}:r${item.memory_revision ?? 1}`
+      };
+      const batch = createMessageBatch<MemoryFiveAxisProjectionQueueMessage>("companion-memory", [{
+        id: `same-millisecond-${item.memory_revision}`,
+        timestamp: new Date(),
+        attempts: 1,
+        body
+      }]);
+      await worker.queue(batch, runtimeEnv);
+      await expect(getQueueResult(batch, createExecutionContext())).resolves.toMatchObject({
+        explicitAcks: [`same-millisecond-${item.memory_revision}`]
+      });
+    }
+
+    await expect(env.DB.prepare(
+      `SELECT status, result_json FROM memory_five_axis_outbox
+       WHERE namespace = 'default' AND memory_id = ? AND memory_revision = 2`
+    ).bind(memory.id).first()).resolves.toMatchObject({
+      status: "skipped",
+      result_json: JSON.stringify({ reason: "memory_revision_mismatch", expected: 2, current: 3 })
+    });
+    await expect(env.DB.prepare(
+      `SELECT status FROM memory_five_axis_outbox
+       WHERE namespace = 'default' AND memory_id = ? AND memory_revision = 3`
+    ).bind(memory.id).first()).resolves.toMatchObject({ status: "completed" });
   });
 });
