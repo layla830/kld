@@ -8,6 +8,7 @@ import { fetchMemoriesByIds, listMemoriesSince } from "../../db/memories";
 import { callOpenAICompat } from "../../proxy/openaiAdapter";
 import type { Env, MemoryRecord, OpenAIChatRequest, OpenAIChatResponse } from "../../types";
 import { extractJsonObject } from "../../utils/jsonHelpers";
+import { readAssistantTexts } from "../../adapters/llm/assistantText";
 import { searchVectorMemories } from "../vectorStore";
 import { queueRelationReviewCandidate } from "../relationReview";
 
@@ -128,7 +129,7 @@ function buildRelationPrompt(candidates: RelationCandidate[]): string {
   ].join("\n");
 }
 
-async function proposeRelationsViaLlm(
+export async function proposeRelationsViaLlm(
   env: Env,
   candidates: RelationCandidate[]
 ): Promise<{ hints: RelationHint[]; error?: string }> {
@@ -136,47 +137,69 @@ async function proposeRelationsViaLlm(
   const model = readRelationModel(env);
   if (!model) return { hints: [], error: "missing_model" };
 
-  const request: OpenAIChatRequest = {
-    model,
-    messages: [
-      { role: "system", content: "你是严格的 JSON 生成器。只输出 JSON。" },
-      { role: "user", content: buildRelationPrompt(candidates) }
-    ],
-    temperature: 0,
-    max_tokens: 1200,
-    response_format: { type: "json_object" },
-    stream: false
-  };
+  const basePrompt = buildRelationPrompt(candidates);
+  let lastError = "invalid_json";
 
-  try {
-    const response = await callOpenAICompat(env, request);
-    if (!response.ok) return { hints: [], error: `model_status_${response.status}` };
-    const parsed = (await response.json()) as OpenAIChatResponse;
-    const message = parsed.choices?.[0]?.message as ({ content?: unknown; reasoning_content?: unknown }) | undefined;
-    const content = typeof message?.content === "string" ? message.content.trim() : "";
-    const reasoning = typeof message?.reasoning_content === "string" ? message.reasoning_content.trim() : "";
-    const json = extractJsonObject(content) ?? extractJsonObject(reasoning);
-    if (!json) return { hints: [], error: "invalid_json" };
-    const rawHints = (json as { hints?: unknown }).hints;
-    if (!Array.isArray(rawHints)) return { hints: [], error: "no_hints_array" };
-    const hints: RelationHint[] = [];
-    for (const item of rawHints) {
-      if (!item || typeof item !== "object") continue;
-      const record = item as Record<string, unknown>;
-      const pairId = typeof record.pair_id === "string" ? record.pair_id : null;
-      const relationType = typeof record.relation_type === "string" ? record.relation_type.trim() : null;
-      if (!pairId || !relationType) continue;
-      hints.push({
-        pair_id: pairId,
-        relation_type: relationType,
-        strength: typeof record.strength === "number" ? Math.min(Math.max(record.strength, 0), 1) : 0.6,
-        reason: typeof record.reason === "string" ? record.reason : undefined
-      });
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const request: OpenAIChatRequest = {
+      model,
+      messages: [
+        { role: "system", content: "你是严格的 JSON 生成器。只输出 JSON。" },
+        {
+          role: "user",
+          content: attempt === 0
+            ? basePrompt
+            : `${basePrompt}\n\nThe previous response was invalid. Return one compact, complete JSON object with a hints array and no prose.`
+        }
+      ],
+      temperature: 0,
+      max_tokens: 1800,
+      response_format: { type: "json_object" },
+      stream: false
+    };
+
+    try {
+      const response = await callOpenAICompat(env, request);
+      if (!response.ok) {
+        lastError = `model_status_${response.status}`;
+        if (attempt === 0 && response.status >= 500) continue;
+        return { hints: [], error: lastError };
+      }
+      const parsed = (await response.json()) as OpenAIChatResponse;
+      const json = readAssistantTexts(parsed)
+        .map((text) => extractJsonObject(text))
+        .find((value) => value !== null) ?? null;
+      if (!json) {
+        lastError = "invalid_json";
+        continue;
+      }
+      const rawHints = (json as { hints?: unknown }).hints;
+      if (!Array.isArray(rawHints)) {
+        lastError = "no_hints_array";
+        continue;
+      }
+      const hints: RelationHint[] = [];
+      for (const item of rawHints) {
+        if (!item || typeof item !== "object") continue;
+        const record = item as Record<string, unknown>;
+        const pairId = typeof record.pair_id === "string" ? record.pair_id : null;
+        const relationType = typeof record.relation_type === "string" ? record.relation_type.trim() : null;
+        if (!pairId || !relationType) continue;
+        hints.push({
+          pair_id: pairId,
+          relation_type: relationType,
+          strength: typeof record.strength === "number" ? Math.min(Math.max(record.strength, 0), 1) : 0.6,
+          reason: typeof record.reason === "string" ? record.reason : undefined
+        });
+      }
+      return { hints };
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error);
+      if (attempt === 0) continue;
     }
-    return { hints };
-  } catch (error) {
-    return { hints: [], error: error instanceof Error ? error.message : String(error) };
   }
+
+  return { hints: [], error: lastError };
 }
 
 export interface RelationBuildDependencies {
