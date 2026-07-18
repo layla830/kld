@@ -421,29 +421,45 @@ function buildSplitPrompt(record: MemoryRecord, date: string, allowedDates: stri
 async function callSplitModel(env: Env, record: MemoryRecord, date: string, includeDebug: boolean): Promise<{ items: DiarySplitItem[]; debug?: DiarySplitDebug }> {
   const allowedDates = datesFromDiary(record, date);
   const model = env.CC_CONNECT_CHUNK_EXTRACT_MODEL || env.MEMORY_MODEL || env.AUTO_CHUNK_SUMMARY_MODEL || env.CHAT_MODEL || DEFAULT_SPLIT_MODEL;
-  const request: OpenAIChatRequest = {
-    model,
-    messages: [
-      { role: "system", content: "You are a strict JSON generator for Chinese memory extraction. Output JSON only. Do not explain or show reasoning." },
-      { role: "user", content: buildSplitPrompt(record, date, allowedDates) }
-    ],
-    temperature: 0.1,
-    max_tokens: 4200,
-    response_format: { type: "json_object" },
-    stream: false
-  };
+  const basePrompt = buildSplitPrompt(record, date, allowedDates);
+  let lastMissingDates: string[] = [];
 
-  const response = await callOpenAICompat(env, request);
-  if (!response.ok) {
-    throw new Error(`split model failed: ${response.status}`);
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const request: OpenAIChatRequest = {
+      model,
+      messages: [
+        { role: "system", content: "You are a strict JSON generator for Chinese memory extraction. Output JSON only. Do not explain or show reasoning." },
+        {
+          role: "user",
+          content: attempt === 0
+            ? basePrompt
+            : `${basePrompt}\n\nYour previous non-empty output was invalid because these represented dates had no timeline_day: ${lastMissingDates.join(", ")}. Return exactly one timeline_day for every date represented by any item.`
+        }
+      ],
+      temperature: 0.1,
+      max_tokens: 4200,
+      response_format: { type: "json_object" },
+      stream: false
+    };
+
+    const response = await callOpenAICompat(env, request);
+    if (!response.ok) throw new Error(`split model failed: ${response.status}`);
+
+    const parsed = (await response.json()) as OpenAIChatResponse;
+    const message = parsed.choices?.[0]?.message;
+    const content = typeof message?.content === "string" ? message.content.trim() : "";
+    const reasoningContent = typeof message?.reasoning_content === "string" ? message.reasoning_content.trim() : "";
+    const text = content || reasoningContent;
+    const result = parseItemsWithDebug(text, date, allowedDates, record.id, record.content, includeDebug);
+    if (result.items.length === 0) return result;
+
+    const representedDates = new Set(result.items.map((item) => item.date));
+    const timelineDates = new Set(result.items.filter((item) => item.type === "timeline_day").map((item) => item.date));
+    lastMissingDates = [...representedDates].filter((itemDate) => !timelineDates.has(itemDate));
+    if (lastMissingDates.length === 0) return result;
   }
 
-  const parsed = (await response.json()) as OpenAIChatResponse;
-  const message = parsed.choices?.[0]?.message;
-  const content = typeof message?.content === "string" ? message.content.trim() : "";
-  const reasoningContent = typeof message?.reasoning_content === "string" ? message.reasoning_content.trim() : "";
-  const text = content || reasoningContent;
-  return parseItemsWithDebug(text, date, allowedDates, record.id, record.content, includeDebug);
+  throw new Error(`split_model_missing_timeline_day:${lastMissingDates.join(",")}`);
 }
 
 async function existingSplitCount(db: D1Database, input: { namespace: string; originId: string }): Promise<number> {
