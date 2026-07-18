@@ -233,7 +233,7 @@ export async function projectMemoryIntoFiveAxes(
         axisKey(input, memoryRevision, "X"),
         (result) => result.queued > 0
           ? "pending_review"
-          : result.outcome === "reconciled" ? "applied" : "skipped",
+          : result.outcome === "reconciled" || result.outcome === "diary_reconciled" ? "applied" : "skipped",
         () => dependencies.projectTimeline(env, current),
         (result) => result.candidateExternalKeys ?? []
       );

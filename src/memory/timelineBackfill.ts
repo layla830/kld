@@ -2,6 +2,7 @@ import type { Env, MemoryRecord } from "../types";
 import { upsertMemoryCandidate } from "../db/memoryCandidates";
 import { getCacheEntry, parseCacheEntryValue, putCacheEntry } from "../db/cacheEntries";
 import { rebuildTimelineSequenceForMemory } from "./timelineRelations";
+import { rebuildDiaryTimelineForMemory, type DiaryTimelineProjectionResult } from "./diaryTimeline";
 
 const TIMELINE_BACKFILL_KEY = "maintenance:timeline_backfill";
 const TIMELINE_BATCH_SIZE = 100;
@@ -29,11 +30,12 @@ export interface TimelineBackfillStatus {
 
 export interface TimelineMemoryProjectionResult {
   scanned: 1;
-  outcome: "already_dated" | "reconciled" | "no_explicit_date" | "ambiguous" | "queued";
+  outcome: "already_dated" | "reconciled" | "diary_reconciled" | "diary_incomplete" | "no_explicit_date" | "ambiguous" | "queued";
   dates: string[];
   queued: number;
   candidateExternalKeys?: string[];
   sequence?: Awaited<ReturnType<typeof rebuildTimelineSequenceForMemory>>;
+  diary?: DiaryTimelineProjectionResult;
 }
 
 function timelineCandidateExternalKey(memoryId: string, date: string): string {
@@ -77,6 +79,18 @@ export async function queueTimelineCandidateForMemory(
     .filter((tag) => /^date:20\d{2}-\d{2}-\d{2}$/.test(tag))
     .map((tag) => tag.slice(5));
   if (beforeTags.some((tag) => tag.startsWith("date:"))) {
+    if (approvedDates.length === 1 && memory.source === "timeline_split") {
+      const diary = await rebuildDiaryTimelineForMemory(env.DB, memory);
+      if (diary) {
+        return {
+          scanned: 1,
+          outcome: diary.outcome === "diary_timeline_reconciled" ? "diary_reconciled" : "diary_incomplete",
+          dates: approvedDates,
+          queued: 0,
+          diary
+        };
+      }
+    }
     if (approvedDates.length === 1 && memory.thread && memory.fact_key) {
       const sequence = await rebuildTimelineSequenceForMemory(env.DB, memory);
       return { scanned: 1, outcome: "reconciled", dates: approvedDates, queued: 0, sequence };

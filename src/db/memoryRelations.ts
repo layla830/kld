@@ -177,6 +177,50 @@ export async function replaceTimelineSequenceRelations(
   };
 }
 
+export async function replaceOwnedDiaryTimelineRelations(
+  db: D1Database,
+  input: {
+    namespace: string;
+    ownerKey: string;
+    relationType: "temporal_sequence" | "in_episode";
+    edges: Array<{ sourceMemoryId: string; targetMemoryId: string }>;
+  }
+): Promise<{ expected: number; inserted: number }> {
+  const reason = input.relationType === "temporal_sequence"
+    ? `diary_timeline:${input.ownerKey}`
+    : `diary_day:${input.ownerKey}`;
+  const edges = [...new Map(input.edges
+    .filter((edge) => edge.sourceMemoryId !== edge.targetMemoryId)
+    .map((edge) => {
+      const pair = normalizeRelationPair(edge.sourceMemoryId, edge.targetMemoryId, input.relationType);
+      return [`${pair.sourceMemoryId}\n${pair.targetMemoryId}`, pair] as const;
+    })).values()];
+  const statements = [
+    db.prepare(
+      `DELETE FROM memory_relations
+       WHERE namespace = ? AND relation_type = ? AND reason = ?`
+    ).bind(input.namespace, input.relationType, reason),
+    ...edges.map((edge) => db.prepare(
+      `INSERT OR IGNORE INTO memory_relations (
+         id, namespace, source_memory_id, target_memory_id, relation_type, strength, reason, created_at
+       ) VALUES (?, ?, ?, ?, ?, 1, ?, ?)`
+    ).bind(
+      newId("rel"),
+      input.namespace,
+      edge.sourceMemoryId,
+      edge.targetMemoryId,
+      input.relationType,
+      reason,
+      nowIso()
+    ))
+  ];
+  const results = await db.batch(statements);
+  return {
+    expected: edges.length,
+    inserted: results.slice(1).reduce((sum, result) => sum + (result.meta.changes ?? 0), 0)
+  };
+}
+
 async function listRelationsForFrontier(
   db: D1Database,
   input: { namespace: string; frontier: string[] }
