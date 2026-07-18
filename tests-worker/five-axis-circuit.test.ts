@@ -298,7 +298,7 @@ describe("five-axis Worker circuit", () => {
     )).resolves.toMatchObject({ count: 4 });
   });
 
-  it("backfills complete historical diary splits while leaving low-coverage days untouched", async () => {
+  it("backfills complete historical splits and deterministically repairs missing day nodes", async () => {
     const completeDiary = await createMemory(env.DB, {
       namespace: "default",
       type: "diary",
@@ -342,8 +342,10 @@ describe("five-axis Worker circuit", () => {
       backfilled: true
     });
     expect(result.rows.find((row) => row.diaryId === sparseDiary.id)).toMatchObject({
-      lowCoverageReasons: ["missing_timeline_day"],
-      backfilled: false
+      lowCoverageReasons: [],
+      missingTimelineDates: [],
+      repairedTimelineDays: 1,
+      backfilled: true
     });
     await expect(first<{ count: number }>(
       `SELECT COUNT(*) AS count FROM memory_diary_timeline_memberships
@@ -352,9 +354,16 @@ describe("five-axis Worker circuit", () => {
     )).resolves.toMatchObject({ count: 2 });
     await expect(first<{ count: number }>(
       `SELECT COUNT(*) AS count FROM memory_diary_timeline_memberships
-       WHERE namespace = 'default' AND memory_id = ?`,
+        WHERE namespace = 'default' AND memory_id = ?`,
       sparseQuote.id
-    )).resolves.toMatchObject({ count: 0 });
+    )).resolves.toMatchObject({ count: 1 });
+    await expect(first<{ count: number }>(
+      `SELECT COUNT(*) AS count FROM memories
+       WHERE namespace = 'default' AND source = 'timeline_split' AND type = 'timeline_day'
+         AND EXISTS (SELECT 1 FROM json_each(tags) WHERE value = ?)
+         AND EXISTS (SELECT 1 FROM json_each(tags) WHERE value = 'timeline_day_fallback:verbatim')`,
+      `origin:${sparseDiary.id}`
+    )).resolves.toMatchObject({ count: 1 });
   });
 
   it("retries a non-empty diary split that omits its required timeline day", async () => {
