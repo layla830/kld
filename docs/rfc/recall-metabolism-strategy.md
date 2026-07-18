@@ -59,10 +59,10 @@ The result is an inconsistent signal boundary:
 |---|---:|---:|---:|
 | API context injection | Yes | `recall_context_injected` | Yes |
 | Gateway context injection | Yes | No equivalent event | Yes |
-| MCP retrieve | No | `recall_search_observed` in traced cases | Yes, when returned as requested context |
+| MCP `retrieve_memory` | No | `recall_search_observed` in traced cases | Yes; count all deduplicated returned memory IDs once per operation |
 | Exact/search-only result | No | Usually no | No |
 
-Before adding advanced M policies, these final-use entrypoints must call one shared writer. A search result that is merely inspected by a ranking pipeline must not count.
+Before adding advanced M policies, these entrypoints must call one shared writer. Layla's product decision is to treat a successful explicit MCP `retrieve_memory` response as recall exposure: the service cannot know which returned item the model ultimately used, so it counts every deduplicated returned memory ID once for that operation. Internal ranking candidates and exact/list/search-only results still do not count. Keeping `source = mcp_retrieve`, capping effective daily contribution, and requiring multiple active days prevents occasional broad MCP results from dominating M policy metrics.
 
 ### 3.2 Current M archive policy
 
@@ -507,7 +507,7 @@ There is none. Every new M action remains review-first, revalidated, snapshotted
 1. Keep the existing 90-day never-recalled baseline unchanged? **Recommendation: yes.**
 2. Enable additive `cooled_after_use` after a 30-day shadow period with a 180-day cold threshold? **Recommendation: yes.**
 3. Use normalized daily rollups rather than JSON history or direct `memory_events` aggregation? **Recommendation: yes.**
-4. Count explicit MCP retrieval as a recall when it returns requested context, while excluding search-only results? **Recommendation: yes.**
+4. Count every deduplicated memory returned by a successful explicit MCP `retrieve_memory` operation once, while excluding internal ranking and exact/list/search-only results? **Decided by Layla: yes.**
 5. Use `+0.10`, capped at `0.80`, for an approved promotion? **Recommendation: yes, subject to shadow data.**
 6. Require at least two active days for promotion? **Recommendation: yes.**
 7. Defer outcome tracking until recall attribution is explicit? **Recommendation: yes.**
