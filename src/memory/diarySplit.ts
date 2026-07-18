@@ -5,6 +5,7 @@ import { callOpenAICompat } from "../proxy/openaiAdapter";
 import type { Env, MemoryRecord, OpenAIChatRequest, OpenAIChatResponse } from "../types";
 import { parseJsonStringArray } from "../utils/jsonHelpers";
 import { upsertMemoryEmbedding } from "./embedding";
+import { DIARY_SPLIT_SOURCE_TYPE, isActiveDiarySplitSource } from "./diaryPolicy";
 import { removeMemoryVector } from "./state";
 import {
   DIARY_SPLIT_COMPLETE_EVENT,
@@ -542,14 +543,14 @@ async function findDiaries(db: D1Database, input: SplitDiaryInput): Promise<Arra
   if (ids.length > 0) {
     const placeholders = ids.map(() => "?").join(", ");
     const result = await db
-      .prepare(`SELECT * FROM memories WHERE namespace = ? AND status = 'active' AND type IN ('diary', 'layla_diary') AND id IN (${placeholders})`)
-      .bind(input.namespace, ...ids)
+      .prepare(`SELECT * FROM memories WHERE namespace = ? AND status = 'active' AND type = ? AND id IN (${placeholders})`)
+      .bind(input.namespace, DIARY_SPLIT_SOURCE_TYPE, ...ids)
       .all<MemoryRecord>();
     rows = result.results ?? [];
   } else {
     const result = await db
-      .prepare("SELECT * FROM memories WHERE namespace = ? AND status = 'active' AND type IN ('diary', 'layla_diary') ORDER BY created_at")
-      .bind(input.namespace)
+      .prepare("SELECT * FROM memories WHERE namespace = ? AND status = 'active' AND type = ? ORDER BY created_at")
+      .bind(input.namespace, DIARY_SPLIT_SOURCE_TYPE)
       .all<MemoryRecord>();
     rows = result.results ?? [];
   }
@@ -640,6 +641,9 @@ export async function ensureVerbatimTimelineDay(
   env: Env,
   input: { namespace: string; diary: MemoryRecord; date: string }
 ): Promise<MemoryRecord> {
+  if (!isActiveDiarySplitSource(input.diary)) {
+    throw new Error("timeline_day_repair_requires_active_diary");
+  }
   const persisted = await persistItems(env, {
     namespace: input.namespace,
     diary: input.diary,

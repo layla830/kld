@@ -1,6 +1,7 @@
 import type { Env, MemoryRecord } from "../types";
 import { nowIso } from "../utils/time";
 import { ensureVerbatimTimelineDay } from "./diarySplit";
+import { DIARY_SPLIT_SOURCE_TYPE } from "./diaryPolicy";
 import { rebuildDiaryTimelineForMemory } from "./diaryTimeline";
 
 const TIMELINE_SOURCE = "timeline_split";
@@ -103,9 +104,9 @@ export async function scanDiaryTimelineBackfill(
   const cursor = options.cursor?.trim() || "";
   const result = await env.DB.prepare(
     `SELECT * FROM memories
-     WHERE namespace = ? AND status = 'active' AND type IN ('diary','layla_diary') AND id > ?
+     WHERE namespace = ? AND status = 'active' AND type = ? AND id > ?
      ORDER BY id LIMIT ?`
-  ).bind(namespace, cursor, limit + 1).all<MemoryRecord>();
+  ).bind(namespace, DIARY_SPLIT_SOURCE_TYPE, cursor, limit + 1).all<MemoryRecord>();
   const all = result.results ?? [];
   const hasMore = all.length > limit;
   const diaries = all.slice(0, limit);

@@ -1,6 +1,7 @@
 import { getMemoryCandidate, resolveMemoryCandidate, updateMemoryCandidateEvidence } from "../../db/memoryCandidates";
 import { createMemory, getMemoryById, softDeleteMemory, updateMemory, type UpdateMemoryInput } from "../../db/memories";
 import type { Env, MemoryRecord } from "../../types";
+import { isActiveDiarySplitSource } from "../../memory/diaryPolicy";
 import { readFormText } from "./utils";
 import { createMemoryRelation } from "../../db/memoryRelations";
 import { syncMemoryVector } from "../../memory/state";
@@ -217,7 +218,7 @@ export async function approveCandidate(env: Env, form: FormData): Promise<Memory
     const memoryType = text(payload.type);
     if (!diaryId || !evidence || !itemKey || !content || !memoryType || !["rule", "preference", "project_state", "lesson"].includes(memoryType)) return null;
     const diary = await getMemoryById(env.DB, { namespace: "default", id: diaryId });
-    if (!diary || diary.status !== "active" || !["diary", "layla_diary"].includes(diary.type) || !diary.content.includes(evidence)) return null;
+    if (!diary || !isActiveDiarySplitSource(diary) || !diary.content.includes(evidence)) return null;
     target = await existingDiarySplitMemory(env, itemKey);
     if (!target) {
       target = await createMemory(env.DB, {

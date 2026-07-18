@@ -3,11 +3,12 @@ import { createExecutionContext, createMessageBatch, getQueueResult } from "clou
 import { afterEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/index";
 import { approveTimelineCandidate } from "../src/api/adminBoard/timelineActions";
-import { enqueueMissedDiarySplits, enqueuePendingFiveAxisProjections } from "../src/queue/producer";
+import { enqueueDiarySplitIfNeeded, enqueueMissedDiarySplits, enqueuePendingFiveAxisProjections } from "../src/queue/producer";
 import { createMemory } from "../src/db/memories";
 import { createMemoryEvent } from "../src/db/memoryEvents";
 import { scanDiaryTimelineBackfill } from "../src/memory/diaryTimelineBackfill";
-import { splitDiaryMemories } from "../src/memory/diarySplit";
+import { ensureVerbatimTimelineDay, splitDiaryMemories } from "../src/memory/diarySplit";
+import { rebuildDiaryTimelineForMemory } from "../src/memory/diaryTimeline";
 import type { DiarySplitQueueMessage, Env, MemoryFiveAxisProjectionQueueMessage, MemoryRecord } from "../src/types";
 
 interface OutboxRow {
@@ -36,6 +37,42 @@ async function first<T>(sql: string, ...binds: unknown[]): Promise<T | null> {
 afterEach(() => vi.restoreAllMocks());
 
 describe("five-axis Worker circuit", () => {
+  it("keeps layla_diary raw and rejects every diary-split entry point", async () => {
+    const laylaDiary = await createMemory(env.DB, {
+      namespace: "default",
+      type: "layla_diary",
+      content: "7月18日日记\n这篇原文只保留，不拆分。",
+      source: "mcp"
+    });
+
+    await expect(enqueueDiarySplitIfNeeded(env as Env, laylaDiary)).resolves.toBe(false);
+    await expect(splitDiaryMemories(env as Env, {
+      namespace: "default",
+      ids: [laylaDiary.id],
+      apply: true,
+      force: true
+    })).resolves.toEqual([]);
+    await expect(ensureVerbatimTimelineDay(env as Env, {
+      namespace: "default",
+      diary: laylaDiary,
+      date: "2026-07-18"
+    })).rejects.toThrow("timeline_day_repair_requires_active_diary");
+
+    const backfill = await scanDiaryTimelineBackfill(env as Env, "default", { apply: false, limit: 100 });
+    expect(backfill.rows.some((row) => row.diaryId === laylaDiary.id)).toBe(false);
+
+    const legacyChild: MemoryRecord = {
+      ...laylaDiary,
+      id: "runtime-layla-diary-legacy-child",
+      type: "timeline_day",
+      content: "不应接入正式日记时间轴",
+      source: "timeline_split",
+      source_message_ids: JSON.stringify([laylaDiary.id]),
+      tags: JSON.stringify(["date:2026-07-18", `origin:${laylaDiary.id}`])
+    };
+    await expect(rebuildDiaryTimelineForMemory(env.DB, legacyChild)).resolves.toBeNull();
+  });
+
   it("closes ingest through X review and re-enters the outbox at the next revision", async () => {
     const memoryId = "runtime-circuit-memory";
     const createdAt = "2026-07-17T06:00:00.000Z";

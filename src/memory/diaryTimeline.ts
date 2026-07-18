@@ -1,6 +1,7 @@
 import { replaceOwnedDiaryTimelineRelations } from "../db/memoryRelations";
 import type { MemoryRecord } from "../types";
 import { nowIso } from "../utils/time";
+import { DIARY_SPLIT_SOURCE_TYPE } from "./diaryPolicy";
 
 const DIARY_TIMELINE_SOURCE = "timeline_split";
 const DATE_TAG = /^date:(20\d{2}-\d{2}-\d{2})$/;
@@ -61,8 +62,7 @@ function singleTagValue(tags: string[], pattern: RegExp): string | null {
 }
 
 function timelineKeyForDiaryType(type: string): string | null {
-  if (type === "diary") return "diary:kld";
-  if (type === "layla_diary") return "diary:layla";
+  if (type === DIARY_SPLIT_SOURCE_TYPE) return "diary:kld";
   return null;
 }
 
@@ -73,8 +73,8 @@ async function descriptorForMemory(db: D1Database, memory: MemoryRecord): Promis
   const originDiaryId = singleTagValue(tags, ORIGIN_TAG);
   if (!eventDate || !originDiaryId) return null;
   const diary = await db.prepare(
-    "SELECT type FROM memories WHERE namespace = ? AND id = ? AND type IN ('diary','layla_diary') LIMIT 1"
-  ).bind(memory.namespace, originDiaryId).first<{ type: string }>();
+    "SELECT type FROM memories WHERE namespace = ? AND id = ? AND type = ? LIMIT 1"
+  ).bind(memory.namespace, originDiaryId, DIARY_SPLIT_SOURCE_TYPE).first<{ type: string }>();
   const timelineKey = diary ? timelineKeyForDiaryType(diary.type) : null;
   return timelineKey ? { originDiaryId, timelineKey, eventDate } : null;
 }
