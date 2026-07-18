@@ -2,6 +2,8 @@
 
 Formal `diary` and `layla_diary` records remain source documents and are not projected directly into five-axis memory. Their active `timeline_split` children are projected.
 
+Ordinary memory records are already atomic: they are not diary-split and enter the five-axis outbox directly.
+
 ## Runtime ownership
 
 - `timeline_day` is the durable anchor for one diary date.
@@ -10,6 +12,19 @@ Formal `diary` and `layla_diary` records remain source documents and are not pro
 - These relations use `diary_day:*` and `diary_timeline:*` reasons. Reconciliation replaces only edges with the exact owned reason.
 - Diary items do not receive synthetic `fact_key` values; Z-axis fact semantics remain separate.
 - If two model attempts still omit a required day node, the splitter creates a bounded verbatim anchor tagged `timeline_day_fallback:verbatim`; this keeps X structurally closed without inventing an extracted fact.
+
+## Automatic split recovery
+
+- A `diary_split_v2_complete` event is terminal only when its payload records `item_count > 0`.
+- An empty model result is recorded as `diary_split_v2_incomplete`, so the missed-job scan can retry it instead of preserving a false success.
+- An active V2 `timeline_day` child is also durable evidence that the diary was split successfully.
+- The missed-job scan runs from the existing five-minute scheduler with a bounded batch. Successful diaries stop re-entering the queue.
+- Diaries owned by a legacy splitter (`has_timeline_split` or active non-V2 split children) are deliberately held for an explicit migration. Automatically splitting them again could duplicate memories.
+
+The resulting write paths are:
+
+1. Formal diary write -> diary-split queue -> dated `timeline_split` children -> five-axis outbox for every active child.
+2. Ordinary memory write -> five-axis outbox directly.
 
 ## Historical backfill
 
@@ -34,3 +49,5 @@ Rows with `no_split_items`, `missing_timeline_day`, `multiple_timeline_days`, or
 ## Rollback boundary
 
 To remove only this projection, delete rows from `memory_diary_timeline_memberships` and relations whose reason starts with `diary_day:` or `diary_timeline:`. Do not delete generic `temporal_sequence` or `in_episode` relations from other owners.
+
+The automatic split recovery change has no schema migration. Reverting its code restores the previous queue gating; it does not delete or rewrite existing memories.

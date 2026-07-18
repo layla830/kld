@@ -52,6 +52,7 @@ const candidateDb = fs.readFileSync("src/db/memoryCandidates.ts", "utf8");
 const memoryState = fs.readFileSync("src/memory/state.ts", "utf8");
 const legacyRelations = fs.readFileSync("src/memory/legacyRelations.ts", "utf8");
 const diarySplit = fs.readFileSync("src/memory/diarySplit.ts", "utf8");
+const diarySplitState = fs.readFileSync("src/db/diarySplitState.ts", "utf8");
 const candidateActions = fs.readFileSync("src/api/adminBoard/candidateActions.ts", "utf8");
 const candidateView = fs.readFileSync("src/api/adminBoard/candidateView.ts", "utf8");
 const adminBoard = fs.readFileSync("src/api/adminBoard.ts", "utf8");
@@ -254,8 +255,11 @@ const checks = [
     "Diary split: item hashes and completion events make partial retries idempotent",
     diarySplit.includes('crypto.subtle.digest("SHA-256"') &&
       diarySplit.includes("split_item:") &&
-      diarySplit.includes("diary_split_v2_complete") &&
-      diarySplit.includes("existingSplitItemId"),
+      diarySplit.includes("existingSplitItemId") &&
+      diarySplit.includes("DIARY_SPLIT_INCOMPLETE_EVENT") &&
+      diarySplitState.includes('DIARY_SPLIT_COMPLETE_EVENT = "diary_split_v2_complete"') &&
+      diarySplitState.includes("json_extract(payload_json, '$.item_count')") &&
+      diarySplitState.includes(") > 0"),
   ],
   [
     "Recall: exact MCP search excludes diaries unless explicitly requested",
@@ -315,12 +319,15 @@ const checks = [
     "Diary split: active formal diaries enqueue automatically and missed jobs self-heal",
     queueProducer.includes("enqueueDiarySplitIfNeeded") &&
       queueProducer.includes("enqueueMissedDiarySplits") &&
-      queueProducer.includes("diary_split_v2_complete") &&
-      queueProducer.includes("'origin:' || m.id") &&
-      queueProducer.includes("has_timeline_split") &&
+      queueProducer.includes("listMissedDiarySplitCandidates") &&
       queueProducer.includes("dateFromDiary(memory)") &&
       queueConsumer.includes('case "diary_split"') &&
+      queueConsumer.includes("hasSuccessfulDiarySplit") &&
       queueConsumer.includes('eventType: "diary_split_queue_complete"') &&
+      diarySplitState.includes("split.type = 'timeline_day'") &&
+      diarySplitState.includes("value = 'split_version:v2'") &&
+      diarySplitState.includes("value = 'has_timeline_split'") &&
+      diarySplitState.includes("COALESCE(CAST(json_extract(event.payload_json, '$.item_count') AS INTEGER), 0) > 0") &&
       mcpApi.includes("enqueueDiarySplitIfNeeded(env, memory)") &&
       memoriesApi.includes("enqueueDiarySplitIfNeeded(env, memory)"),
   ],

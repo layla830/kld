@@ -6,6 +6,12 @@ import type { Env, MemoryRecord, OpenAIChatRequest, OpenAIChatResponse } from ".
 import { parseJsonStringArray } from "../utils/jsonHelpers";
 import { upsertMemoryEmbedding } from "./embedding";
 import { removeMemoryVector } from "./state";
+import {
+  DIARY_SPLIT_COMPLETE_EVENT,
+  DIARY_SPLIT_INCOMPLETE_EVENT,
+  hasActiveV2DiaryDay,
+  hasSuccessfulDiarySplit
+} from "../db/diarySplitState";
 
 const TIMELINE_SOURCE = "timeline_split";
 const DEFAULT_SPLIT_MODEL = "deepseek/deepseek-v4-flash";
@@ -14,7 +20,6 @@ const MAX_ITEMS_PER_DIARY = 6;
 const FACT_TYPES = new Set(["rule", "preference", "project_state", "lesson"]);
 const REVIEW_TYPES = new Set(["rule", "preference", "project_state", "lesson"]);
 const SPLIT_VERSION_TAG = "split_version:v2";
-const SPLIT_COMPLETE_EVENT = "diary_split_v2_complete";
 const MEMORY_TYPES = new Set([
   "timeline_day",
   "quote",
@@ -508,14 +513,6 @@ async function existingV2SplitCount(db: D1Database, input: { namespace: string; 
   return row?.count ?? 0;
 }
 
-async function hasCompletedV2Split(db: D1Database, input: { namespace: string; originId: string }): Promise<boolean> {
-  const row = await db
-    .prepare("SELECT id FROM memory_events WHERE namespace = ? AND event_type = ? AND memory_id = ? LIMIT 1")
-    .bind(input.namespace, SPLIT_COMPLETE_EVENT, input.originId)
-    .first<{ id: string }>();
-  return Boolean(row?.id);
-}
-
 async function splitItemKey(diaryId: string, item: DiarySplitItem): Promise<string> {
   const normalized = `${diaryId}\n${item.date}\n${item.type}\n${item.content.replace(/\s+/g, " ").trim().toLowerCase()}`;
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(normalized));
@@ -717,12 +714,13 @@ export async function splitDiaryMemories(env: Env, input: SplitDiaryInput): Prom
       plans.push({ diary_id: record.id, date, skipped: true, reason: "already_rescreened", items: [] });
       continue;
     }
-    const [existing, existingV2, completedV2] = await Promise.all([
+    const [existing, existingV2, completedV2, activeV2Day] = await Promise.all([
       existingSplitCount(env.DB, { namespace: input.namespace, originId: record.id }),
       existingV2SplitCount(env.DB, { namespace: input.namespace, originId: record.id }),
-      hasCompletedV2Split(env.DB, { namespace: input.namespace, originId: record.id })
+      hasSuccessfulDiarySplit(env.DB, { namespace: input.namespace, diaryId: record.id }),
+      hasActiveV2DiaryDay(env.DB, { namespace: input.namespace, diaryId: record.id })
     ]);
-    if (!input.force && (completedV2 || (existing > 0 && existingV2 === 0))) {
+    if (!input.force && (completedV2 || activeV2Day || (existing > 0 && existingV2 === 0))) {
       plans.push({ diary_id: record.id, date, skipped: true, reason: "already_split", existing_count: existing, items: [] });
       continue;
     }
@@ -740,7 +738,7 @@ export async function splitDiaryMemories(env: Env, input: SplitDiaryInput): Prom
           : [];
         await createMemoryEvent(env.DB, {
           namespace: input.namespace,
-          eventType: SPLIT_COMPLETE_EVENT,
+          eventType: DIARY_SPLIT_INCOMPLETE_EVENT,
           memoryId: record.id,
           payload: {
             diary_id: record.id,
@@ -779,7 +777,7 @@ export async function splitDiaryMemories(env: Env, input: SplitDiaryInput): Prom
         : [];
       await createMemoryEvent(env.DB, {
         namespace: input.namespace,
-        eventType: SPLIT_COMPLETE_EVENT,
+        eventType: DIARY_SPLIT_COMPLETE_EVENT,
         memoryId: record.id,
         payload: {
           diary_id: record.id,

@@ -3,8 +3,9 @@ import { createExecutionContext, createMessageBatch, getQueueResult } from "clou
 import { afterEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/index";
 import { approveTimelineCandidate } from "../src/api/adminBoard/timelineActions";
-import { enqueuePendingFiveAxisProjections } from "../src/queue/producer";
+import { enqueueMissedDiarySplits, enqueuePendingFiveAxisProjections } from "../src/queue/producer";
 import { createMemory } from "../src/db/memories";
+import { createMemoryEvent } from "../src/db/memoryEvents";
 import { scanDiaryTimelineBackfill } from "../src/memory/diaryTimelineBackfill";
 import { splitDiaryMemories } from "../src/memory/diarySplit";
 import type { DiarySplitQueueMessage, Env, MemoryFiveAxisProjectionQueueMessage, MemoryRecord } from "../src/types";
@@ -500,5 +501,96 @@ describe("five-axis Worker circuit", () => {
 
     expect(attempts).toBe(2);
     expect(plans[0].items).toMatchObject([{ type: "timeline_day", date: "2026-07-15" }]);
+  });
+
+  it("retries legacy zero-item completion events but preserves successful and legacy-owned diaries", async () => {
+    const namespace = "retry-zero-item";
+    const zeroItemDiary = await createMemory(env.DB, {
+      namespace,
+      type: "diary",
+      content: "7\u67087\u65e5\u65e5\u8bb0\n\u8fd9\u4e00\u5929\u503c\u5f97\u7559\u4e0b\u65e5\u671f\u8282\u70b9\u3002",
+      source: "mcp"
+    });
+    const successfulDiary = await createMemory(env.DB, {
+      namespace,
+      type: "diary",
+      content: "7\u67086\u65e5\u65e5\u8bb0\n\u8fd9\u4e00\u5929\u5df2\u7ecf\u6210\u529f\u62c6\u5206\u3002",
+      source: "mcp"
+    });
+    await createMemory(env.DB, {
+      namespace,
+      type: "diary",
+      content: "7\u67085\u65e5\u65e5\u8bb0\n\u8fd9\u7bc7\u7531\u65e7\u5bfc\u5165\u5668\u62e5\u6709\u3002",
+      source: "mcp",
+      tags: ["has_timeline_split"]
+    });
+    await env.DB.prepare(
+      "UPDATE memories SET created_at = '2026-07-07T00:00:00.000Z' WHERE namespace = ? AND type = 'diary'"
+    ).bind(namespace).run();
+    await createMemoryEvent(env.DB, {
+      namespace,
+      eventType: "diary_split_v2_complete",
+      memoryId: zeroItemDiary.id,
+      payload: { diary_id: zeroItemDiary.id, item_count: 0, created_ids: [], candidate_keys: [] }
+    });
+    await createMemoryEvent(env.DB, {
+      namespace,
+      eventType: "diary_split_v2_complete",
+      memoryId: successfulDiary.id,
+      payload: { diary_id: successfulDiary.id, item_count: 1, created_ids: ["already-created"], candidate_keys: [] }
+    });
+
+    await expect(enqueueMissedDiarySplits(env as Env, namespace, 3)).resolves.toBe(1);
+
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify({
+      choices: [{ message: { content: JSON.stringify({
+        items: [{
+          date: "2026-07-07",
+          type: "timeline_day",
+          content: "7\u67087\u65e5\u503c\u5f97\u7559\u4e0b\u65e5\u671f\u8282\u70b9\u3002",
+          evidence: "\u8fd9\u4e00\u5929\u503c\u5f97\u7559\u4e0b\u65e5\u671f\u8282\u70b9",
+          temporal_scope: "day"
+        }]
+      }) } }]
+    }), { status: 200 }));
+    const runtimeEnv = {
+      ...env,
+      UPSTREAM_BASE_URL: "https://runtime.test/v1",
+      UPSTREAM_API_KEY: "runtime-test-key",
+      MEMORY_MODEL: "runtime-test-model"
+    } as Env;
+    const splitMessage: DiarySplitQueueMessage = {
+      type: "diary_split",
+      namespace,
+      diaryId: zeroItemDiary.id,
+      jobId: `retry-zero-item:${zeroItemDiary.id}`
+    };
+    const batch = createMessageBatch<DiarySplitQueueMessage>("companion-memory", [{
+      id: "retry-zero-item-message",
+      timestamp: new Date("2026-07-18T00:00:00.000Z"),
+      attempts: 1,
+      body: splitMessage
+    }]);
+    await worker.queue(batch, runtimeEnv);
+    await expect(getQueueResult(batch, createExecutionContext())).resolves.toMatchObject({
+      explicitAcks: ["retry-zero-item-message"]
+    });
+
+    await expect(first<{ count: number }>(
+      `SELECT COUNT(*) AS count FROM memories
+       WHERE namespace = ? AND status = 'active' AND source = 'timeline_split'
+         AND type = 'timeline_day'
+         AND EXISTS (SELECT 1 FROM json_each(tags) WHERE value = ?)`,
+      namespace,
+      `origin:${zeroItemDiary.id}`
+    )).resolves.toMatchObject({ count: 1 });
+    await expect(first<{ count: number }>(
+      `SELECT COUNT(*) AS count FROM memory_events
+       WHERE namespace = ? AND memory_id = ? AND event_type = 'diary_split_v2_complete'
+         AND COALESCE(CAST(json_extract(payload_json, '$.item_count') AS INTEGER), 0) > 0`,
+      namespace,
+      zeroItemDiary.id
+    )).resolves.toMatchObject({ count: 1 });
+    await expect(enqueueMissedDiarySplits(runtimeEnv, namespace, 3)).resolves.toBe(0);
   });
 });
