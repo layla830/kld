@@ -14,6 +14,7 @@ import { runCoordinateBackfill } from "../memory/coordinateBackfill";
 import { scanFactTransitionReviewCandidates } from "../memory/factTransitionReview";
 import { approveFactTransitionCandidate } from "./adminBoard/factTransitionActions";
 import { labelCoordinateBatch } from "../adapters/llm/coordinateLabeler";
+import { scanDiaryTimelineBackfill } from "../memory/diaryTimelineBackfill";
 
 interface CacheHealthRow {
   created_at: string;
@@ -337,6 +338,30 @@ export async function handleTimelineBackfill(request: Request, env: Env): Promis
     return json({ ok: true, mode: "dry_run", result: await runTimelineBackfill(env, namespace) });
   } catch (error) {
     return json({ error: "timeline_backfill_failed", detail: error instanceof Error ? error.message : String(error) }, { status: 500 });
+  }
+}
+
+export async function handleDiaryTimelineBackfill(request: Request, env: Env): Promise<Response> {
+  const auth = await authenticate(request, env);
+  if (!auth.ok) return openAiError("Unauthorized", 401, "authentication_error");
+  const scopeError = requireScope(auth.profile, "memory:write");
+  if (scopeError) return scopeError;
+  const body = await readBody(request);
+  try {
+    const namespace = typeof body?.namespace === "string" ? body.namespace : auth.profile.namespace;
+    const apply = body?.apply === true;
+    const cursor = typeof body?.cursor === "string" ? body.cursor : null;
+    const limit = typeof body?.limit === "number" ? body.limit : 100;
+    return json({
+      ok: true,
+      mode: apply ? "apply_deterministic_timeline" : "dry_run",
+      result: await scanDiaryTimelineBackfill(env, namespace, { apply, cursor, limit })
+    });
+  } catch (error) {
+    return json({
+      error: "diary_timeline_backfill_failed",
+      detail: error instanceof Error ? error.message : String(error)
+    }, { status: 500 });
   }
 }
 
