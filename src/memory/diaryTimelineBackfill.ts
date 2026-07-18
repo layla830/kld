@@ -1,5 +1,6 @@
 import type { Env, MemoryRecord } from "../types";
 import { nowIso } from "../utils/time";
+import { ensureVerbatimTimelineDay } from "./diarySplit";
 import { rebuildDiaryTimelineForMemory } from "./diaryTimeline";
 
 const TIMELINE_SOURCE = "timeline_split";
@@ -11,9 +12,11 @@ export interface DiaryTimelineCoverageRow {
   dates: string[];
   activeItems: number;
   timelineDays: number;
+  missingTimelineDates: string[];
   undatedItems: number;
   lowCoverageReasons: Array<"no_split_items" | "missing_timeline_day" | "multiple_timeline_days" | "undated_items">;
   backfilled: boolean;
+  repairedTimelineDays: number;
 }
 
 export interface DiaryTimelineBackfillResult {
@@ -53,7 +56,8 @@ function coverageForDiary(diary: MemoryRecord, items: MemoryRecord[]): DiaryTime
   }
   const lowCoverageReasons: DiaryTimelineCoverageRow["lowCoverageReasons"] = [];
   if (items.length === 0) lowCoverageReasons.push("no_split_items");
-  if (dates.some((date) => (dayCountByDate.get(date) ?? 0) === 0)) lowCoverageReasons.push("missing_timeline_day");
+  const missingTimelineDates = dates.filter((date) => (dayCountByDate.get(date) ?? 0) === 0);
+  if (missingTimelineDates.length > 0) lowCoverageReasons.push("missing_timeline_day");
   if ([...dayCountByDate.values()].some((count) => count > 1)) lowCoverageReasons.push("multiple_timeline_days");
   if (dated.length !== items.length) lowCoverageReasons.push("undated_items");
   return {
@@ -62,9 +66,11 @@ function coverageForDiary(diary: MemoryRecord, items: MemoryRecord[]): DiaryTime
     dates,
     activeItems: items.length,
     timelineDays,
+    missingTimelineDates,
     undatedItems: items.length - dated.length,
     lowCoverageReasons,
-    backfilled: false
+    backfilled: false,
+    repairedTimelineDays: 0
   };
 }
 
@@ -117,12 +123,25 @@ export async function scanDiaryTimelineBackfill(
     ).bind(namespace, TIMELINE_SOURCE, `origin:${diary.id}`).all<MemoryRecord>();
     const items = split.results ?? [];
     const coverage = coverageForDiary(diary, items);
-    if (options.apply && coverage.lowCoverageReasons.length === 0) {
-      for (const day of items.filter((memory) => memory.type === "timeline_day")) {
+    const canRepairMissingDays = coverage.missingTimelineDates.length > 0
+      && coverage.lowCoverageReasons.every((reason) => reason === "missing_timeline_day");
+    if (options.apply && (coverage.lowCoverageReasons.length === 0 || canRepairMissingDays)) {
+      const repairedDays: MemoryRecord[] = [];
+      if (canRepairMissingDays) {
+        for (const date of coverage.missingTimelineDates) {
+          repairedDays.push(await ensureVerbatimTimelineDay(env, { namespace, diary, date }));
+        }
+      }
+      for (const day of [...items.filter((memory) => memory.type === "timeline_day"), ...repairedDays]) {
         await rebuildDiaryTimelineForMemory(env.DB, day);
       }
       await markLatestSkippedXRunsApplied(env.DB, namespace, diary.id);
       coverage.backfilled = true;
+      coverage.repairedTimelineDays = repairedDays.length;
+      coverage.timelineDays += repairedDays.length;
+      coverage.activeItems += repairedDays.length;
+      coverage.missingTimelineDates = [];
+      coverage.lowCoverageReasons = [];
     }
     rows.push(coverage);
   }

@@ -139,6 +139,34 @@ function splitBatchTag(date: string): string {
   return `split_batch:${date.replaceAll("-", "")}_diary`;
 }
 
+function buildVerbatimTimelineDay(record: MemoryRecord, date: string): DiarySplitItem {
+  const lines = record.content.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const evidence = (lines.find((line, index) => index > 0 && line.length >= 4) ?? lines[0] ?? date).slice(0, 80);
+  return {
+    date,
+    type: "timeline_day",
+    content: `${date}：${evidence}`.slice(0, 360),
+    summary: "正式日记原文日节点（模型摘要不可用）",
+    importance: 0.55,
+    confidence: 1,
+    tags: [
+      "timeline",
+      `date:${date}`,
+      "timeline_day",
+      "timeline_day_fallback:verbatim",
+      `origin:${record.id}`,
+      `source_label:${sourceLabel(date)}`,
+      "temporal_scope:day",
+      splitBatchTag(date),
+      SPLIT_VERSION_TAG
+    ],
+    fact_key: null,
+    evidence,
+    temporal_scope: "day",
+    review_required: false
+  };
+}
+
 function temporalScope(raw: RawSplitItem): "day" | "current" | "historical" {
   const value = cleanString(raw.temporal_scope, 20).toLowerCase();
   return value === "current" || value === "historical" ? value : "day";
@@ -466,31 +494,7 @@ async function callSplitModel(env: Env, record: MemoryRecord, date: string, incl
     if (lastMissingDates.length === 0) return result;
   }
 
-  const lines = record.content.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-  const evidence = (lines.find((line, index) => index > 0 && line.length >= 4) ?? lines[0] ?? date).slice(0, 80);
-  const fallbacks = lastMissingDates.map((itemDate): DiarySplitItem => ({
-    date: itemDate,
-    type: "timeline_day",
-    content: `${itemDate}：${evidence}`.slice(0, 360),
-    summary: "正式日记原文日节点（模型摘要不可用）",
-    importance: 0.55,
-    confidence: 1,
-    tags: [
-      "timeline",
-      `date:${itemDate}`,
-      "timeline_day",
-      "timeline_day_fallback:verbatim",
-      `origin:${record.id}`,
-      `source_label:${sourceLabel(itemDate)}`,
-      "temporal_scope:day",
-      splitBatchTag(itemDate),
-      SPLIT_VERSION_TAG
-    ],
-    fact_key: null,
-    evidence,
-    temporal_scope: "day",
-    review_required: false
-  }));
+  const fallbacks = lastMissingDates.map((itemDate) => buildVerbatimTimelineDay(record, itemDate));
   return {
     items: [...fallbacks, ...lastResult.items].slice(0, MAX_ITEMS_PER_DIARY),
     debug: lastResult.debug ? { ...lastResult.debug, fallback: "verbatim_timeline_day" } : undefined
@@ -630,6 +634,25 @@ async function persistItems(
     if (memory.status === "active") await upsertMemoryEmbedding(env, memory);
   }
   return { createdIds, candidateKeys };
+}
+
+export async function ensureVerbatimTimelineDay(
+  env: Env,
+  input: { namespace: string; diary: MemoryRecord; date: string }
+): Promise<MemoryRecord> {
+  const persisted = await persistItems(env, {
+    namespace: input.namespace,
+    diary: input.diary,
+    date: input.date,
+    items: [buildVerbatimTimelineDay(input.diary, input.date)]
+  });
+  const memoryId = persisted.createdIds[0];
+  if (!memoryId) throw new Error("timeline_day_repair_not_persisted");
+  const memory = await env.DB.prepare(
+    "SELECT * FROM memories WHERE namespace = ? AND id = ? LIMIT 1"
+  ).bind(input.namespace, memoryId).first<MemoryRecord>();
+  if (!memory) throw new Error("timeline_day_repair_not_found");
+  return memory;
 }
 
 function cleanImporter(value: string | undefined): string | null {
