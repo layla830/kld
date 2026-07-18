@@ -1,6 +1,6 @@
 # RFC: Recall-Signal-Driven Metabolism Strategy
 
-- Status: Draft for review
+- Status: Approved by Layla; implementation gated on RFC merge
 - Scope: M-axis strategy and recall-signal infrastructure
 - Code changes in this RFC: None
 - Proposed rollout: Shadow first, review-first mutations, reversible approvals
@@ -209,6 +209,21 @@ Daily aggregation bounds long-term table growth, allows multiple windows from th
 
 Recommended retention is 400 days. Lifetime counters remain on `memories`; daily rows older than the retention window may be deleted by maintenance after the advanced policies have operated in shadow for at least one full cold window.
 
+### Capacity budget
+
+A read-only production snapshot on 2026-07-19 showed:
+
+- one namespace and 1,180 memories, including 837 active memories;
+- a current D1 size of approximately 10.7 MB;
+- 70 API recall exposures across 48 observed operations since 2026-07-12 (gateway injection does not yet emit an equivalent event); and
+- 26 MCP search exposures across four observed operations since 2026-07-13.
+
+At the current observable rate of roughly 15 memory exposures per day, the conservative upper bound is about 6,000 daily-rollup rows over 400 days and about 105 seven-day receipt rows. The daily table will normally be smaller because repeated exposure of the same memory/source/day shares one row.
+
+At 10 times the current traffic, the corresponding planning bound is approximately 60,000 daily rows and 1,050 live receipt rows. Phase 1 therefore sets a 64 MB storage budget for the new tables and indexes combined. As of 2026-07-19, [Cloudflare's D1 limits](https://developers.cloudflare.com/d1/platform/limits/) are 500 MB per database on Free and 10 GB on Workers Paid; [D1 indexes also consume database storage](https://developers.cloudflare.com/d1/best-practices/use-indexes/). The shadow report must measure actual row count and database growth before Phase 2 rather than relying on this estimate.
+
+If the added storage approaches 64 MB, implementation must not silently continue at 400 days. The next review chooses either a 180-day retention window or aggregation of rows older than 90 days into weekly buckets.
+
 ## 6. Metrics
 
 For one memory at scan time, load all required windows in a single grouped query or CTE:
@@ -277,6 +292,8 @@ This policy is additive; it must not replace or broaden `cold_low_signal`.
 ### 7.2 Proposed `m_promote`
 
 Promotion means proposing a modest importance increase, not changing memory type or fact state.
+
+The repository uses a 0–1 importance scale: the MCP input schema explicitly constrains importance to that range ([`src/api/mcp.ts:189-210`](../../src/api/mcp.ts#L189-L210)). The proposed `+0.10` step and `0.80` cap therefore use the existing scale rather than introducing a new unit.
 
 Initial candidate conditions:
 
@@ -502,15 +519,17 @@ Version policies, shadow new thresholds, log band transitions sparsely, and requ
 
 There is none. Every new M action remains review-first, revalidated, snapshotted, and reversible.
 
-## 15. Decisions requested from Layla
+## 15. Decisions approved by Layla
 
-1. Keep the existing 90-day never-recalled baseline unchanged? **Recommendation: yes.**
-2. Enable additive `cooled_after_use` after a 30-day shadow period with a 180-day cold threshold? **Recommendation: yes.**
-3. Use normalized daily rollups rather than JSON history or direct `memory_events` aggregation? **Recommendation: yes.**
-4. Count every deduplicated memory returned by a successful explicit MCP `retrieve_memory` operation once, while excluding internal ranking and exact/list/search-only results? **Decided by Layla: yes.**
-5. Use `+0.10`, capped at `0.80`, for an approved promotion? **Recommendation: yes, subject to shadow data.**
-6. Require at least two active days for promotion? **Recommendation: yes.**
-7. Defer outcome tracking until recall attribution is explicit? **Recommendation: yes.**
-8. Retain daily rollups for 400 days? **Recommendation: yes, then reassess from observed D1 size.**
+Layla approved the RFC recommendations on 2026-07-19 with an explicit clarification for MCP retrieval:
 
-Implementation must not begin until these decisions and the RFC are approved.
+1. Keep the existing 90-day never-recalled baseline unchanged. **Approved.**
+2. Enable additive `cooled_after_use` after a 30-day shadow period with a 180-day cold threshold. **Approved.**
+3. Use normalized daily rollups rather than JSON history or direct `memory_events` aggregation. **Approved.**
+4. Count every deduplicated memory returned by a successful explicit MCP `retrieve_memory` operation once, while excluding internal ranking and exact/list/search-only results. **Approved.**
+5. Use `+0.10`, capped at `0.80`, for an approved promotion, subject to shadow data. **Approved.**
+6. Require at least two active days for promotion. **Approved.**
+7. Defer outcome tracking until recall attribution is explicit. **Approved.**
+8. Retain daily rollups for 400 days, subject to the 64 MB budget and post-shadow reassessment. **Approved.**
+
+Phase 1 implementation may begin only after this approved RFC is merged. Phase 2 remains gated on the 30-day shadow report.
