@@ -11,7 +11,7 @@ import { prepareCandidateAxisRunReconciliation } from "../../db/memoryFiveAxisRu
 import type { Env } from "../../types";
 import { newId } from "../../utils/ids";
 import { nowIso } from "../../utils/time";
-import { readFormText } from "./utils";
+import { payloadOf, readFormText } from "./utils";
 
 export interface RelationReviewResult {
   axis: "Y";
@@ -28,17 +28,6 @@ interface RelationProposal {
   targetUpdatedAt: string;
   strength: number;
   reason: string | null;
-}
-
-function payloadOf(value: string): Record<string, unknown> {
-  try {
-    const parsed = JSON.parse(value) as unknown;
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-      ? parsed as Record<string, unknown>
-      : {};
-  } catch {
-    return {};
-  }
 }
 
 function proposalOf(payload: Record<string, unknown>): RelationProposal | null {

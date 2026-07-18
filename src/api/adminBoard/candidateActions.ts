@@ -2,16 +2,12 @@ import { getMemoryCandidate, resolveMemoryCandidate, updateMemoryCandidateEviden
 import { createMemory, getMemoryById, softDeleteMemory, updateMemory, type UpdateMemoryInput } from "../../db/memories";
 import type { Env, MemoryRecord } from "../../types";
 import { isActiveDiarySplitSource } from "../../memory/diaryPolicy";
-import { readFormText } from "./utils";
+import { payloadOf, readFormText } from "./utils";
 import { createMemoryRelation } from "../../db/memoryRelations";
 import { syncMemoryVector } from "../../memory/state";
 import { assessCandidateQuality } from "../../memory/candidateQuality";
 import { canOverrideCandidateValidation } from "../../memory/candidateOverride";
 import { createMemoryEvent } from "../../db/memoryEvents";
-
-function payloadOf(text: string): Record<string, unknown> {
-  try { const value = JSON.parse(text); return value && typeof value === "object" ? value : {}; } catch { return {}; }
-}
 
 function text(value: unknown): string | undefined { return typeof value === "string" && value.trim() ? value.trim() : undefined; }
 function number(value: unknown): number | undefined {

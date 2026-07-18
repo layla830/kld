@@ -6,16 +6,7 @@ import { extractExplicitDates } from "../../memory/timelineBackfill";
 import { rebuildTimelineSequenceForMemory } from "../../memory/timelineRelations";
 import { analyzeTimelineDateTags, parseTimelineDate } from "../../memory/timelineDates";
 import type { Env, MemoryRecord } from "../../types";
-import { parseTags, readFormText } from "./utils";
-
-function payloadOf(value: string): Record<string, unknown> {
-  try {
-    const parsed = JSON.parse(value);
-    return parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : {};
-  } catch {
-    return {};
-  }
-}
+import { parseTags, payloadOf, readFormText } from "./utils";
 
 export type TimelineCandidateErrorCode = "invalid_date" | "stale" | "date_conflict";
 

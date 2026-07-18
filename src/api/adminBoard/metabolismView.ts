@@ -1,5 +1,5 @@
 import type { MemoryCandidateRecord } from "../../db/memoryCandidates";
-import { attr, htmlEscape } from "./utils";
+import { attr, htmlEscape, payloadOf } from "./utils";
 
 interface RelationTypeInfo {
   label: string;
@@ -36,15 +36,6 @@ Object.assign(RELATION_TYPES, {
   cause_effect: { label: "因果关系", meaning: "起点记忆描述原因，终点记忆描述结果", direction: "有向关系" },
   supports: { label: "支持关系", meaning: "起点记忆为终点记忆提供证据或支撑", direction: "有向关系" }
 } satisfies Record<string, RelationTypeInfo>);
-
-function payloadOf(value: string): Record<string, unknown> {
-  try {
-    const parsed = JSON.parse(value);
-    return parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : {};
-  } catch {
-    return {};
-  }
-}
 
 function beforeOf(payload: Record<string, unknown>): Record<string, unknown> {
   return payload.before && typeof payload.before === "object" ? payload.before as Record<string, unknown> : {};
