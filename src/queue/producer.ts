@@ -4,6 +4,7 @@ import { handleQueueMessage } from "./consumer";
 import { dateFromDiary } from "../memory/diarySplit";
 import { loadChunkingConfig, loadFiveAxisConfig, loadMemoryConfig, systemClock } from "../config/runtime";
 import { listDueFiveAxisOutbox, markFiveAxisOutboxQueued } from "../db/memoryFiveAxisOutbox";
+import { listMissedDiarySplitCandidates } from "../db/diarySplitState";
 
 function allowQueueFallback(env: Env): boolean {
   return loadChunkingConfig(env).queueFallbackEnabled;
@@ -211,23 +212,12 @@ export async function enqueueDiarySplitIfNeeded(env: Env, memory: MemoryRecord):
 
 export async function enqueueMissedDiarySplits(env: Env, namespace: string, limit = 2): Promise<number> {
   const boundedLimit = Math.min(Math.max(limit, 1), 3);
-  const rows = await env.DB.prepare(
-    `SELECT m.* FROM memories m
-     WHERE m.namespace = ? AND m.status = 'active' AND m.type IN ('diary','layla_diary')
-       AND m.created_at <= ?
-       AND NOT EXISTS (
-         SELECT 1 FROM memory_events e
-         WHERE e.namespace = m.namespace AND e.memory_id = m.id AND e.event_type = 'diary_split_v2_complete'
-       )
-       AND NOT EXISTS (
-         SELECT 1 FROM memories split
-         WHERE split.namespace = m.namespace AND split.status IN ('active','review') AND split.source = 'timeline_split'
-           AND EXISTS (SELECT 1 FROM json_each(split.tags) WHERE value = 'origin:' || m.id)
-       )
-       AND NOT EXISTS (SELECT 1 FROM json_each(m.tags) WHERE value = 'has_timeline_split')
-     ORDER BY m.created_at ASC LIMIT 25`
-  ).bind(namespace, new Date(systemClock.nowMs() - 5 * 60_000).toISOString()).all<MemoryRecord>();
-  const eligible = (rows.results ?? []).filter((memory) => dateFromDiary(memory)).slice(0, boundedLimit);
+  const rows = await listMissedDiarySplitCandidates(env.DB, {
+    namespace,
+    createdBefore: new Date(systemClock.nowMs() - 5 * 60_000).toISOString(),
+    limit: 25
+  });
+  const eligible = rows.filter((memory) => dateFromDiary(memory)).slice(0, boundedLimit);
   for (const memory of eligible) await enqueueDiarySplitIfNeeded(env, memory);
   return eligible.length;
 }
