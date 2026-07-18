@@ -2,20 +2,9 @@ import { callOpenAICompat } from "../../proxy/openaiAdapter";
 import type { Env, MemoryRecord, OpenAIChatRequest, OpenAIChatResponse } from "../../types";
 import { extractJsonObject } from "../../utils/jsonHelpers";
 import type { CoordinateLabeler } from "../../memory/coordinateBackfill";
+import { readAssistantTexts } from "./assistantText";
 
 type BackfillUpdate = Record<string, unknown> & { id: string };
-
-function readAssistantText(response: OpenAIChatResponse): string {
-  const content = (response.choices?.[0]?.message as { content?: unknown } | undefined)?.content;
-  if (typeof content === "string") return content.trim();
-  if (!Array.isArray(content)) return "";
-  return content
-    .map((part) => part && typeof part === "object" && typeof (part as { text?: unknown }).text === "string"
-      ? String((part as { text: string }).text)
-      : "")
-    .join("")
-    .trim();
-}
 
 function buildBackfillPrompt(memories: MemoryRecord[]): string {
   const items = memories.map((memory) => ({
@@ -106,7 +95,9 @@ export const labelCoordinateBatch: CoordinateLabeler = async (
     }
 
     const parsed = (await response.json()) as OpenAIChatResponse;
-    const jsonResult = extractJsonObject(readAssistantText(parsed));
+    const jsonResult = readAssistantTexts(parsed)
+      .map((text) => extractJsonObject(text))
+      .find((value) => value !== null) ?? null;
     const updates = jsonResult && typeof jsonResult === "object"
       ? (jsonResult as { updates?: unknown }).updates
       : null;

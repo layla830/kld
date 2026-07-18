@@ -1,9 +1,13 @@
-import { describe, expect, it } from "vitest";
-import { selectActiveD1RelationNeighbors } from "../src/memory/fiveAxis/yRelations";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { proposeRelationsViaLlm, selectActiveD1RelationNeighbors } from "../src/memory/fiveAxis/yRelations";
 import { queueRelationReviewCandidate } from "../src/memory/relationReview";
 import type { Env, MemoryRecord } from "../src/types";
 
 describe("Y relation candidate boundary", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it("keeps only active memories that still exist in D1", () => {
     const active = { id: "mem_active", status: "active" } as MemoryRecord;
     const inactive = { id: "mem_inactive", status: "superseded" } as MemoryRecord;
@@ -62,5 +66,47 @@ describe("Y relation candidate boundary", () => {
       target_updated_at: source.updated_at,
       projection_key: "five-axis:9:v2"
     });
+  });
+
+  it("retries invalid JSON and accepts array-form assistant content", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        choices: [{ message: { content: "not-json" } }]
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        choices: [{ message: { content: [{ type: "text", text: '{"hints":[{"pair_id":"p0","relation_type":"same_topic","strength":0.8}]}' }] } }]
+      }), { status: 200 }));
+    const source = { id: "mem_a", content: "alpha" } as MemoryRecord;
+    const target = { id: "mem_b", content: "beta" } as MemoryRecord;
+
+    const result = await proposeRelationsViaLlm({
+      DREAM_MODEL: "test-model",
+      UPSTREAM_BASE_URL: "https://example.test/v1",
+      UPSTREAM_API_KEY: "test-key"
+    } as Env, [{ pairId: "p0", source, target, vectorScore: 0.9 }]);
+
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(result).toEqual({
+      hints: [{ pair_id: "p0", relation_type: "same_topic", strength: 0.8, reason: undefined }]
+    });
+    const retryRequest = JSON.parse(String(fetchSpy.mock.calls[1]?.[1]?.body));
+    expect(retryRequest.messages[1].content).toContain("previous response was invalid");
+  });
+
+  it("returns a bounded error after two invalid JSON responses", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify({
+      choices: [{ message: { content: "still-not-json" } }]
+    }), { status: 200 }));
+    const source = { id: "mem_a", content: "alpha" } as MemoryRecord;
+    const target = { id: "mem_b", content: "beta" } as MemoryRecord;
+
+    const result = await proposeRelationsViaLlm({
+      DREAM_MODEL: "test-model",
+      UPSTREAM_BASE_URL: "https://example.test/v1",
+      UPSTREAM_API_KEY: "test-key"
+    } as Env, [{ pairId: "p0", source, target, vectorScore: 0.9 }]);
+
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(result).toEqual({ hints: [], error: "invalid_json" });
   });
 });
