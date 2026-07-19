@@ -2,12 +2,23 @@ import fs from "node:fs";
 
 const files = {
   chunk: fs.readFileSync("src/memory/chunkPersistence.ts", "utf8"),
-  digest: fs.readFileSync("src/memory/dailyDigest.ts", "utf8"),
+  digest: fs.readFileSync("src/memory/dailyDigest/service.ts", "utf8"),
+  digestParser: fs.readFileSync("src/memory/dailyDigest/parser.ts", "utf8"),
+  digestPrompt: fs.readFileSync("src/memory/dailyDigest/prompt.ts", "utf8"),
+  digestPersistence: fs.readFileSync("src/memory/dailyDigest/persistence.ts", "utf8"),
   relations: fs.readFileSync("src/db/memoryRelations.ts", "utf8"),
   search: fs.readFileSync("src/memory/search.ts", "utf8"),
   debug: fs.readFileSync("src/api/debug.ts", "utf8"),
   narrative: fs.readFileSync("src/memory/narrativeTimeline.ts", "utf8"),
 };
+function digestAny(needle) {
+  return (
+    files.digest.includes(needle) ||
+    files.digestParser.includes(needle) ||
+    files.digestPrompt.includes(needle) ||
+    files.digestPersistence.includes(needle)
+  );
+}
 const merge = fs.readFileSync("src/memory/merge.ts", "utf8");
 const reviewActions = fs.readFileSync("src/api/adminBoard/actions.ts", "utf8");
 const reviewView = fs.readFileSync("src/api/adminBoard/reviewView.ts", "utf8");
@@ -303,8 +314,8 @@ const checks = [
   ],
   [
     "Dream: isolated single-message content is not recorded as a new memory",
-    files.digest.includes("hasRepeatedMessageSupport") &&
-    files.digest.includes("source_message_ids 必须至少包含 2 个不同消息 id") &&
+    digestAny("hasRepeatedMessageSupport") &&
+    digestAny("source_message_ids 必须至少包含 2 个不同消息 id") &&
       vpsDreamCandidate.includes("single_message_not_durable") &&
       vpsDreamCandidate.includes('action in {"add", "excerpt"} and len(source_message_ids) < 2') &&
       vpsDreamCandidate.includes("missing_durable_claim") &&
@@ -574,8 +585,8 @@ const checks = [
   ],
   [
     "Z/M: dream mutations are review-first",
-    files.digest.includes('eventType: "dream_mutation_review"') &&
-      !files.digest.includes("async function applyMemoryUpdates"),
+    digestAny('eventType: "dream_mutation_review"') &&
+      !digestAny("async function applyMemoryUpdates"),
   ],
   [
     "Z: fact keys are proposed as reviewable groups",
@@ -693,12 +704,12 @@ const checks = [
       fiveAxisRelations.includes("SAFE_RELATION_TYPES.has(relationType)") &&
       fiveAxisRelations.includes("await dependencies.createRelation") &&
       fiveAxisRelations.includes('relationType !== "temporal_sequence"') &&
-      files.digest.includes('relationType !== "temporal_sequence"') &&
+      digestAny('relationType !== "temporal_sequence"') &&
       fiveAxisRelations.includes("REVIEW_RELATION_TYPES.has(relationType)") &&
       fiveAxisRelations.includes("dependencies.queueReviewCandidate") &&
       relationReview.includes('action: "y_relation_review"') &&
-      files.digest.includes("queueRelationReviewCandidate") &&
-      !files.digest.includes('eventType: "y_relation_review"') &&
+      digestAny("queueRelationReviewCandidate") &&
+      !digestAny('eventType: "y_relation_review"') &&
       relationReviewActions.includes("approveRelationReviewCandidate") &&
       relationReviewActions.includes("rejectRelationReviewCandidate") &&
       relationReviewActions.includes("rollbackRelationReviewCandidate"),
