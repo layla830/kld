@@ -57,6 +57,8 @@ const candidateActions = fs.readFileSync("src/api/adminBoard/candidateActions.ts
 const candidateView = fs.readFileSync("src/api/adminBoard/candidateView.ts", "utf8");
 const adminBoard = fs.readFileSync("src/api/adminBoard.ts", "utf8");
 const adminView = fs.readFileSync("src/api/adminBoard/view.ts", "utf8");
+const adminBatchBars = fs.readFileSync("src/api/adminBoard/batchBars.ts", "utf8");
+const adminReviewGuides = fs.readFileSync("src/api/adminBoard/reviewGuides.ts", "utf8");
 const candidateQuality = fs.readFileSync("src/memory/candidateQuality.ts", "utf8");
 const dreamCandidatePolicy = fs.readFileSync("src/memory/dreamCandidatePolicy.ts", "utf8");
 const candidateOverride = fs.readFileSync("src/memory/candidateOverride.ts", "utf8");
@@ -182,9 +184,7 @@ const checks = [
     "X: full-corpus scan progress is persisted",
     timelineBackfill.includes("maintenance:timeline_backfill") &&
       timelineBackfill.includes("scanTimelineBackfillPage") &&
-      fs
-        .readFileSync("src/api/adminBoard/view.ts", "utf8")
-        .includes("扫描进度"),
+      adminReviewGuides.includes("扫描进度"),
   ],
   [
     "X: review cards remain reachable beyond the first page",
@@ -285,10 +285,10 @@ const checks = [
   ],
   [
     "Diary split: selected fact candidates support bounded batch approve and reject",
-    candidateActions.includes("MAX_DIARY_FACT_BATCH_SIZE = 100") &&
+      candidateActions.includes("MAX_DIARY_FACT_BATCH_SIZE = 100") &&
       candidateActions.includes('candidate.action !== "diary_split_fact"') &&
       adminBoard.includes("batchReviewDiaryFactCandidates") &&
-      adminView.includes('id="fact-batch-form"') &&
+      adminBatchBars.includes('id="fact-batch-form"') &&
       candidateView.includes('form="fact-batch-form"'),
   ],
   [
@@ -767,8 +767,8 @@ const checks = [
     metabolismActions.includes("MAX_METABOLISM_BATCH_SIZE = 30") &&
       metabolismActions.includes("relationOnly: true") &&
       metabolismView.includes('form="m-batch-form"') &&
-      fs.readFileSync("src/api/adminBoard/view.ts", "utf8").includes("只删选中的边") &&
-      fs.readFileSync("src/api/adminBoard/view.ts", "utf8").includes("保留选中的边"),
+      adminBatchBars.includes("只删选中的边") &&
+      adminBatchBars.includes("保留选中的边"),
   ],
   [
     "M: relation cleanup cards show both endpoint memories",
@@ -806,7 +806,7 @@ const checks = [
       candidateActions.includes("batchRejectLowQualityCandidates") &&
       candidateActions.includes('resolveMemoryCandidate(env.DB, "default", id, "rejected")') &&
       !candidateQuality.includes("createMemory(") &&
-      adminView.includes("只会拒绝你勾选的低质量候选"),
+      adminBatchBars.includes("只会拒绝你勾选的低质量候选"),
   ],
   [
     "Recall: final injected memories feed M state with privacy-preserving layered trace",
