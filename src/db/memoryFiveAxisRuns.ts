@@ -1,8 +1,8 @@
 import { newId } from "../utils/ids";
 import { nowIso } from "../utils/time";
+import type { FiveAxisName, FiveAxisRunStatus } from "./fiveAxisStatuses";
 
-export type FiveAxisName = "X" | "Y" | "Z" | "E" | "M";
-export type FiveAxisRunStatus = "running" | "applied" | "pending_review" | "skipped" | "failed";
+export type { FiveAxisName, FiveAxisRunStatus } from "./fiveAxisStatuses";
 
 export interface MemoryFiveAxisRunRecord {
   namespace: string;

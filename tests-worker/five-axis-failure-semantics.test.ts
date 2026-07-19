@@ -9,7 +9,9 @@ import {
   finalizeExhaustedFiveAxisOutbox,
   hasNewerFiveAxisOutboxVersion,
   listFiveAxisDeadLetters,
+  markFiveAxisOutboxCompleted,
   markFiveAxisOutboxFailed,
+  markFiveAxisOutboxQueued,
   retryFiveAxisDeadLetter,
   type MemoryFiveAxisOutboxRecord
 } from "../src/db/memoryFiveAxisOutbox";
@@ -20,6 +22,44 @@ import { enqueuePendingFiveAxisProjections } from "../src/queue/producer";
 import type { Env, MemoryFiveAxisProjectionQueueMessage } from "../src/types";
 
 describe("five-axis failure semantics", () => {
+  it("rejects unknown durable statuses and prevents late workers from overwriting terminal outboxes", async () => {
+    const memory = await createMemory(env.DB, {
+      namespace: "default",
+      type: "project_state",
+      content: "Durable five-axis status contract.",
+      thread: `status-contract:${crypto.randomUUID()}`
+    });
+    const outbox = await env.DB.prepare(
+      "SELECT * FROM memory_five_axis_outbox WHERE namespace = 'default' AND memory_id = ? ORDER BY id DESC LIMIT 1"
+    ).bind(memory.id).first<MemoryFiveAxisOutboxRecord>();
+    expect(outbox).toBeTruthy();
+
+    await expect(env.DB.prepare(
+      "UPDATE memory_five_axis_outbox SET status = 'mystery' WHERE id = ?"
+    ).bind(outbox!.id).run()).rejects.toThrow(/CHECK constraint failed/i);
+
+    await env.DB.prepare(
+      `INSERT INTO memory_five_axis_runs (
+         namespace, memory_id, memory_revision, axis, status, attempts,
+         result_json, last_error, claim_token, lease_expires_at,
+         started_at, completed_at, updated_at
+       ) VALUES ('default', ?, ?, 'X', 'skipped', 1, NULL, NULL, NULL, NULL, NULL, ?, ?)`
+    ).bind(memory.id, outbox!.memory_revision ?? 1, new Date().toISOString(), new Date().toISOString()).run();
+    await expect(env.DB.prepare(
+      `UPDATE memory_five_axis_runs SET status = 'mystery'
+       WHERE namespace = 'default' AND memory_id = ? AND memory_revision = ? AND axis = 'X'`
+    ).bind(memory.id, outbox!.memory_revision ?? 1).run()).rejects.toThrow(/CHECK constraint failed/i);
+
+    await expect(markFiveAxisOutboxQueued(env.DB, outbox!.id)).resolves.toBe(true);
+    await expect(markFiveAxisOutboxCompleted(env.DB, outbox!.id, "completed", { ok: true }))
+      .resolves.toBe(true);
+    await expect(markFiveAxisOutboxFailed(env.DB, outbox!.id, new Error("late worker")))
+      .resolves.toBe(false);
+    await expect(env.DB.prepare(
+      "SELECT status, last_error FROM memory_five_axis_outbox WHERE id = ?"
+    ).bind(outbox!.id).first()).resolves.toMatchObject({ status: "completed", last_error: null });
+  });
+
   it("turns malformed or multiple X date tags into an actionable repair", async () => {
     const memory = await createMemory(env.DB, {
       namespace: "default",

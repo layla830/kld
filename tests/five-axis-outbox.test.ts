@@ -30,6 +30,31 @@ describe("five-axis outbox policy", () => {
     await expect(handleQueueMessage(message, env)).resolves.toBeUndefined();
   });
 
+  it("does not execute a late queue delivery after the outbox becomes dead letter", async () => {
+    const db = {
+      prepare(sql: string) {
+        expect(sql).toBe("SELECT * FROM memory_five_axis_outbox WHERE id = ?");
+        return {
+          bind() {
+            return { first: async () => ({ id: 1, status: "dead_letter" }) };
+          }
+        };
+      }
+    } as unknown as D1Database;
+    const message: MemoryFiveAxisProjectionQueueMessage = {
+      type: "memory_five_axis_projection",
+      namespace: "default",
+      memoryId: "mem_dead",
+      memoryUpdatedAt: "2026-07-19T00:00:00.000Z",
+      memoryRevision: 1,
+      outboxId: 1,
+      idempotencyKey: "five-axis:1:r1"
+    };
+
+    await expect(handleQueueMessage(message, { DB: db, ENABLE_FIVE_AXIS: "true" } as Env))
+      .resolves.toBeUndefined();
+  });
+
   it("detects a newer durable outbox version for the same memory", async () => {
     let bound: unknown[] = [];
     const db = {

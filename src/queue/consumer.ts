@@ -19,6 +19,7 @@ import { rebuildTimelineSequenceForMemory } from "../memory/timelineRelations";
 import { loadFiveAxisConfig } from "../config/runtime";
 import { isFiveAxisMemoryTypeEligible } from "../memory/fiveAxis/eligibility";
 import { hasSuccessfulDiarySplit } from "../db/diarySplitState";
+import { isProcessableFiveAxisOutboxStatus } from "../db/fiveAxisStatuses";
 
 export async function handleQueueMessage(message: QueueMessage, env: Env): Promise<void> {
   switch (message.type) {
@@ -82,7 +83,7 @@ export async function handleQueueMessage(message: QueueMessage, env: Env): Promi
     case "memory_five_axis_projection": {
       if (!loadFiveAxisConfig(env).enabled) return;
       const outbox = await getFiveAxisOutbox(env.DB, message.outboxId);
-      if (!outbox || outbox.status === "completed" || outbox.status === "skipped") return;
+      if (!outbox || !isProcessableFiveAxisOutboxStatus(outbox.status)) return;
       const outboxRevision = outbox.memory_revision ?? 1;
       const messageRevision = message.memoryRevision ?? outboxRevision;
       if (
