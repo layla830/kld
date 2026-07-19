@@ -23,6 +23,12 @@ export interface MemoryFiveAxisOutboxRecord {
   updated_at: string;
 }
 
+export interface FiveAxisOutboxClaim {
+  id: number;
+  attempt: number;
+  queuedAt: string;
+}
+
 export const MAX_FIVE_AXIS_OUTBOX_ATTEMPTS = 5;
 const STALE_QUEUED_AFTER_MS = 15 * 60_000;
 const RETRY_FAILED_AFTER_MS = 30 * 60_000;
@@ -106,20 +112,64 @@ export async function hasNewerFiveAxisOutboxVersion(
   return Boolean(newer?.id);
 }
 
-export async function markFiveAxisOutboxQueued(db: D1Database, id: number): Promise<boolean> {
+export async function claimFiveAxisOutboxForDelivery(
+  db: D1Database,
+  record: MemoryFiveAxisOutboxRecord
+): Promise<FiveAxisOutboxClaim | null> {
   const transition = FIVE_AXIS_OUTBOX_TRANSITIONS.queue;
   const now = nowIso();
   const result = await db.prepare(
     `UPDATE memory_five_axis_outbox
      SET status = ?, attempts = attempts + 1, queued_at = ?, updated_at = ?, last_error = NULL
-     WHERE id = ? AND status IN (${statusPlaceholders(transition.from)})`
-  ).bind(transition.to[0], now, now, id, ...transition.from).run();
-  return (result.meta.changes ?? 0) === 1;
+     WHERE id = ? AND namespace = ? AND memory_id = ? AND memory_revision = ?
+       AND status = ? AND attempts = ? AND updated_at = ? AND queued_at IS ?`
+  ).bind(
+    transition.to[0],
+    now,
+    now,
+    record.id,
+    record.namespace,
+    record.memory_id,
+    record.memory_revision ?? 1,
+    record.status,
+    record.attempts,
+    record.updated_at,
+    record.queued_at
+  ).run();
+  return (result.meta.changes ?? 0) === 1
+    ? { id: record.id, attempt: record.attempts + 1, queuedAt: now }
+    : null;
 }
 
-export async function markFiveAxisOutboxCompleted(
+function nextLeaseTimestamp(previous: string): string {
+  const previousMs = Date.parse(previous);
+  const nextMs = Number.isFinite(previousMs) ? Math.max(Date.now(), previousMs + 1) : Date.now();
+  return new Date(nextMs).toISOString();
+}
+
+export async function claimFiveAxisOutboxForExecution(
   db: D1Database,
-  id: number,
+  delivery: FiveAxisOutboxClaim
+): Promise<FiveAxisOutboxClaim | null> {
+  const refreshedAt = nextLeaseTimestamp(delivery.queuedAt);
+  const write = await db.prepare(
+    `UPDATE memory_five_axis_outbox
+     SET queued_at = ?, updated_at = ?
+     WHERE id = ? AND status = ? AND attempts = ? AND queued_at = ?`
+  ).bind(
+    refreshedAt,
+    refreshedAt,
+    delivery.id,
+    FIVE_AXIS_OUTBOX_STATUS.QUEUED,
+    delivery.attempt,
+    delivery.queuedAt
+  ).run();
+  return (write.meta.changes ?? 0) === 1 ? { ...delivery, queuedAt: refreshedAt } : null;
+}
+
+export async function completeFiveAxisOutboxExecution(
+  db: D1Database,
+  claim: FiveAxisOutboxClaim,
   status: Extract<FiveAxisOutboxStatus, "completed" | "skipped">,
   result: unknown
 ): Promise<boolean> {
@@ -130,14 +180,24 @@ export async function markFiveAxisOutboxCompleted(
   const write = await db.prepare(
     `UPDATE memory_five_axis_outbox
      SET status = ?, completed_at = ?, updated_at = ?, last_error = NULL, result_json = ?
-     WHERE id = ? AND status IN (${statusPlaceholders(transition.from)})`
-  ).bind(status, now, now, JSON.stringify(result), id, ...transition.from).run();
+     WHERE id = ? AND status IN (${statusPlaceholders(transition.from)})
+       AND attempts = ? AND queued_at = ?`
+  ).bind(
+    status,
+    now,
+    now,
+    JSON.stringify(result),
+    claim.id,
+    ...transition.from,
+    claim.attempt,
+    claim.queuedAt
+  ).run();
   return (write.meta.changes ?? 0) === 1;
 }
 
-export async function markFiveAxisOutboxFailed(
+export async function failFiveAxisOutboxClaim(
   db: D1Database,
-  id: number,
+  claim: FiveAxisOutboxClaim,
   error: unknown,
   result?: unknown
 ): Promise<boolean> {
@@ -149,7 +209,8 @@ export async function markFiveAxisOutboxFailed(
      SET status = CASE WHEN attempts >= ? THEN ? ELSE ? END,
          completed_at = CASE WHEN attempts >= ? THEN ? ELSE completed_at END,
          updated_at = ?, last_error = ?, result_json = COALESCE(?, result_json)
-     WHERE id = ? AND status IN (${statusPlaceholders(transition.from)})`
+     WHERE id = ? AND status IN (${statusPlaceholders(transition.from)})
+       AND attempts = ? AND queued_at = ?`
   ).bind(
     MAX_FIVE_AXIS_OUTBOX_ATTEMPTS,
     FIVE_AXIS_OUTBOX_STATUS.DEAD_LETTER,
@@ -159,8 +220,10 @@ export async function markFiveAxisOutboxFailed(
     now,
     message.slice(0, 1000),
     result === undefined ? null : JSON.stringify(result),
-    id,
-    ...transition.from
+    claim.id,
+    ...transition.from,
+    claim.attempt,
+    claim.queuedAt
   ).run();
   return (write.meta.changes ?? 0) === 1;
 }

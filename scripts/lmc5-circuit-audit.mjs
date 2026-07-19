@@ -485,7 +485,9 @@ const checks = [
         "CHECK (status IN ('pending', 'queued', 'failed', 'dead_letter', 'completed', 'skipped'))"
       ) &&
       fiveAxisOutboxStatusMigration.includes("idx_memory_five_axis_outbox_due") &&
-      fiveAxisOutboxStatusMigration.includes("trg_memories_five_axis_after_material_update"),
+      fiveAxisOutboxStatusMigration.includes("trg_memories_five_axis_after_material_update") &&
+      queueProducer.includes("claimFiveAxisOutboxForDelivery") &&
+      queueConsumer.includes("claimFiveAxisOutboxForExecution"),
   ],
   [
     "Ingest behavior: the default test command runs the Workers runtime circuit",

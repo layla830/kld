@@ -58,6 +58,8 @@ export interface MemoryFiveAxisProjectionQueueMessage {
   memoryUpdatedAt: string;
   memoryRevision?: number;
   outboxId: number;
+  outboxAttempt: number;
+  outboxQueuedAt: string;
   idempotencyKey: string;
 }
 

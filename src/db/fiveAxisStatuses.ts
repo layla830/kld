@@ -32,14 +32,13 @@ const ACTIVE_OUTBOX_STATUSES = [
   FIVE_AXIS_OUTBOX_STATUS.QUEUED,
   FIVE_AXIS_OUTBOX_STATUS.FAILED
 ] as const;
-const ACTIVE_OUTBOX_STATUS_SET = new Set<FiveAxisOutboxStatus>(ACTIVE_OUTBOX_STATUSES);
 
 export const FIVE_AXIS_OUTBOX_TRANSITIONS = {
   queue: { from: ACTIVE_OUTBOX_STATUSES, to: [FIVE_AXIS_OUTBOX_STATUS.QUEUED] },
-  complete: { from: ACTIVE_OUTBOX_STATUSES, to: [FIVE_AXIS_OUTBOX_STATUS.COMPLETED] },
-  skip: { from: ACTIVE_OUTBOX_STATUSES, to: [FIVE_AXIS_OUTBOX_STATUS.SKIPPED] },
+  complete: { from: [FIVE_AXIS_OUTBOX_STATUS.QUEUED], to: [FIVE_AXIS_OUTBOX_STATUS.COMPLETED] },
+  skip: { from: [FIVE_AXIS_OUTBOX_STATUS.QUEUED], to: [FIVE_AXIS_OUTBOX_STATUS.SKIPPED] },
   fail: {
-    from: ACTIVE_OUTBOX_STATUSES,
+    from: [FIVE_AXIS_OUTBOX_STATUS.QUEUED],
     to: [FIVE_AXIS_OUTBOX_STATUS.FAILED, FIVE_AXIS_OUTBOX_STATUS.DEAD_LETTER]
   },
   finalize_exhausted: {
@@ -65,8 +64,4 @@ export function canTransitionFiveAxisOutbox(
 
 export function statusPlaceholders(statuses: readonly FiveAxisOutboxStatus[]): string {
   return statuses.map(() => "?").join(", ");
-}
-
-export function isProcessableFiveAxisOutboxStatus(status: FiveAxisOutboxStatus): boolean {
-  return ACTIVE_OUTBOX_STATUS_SET.has(status);
 }

@@ -4,7 +4,12 @@ import { handleQueueMessage } from "./consumer";
 import { dateFromDiary } from "../memory/diarySplit";
 import { isActiveDiarySplitSource } from "../memory/diaryPolicy";
 import { loadChunkingConfig, loadFiveAxisConfig, loadMemoryConfig, systemClock } from "../config/runtime";
-import { listDueFiveAxisOutbox, markFiveAxisOutboxQueued } from "../db/memoryFiveAxisOutbox";
+import {
+  claimFiveAxisOutboxForDelivery,
+  failFiveAxisOutboxClaim,
+  listDueFiveAxisOutbox,
+  type MemoryFiveAxisOutboxRecord
+} from "../db/memoryFiveAxisOutbox";
 import { listMissedDiarySplitCandidates } from "../db/diarySplitState";
 
 function allowQueueFallback(env: Env): boolean {
@@ -223,20 +228,36 @@ export async function enqueuePendingFiveAxisProjections(env: Env, limit = 5): Pr
   if (!loadFiveAxisConfig(env).enabled) return 0;
   const due = await listDueFiveAxisOutbox(env.DB, limit);
   let queued = 0;
-  for (const item of due) {
-    const memoryRevision = item.memory_revision ?? 1;
-    const message: QueueMessage = {
-      type: "memory_five_axis_projection",
-      namespace: item.namespace,
-      memoryId: item.memory_id,
-      memoryUpdatedAt: item.memory_updated_at,
-      memoryRevision,
-      outboxId: item.id,
-      idempotencyKey: `five-axis:${item.id}:r${memoryRevision}`
-    };
-    if (!(await sendQueueMessage(env, message))) continue;
-    await markFiveAxisOutboxQueued(env.DB, item.id);
-    queued += 1;
-  }
+  for (const item of due) if (await enqueueFiveAxisOutboxRecord(env, item)) queued += 1;
   return queued;
+}
+
+export async function enqueueFiveAxisOutboxRecord(
+  env: Env,
+  item: MemoryFiveAxisOutboxRecord
+): Promise<boolean> {
+  const claim = await claimFiveAxisOutboxForDelivery(env.DB, item);
+  if (!claim) return false;
+  const memoryRevision = item.memory_revision ?? 1;
+  const message: QueueMessage = {
+    type: "memory_five_axis_projection",
+    namespace: item.namespace,
+    memoryId: item.memory_id,
+    memoryUpdatedAt: item.memory_updated_at,
+    memoryRevision,
+    outboxId: item.id,
+    outboxAttempt: claim.attempt,
+    outboxQueuedAt: claim.queuedAt,
+    idempotencyKey: `five-axis:${item.id}:r${memoryRevision}`
+  };
+  try {
+    if (!(await sendQueueMessage(env, message))) {
+      await failFiveAxisOutboxClaim(env.DB, claim, new Error("memory_queue_unavailable"));
+      return false;
+    }
+    return true;
+  } catch (error) {
+    await failFiveAxisOutboxClaim(env.DB, claim, error);
+    throw error;
+  }
 }

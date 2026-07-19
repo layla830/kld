@@ -1,24 +1,25 @@
 import { env } from "cloudflare:workers";
 import { createExecutionContext, createMessageBatch, getQueueResult } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import worker from "../src/index";
 import { approveTimelineCandidate } from "../src/api/adminBoard/timelineActions";
 import { renderTimelineCandidate } from "../src/api/adminBoard/timelineView";
 import { getMemoryCandidate } from "../src/db/memoryCandidates";
 import {
+  claimFiveAxisOutboxForDelivery,
+  claimFiveAxisOutboxForExecution,
+  completeFiveAxisOutboxExecution,
+  failFiveAxisOutboxClaim,
   finalizeExhaustedFiveAxisOutbox,
   hasNewerFiveAxisOutboxVersion,
   listFiveAxisDeadLetters,
-  markFiveAxisOutboxCompleted,
-  markFiveAxisOutboxFailed,
-  markFiveAxisOutboxQueued,
   retryFiveAxisDeadLetter,
   type MemoryFiveAxisOutboxRecord
 } from "../src/db/memoryFiveAxisOutbox";
 import { createMemory, getMemoryById } from "../src/db/memories";
 import { runRelationBuild } from "../src/memory/fiveAxis/yRelations";
 import { queueTimelineCandidateForMemory } from "../src/memory/timelineBackfill";
-import { enqueuePendingFiveAxisProjections } from "../src/queue/producer";
+import { enqueueFiveAxisOutboxRecord, enqueuePendingFiveAxisProjections } from "../src/queue/producer";
 import type { Env, MemoryFiveAxisProjectionQueueMessage } from "../src/types";
 
 describe("five-axis failure semantics", () => {
@@ -50,14 +51,85 @@ describe("five-axis failure semantics", () => {
        WHERE namespace = 'default' AND memory_id = ? AND memory_revision = ? AND axis = 'X'`
     ).bind(memory.id, outbox!.memory_revision ?? 1).run()).rejects.toThrow(/CHECK constraint failed/i);
 
-    await expect(markFiveAxisOutboxQueued(env.DB, outbox!.id)).resolves.toBe(true);
-    await expect(markFiveAxisOutboxCompleted(env.DB, outbox!.id, "completed", { ok: true }))
+    const delivery = await claimFiveAxisOutboxForDelivery(env.DB, outbox!);
+    expect(delivery).toBeTruthy();
+    const execution = await claimFiveAxisOutboxForExecution(env.DB, delivery!);
+    expect(execution).toBeTruthy();
+    await expect(completeFiveAxisOutboxExecution(env.DB, execution!, "completed", { ok: true }))
       .resolves.toBe(true);
-    await expect(markFiveAxisOutboxFailed(env.DB, outbox!.id, new Error("late worker")))
+    await expect(failFiveAxisOutboxClaim(env.DB, execution!, new Error("late worker")))
       .resolves.toBe(false);
     await expect(env.DB.prepare(
       "SELECT status, last_error FROM memory_five_axis_outbox WHERE id = ?"
     ).bind(outbox!.id).first()).resolves.toMatchObject({ status: "completed", last_error: null });
+  });
+
+  it("claims one delivery when concurrent schedulers enqueue the same outbox snapshot", async () => {
+    const memory = await createMemory(env.DB, {
+      namespace: "default",
+      type: "project_state",
+      content: "Concurrent producer claim contract.",
+      thread: `producer-claim:${crypto.randomUUID()}`
+    });
+    const outbox = await env.DB.prepare(
+      "SELECT * FROM memory_five_axis_outbox WHERE namespace = 'default' AND memory_id = ? ORDER BY id DESC LIMIT 1"
+    ).bind(memory.id).first<MemoryFiveAxisOutboxRecord>();
+    const send = vi.fn(async (_message: unknown) => undefined);
+    const runtimeEnv = {
+      ...env,
+      MEMORY_QUEUE: { send }
+    } as unknown as Env;
+
+    const results = await Promise.all([
+      enqueueFiveAxisOutboxRecord(runtimeEnv, outbox!),
+      enqueueFiveAxisOutboxRecord(runtimeEnv, outbox!)
+    ]);
+
+    expect(results.sort()).toEqual([false, true]);
+    expect(send).toHaveBeenCalledTimes(1);
+    const sent = send.mock.calls[0][0] as MemoryFiveAxisProjectionQueueMessage;
+    const executions = await Promise.all([
+      claimFiveAxisOutboxForExecution(env.DB, {
+        id: sent.outboxId,
+        attempt: sent.outboxAttempt,
+        queuedAt: sent.outboxQueuedAt
+      }),
+      claimFiveAxisOutboxForExecution(env.DB, {
+        id: sent.outboxId,
+        attempt: sent.outboxAttempt,
+        queuedAt: sent.outboxQueuedAt
+      })
+    ]);
+    expect(executions.filter(Boolean)).toHaveLength(1);
+    await expect(env.DB.prepare(
+      "SELECT status, attempts FROM memory_five_axis_outbox WHERE id = ?"
+    ).bind(outbox!.id).first()).resolves.toMatchObject({ status: "queued", attempts: 1 });
+  });
+
+  it("releases an owned delivery to failed when Queue send throws", async () => {
+    const memory = await createMemory(env.DB, {
+      namespace: "default",
+      type: "project_state",
+      content: "Producer send failure contract.",
+      thread: `producer-failure:${crypto.randomUUID()}`
+    });
+    const outbox = await env.DB.prepare(
+      "SELECT * FROM memory_five_axis_outbox WHERE namespace = 'default' AND memory_id = ? ORDER BY id DESC LIMIT 1"
+    ).bind(memory.id).first<MemoryFiveAxisOutboxRecord>();
+    const runtimeEnv = {
+      ...env,
+      MEMORY_QUEUE: { send: vi.fn(async () => { throw new Error("queue send unavailable"); }) }
+    } as unknown as Env;
+
+    await expect(enqueueFiveAxisOutboxRecord(runtimeEnv, outbox!))
+      .rejects.toThrow("queue send unavailable");
+    await expect(env.DB.prepare(
+      "SELECT status, attempts, last_error FROM memory_five_axis_outbox WHERE id = ?"
+    ).bind(outbox!.id).first()).resolves.toMatchObject({
+      status: "failed",
+      attempts: 1,
+      last_error: "queue send unavailable"
+    });
   });
 
   it("turns malformed or multiple X date tags into an actionable repair", async () => {
@@ -234,6 +306,8 @@ describe("five-axis failure semantics", () => {
       memoryUpdatedAt: queued!.memory_updated_at,
       memoryRevision: queued!.memory_revision ?? 1,
       outboxId: queued!.id,
+      outboxAttempt: queued!.attempts,
+      outboxQueuedAt: queued!.queued_at!,
       idempotencyKey: `five-axis:${queued!.id}:r${queued!.memory_revision ?? 1}`
     };
     const batch = createMessageBatch<MemoryFiveAxisProjectionQueueMessage>("companion-memory", [{
@@ -261,11 +335,16 @@ describe("five-axis failure semantics", () => {
     const outbox = await env.DB.prepare(
       "SELECT * FROM memory_five_axis_outbox WHERE namespace = 'default' AND memory_id = ? ORDER BY id DESC LIMIT 1"
     ).bind(memory.id).first<MemoryFiveAxisOutboxRecord>();
+    const queuedAt = new Date().toISOString();
     await env.DB.prepare(
-      "UPDATE memory_five_axis_outbox SET status = 'queued', attempts = 5 WHERE id = ?"
-    ).bind(outbox!.id).run();
+      "UPDATE memory_five_axis_outbox SET status = 'queued', attempts = 5, queued_at = ?, updated_at = ? WHERE id = ?"
+    ).bind(queuedAt, queuedAt, outbox!.id).run();
 
-    await markFiveAxisOutboxFailed(env.DB, outbox!.id, new Error("fifth delivery failed"));
+    await failFiveAxisOutboxClaim(
+      env.DB,
+      { id: outbox!.id, attempt: 5, queuedAt },
+      new Error("fifth delivery failed")
+    );
     await expect(env.DB.prepare(
       "SELECT status, attempts, last_error, completed_at FROM memory_five_axis_outbox WHERE id = ?"
     ).bind(outbox!.id).first()).resolves.toMatchObject({
@@ -360,9 +439,8 @@ describe("five-axis failure semantics", () => {
     } as unknown as Env;
     const pending = (revisions.results ?? []).filter((item) => item.status === "pending");
     for (const item of pending) {
-      await env.DB.prepare(
-        "UPDATE memory_five_axis_outbox SET status = 'queued', attempts = 1 WHERE id = ?"
-      ).bind(item.id).run();
+      const claim = await claimFiveAxisOutboxForDelivery(env.DB, item);
+      expect(claim).toBeTruthy();
       const body: MemoryFiveAxisProjectionQueueMessage = {
         type: "memory_five_axis_projection",
         namespace: item.namespace,
@@ -370,6 +448,8 @@ describe("five-axis failure semantics", () => {
         memoryUpdatedAt: item.memory_updated_at,
         memoryRevision: item.memory_revision ?? 1,
         outboxId: item.id,
+        outboxAttempt: claim!.attempt,
+        outboxQueuedAt: claim!.queuedAt,
         idempotencyKey: `five-axis:${item.id}:r${item.memory_revision ?? 1}`
       };
       const batch = createMessageBatch<MemoryFiveAxisProjectionQueueMessage>("companion-memory", [{
