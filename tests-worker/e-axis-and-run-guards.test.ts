@@ -2,7 +2,6 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { approveOperationalReviewCandidate } from "../src/api/adminBoard/operationalReviewActions";
 import { putCacheEntry } from "../src/db/cacheEntries";
-import { upsertMemoryCandidate } from "../src/db/memoryCandidates";
 import {
   claimFiveAxisRun,
   failFiveAxisRun,
@@ -130,15 +129,15 @@ describe("five-axis Worker guards", () => {
   });
 
   it("does not route an unknown candidate action into M approval", async () => {
-    const externalKey = "runtime:unknown-operational-action";
-    await upsertMemoryCandidate(env.DB, "default", {
-      externalKey,
-      dreamDate: "2026-07-17",
-      action: "unknown_operational_action",
-      payload: {},
-      sourceChunkIds: [],
-      status: "pending"
-    });
+    const candidateId = `cand_unknown_${crypto.randomUUID()}`;
+    const externalKey = `runtime:unknown-operational-action:${candidateId}`;
+    const now = new Date().toISOString();
+    await env.DB.prepare(
+      `INSERT INTO memory_candidates (
+        id, namespace, external_key, dream_date, action, payload_json,
+        source_chunk_ids_json, source_chunks_json, status, created_at, updated_at
+      ) VALUES (?, 'default', ?, '2026-07-17', 'unknown_operational_action', '{}', '[]', '[]', 'pending', ?, ?)`
+    ).bind(candidateId, externalKey, now, now).run();
     const candidate = await env.DB.prepare(
       "SELECT id FROM memory_candidates WHERE namespace = 'default' AND external_key = ?"
     ).bind(externalKey).first<{ id: string }>();

@@ -76,6 +76,22 @@ export interface UpdateMemoryInput {
   vectorSyncStatus?: string;
 }
 
+export interface MemoryMutationGuard {
+  sql: string;
+  binds: unknown[];
+}
+
+export interface PrepareMemoryUpdateInput {
+  namespace: string;
+  id: string;
+  patch: UpdateMemoryInput;
+  expectedStatus?: string;
+  requireUnpinned?: boolean;
+  guard?: MemoryMutationGuard;
+  markVectorUnsynced?: boolean;
+  now?: string;
+}
+
 function chunk<T>(items: T[], size: number): T[][] {
   const chunks: T[][] = [];
   for (let index = 0; index < items.length; index += size) {
@@ -96,12 +112,15 @@ function activeFactForStatus(status: string): number {
   return status === "active" ? 1 : 0;
 }
 
-export async function createMemory(db: D1Database, input: CreateMemoryInput): Promise<MemoryRecord> {
-  const id = newId("mem");
-  const now = nowIso();
+export function buildMemoryRecord(
+  input: CreateMemoryInput,
+  options: { id?: string; now?: string } = {}
+): MemoryRecord {
+  const id = options.id ?? newId("mem");
+  const now = options.now ?? nowIso();
   const vectorId = buildVectorId(id);
   const status = input.status ?? "active";
-  const record: MemoryRecord = {
+  return {
     id,
     namespace: input.namespace,
     type: input.type,
@@ -133,47 +152,56 @@ export async function createMemory(db: D1Database, input: CreateMemoryInput): Pr
     updated_at: now,
     expires_at: input.expiresAt ?? null
   };
+}
 
-  await db
-    .prepare(
+export function prepareMemoryInsert(
+  db: D1Database,
+  record: MemoryRecord,
+  guard?: MemoryMutationGuard
+): D1PreparedStatement {
+  const values = [
+    record.id,
+    record.namespace,
+    record.type,
+    record.content,
+    record.summary,
+    record.fact_key,
+    record.active_fact,
+    record.thread,
+    record.risk_level,
+    record.urgency_level,
+    record.tension_score,
+    record.response_posture,
+    record.audit_state,
+    record.valence,
+    record.arousal,
+    record.importance,
+    record.confidence,
+    record.status,
+    record.pinned,
+    record.tags,
+    record.source,
+    record.source_message_ids,
+    record.vector_id,
+    record.created_at,
+    record.updated_at,
+    record.expires_at
+  ];
+  const placeholders = values.map(() => "?").join(", ");
+  return db.prepare(
       `INSERT INTO memories (
         id, namespace, type, content, summary, fact_key, active_fact,
         thread, risk_level, urgency_level, tension_score, response_posture, audit_state,
         valence, arousal,
         importance, confidence, status,
         pinned, tags, source, source_message_ids, vector_id, created_at, updated_at, expires_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    )
-    .bind(
-      record.id,
-      record.namespace,
-      record.type,
-      record.content,
-      record.summary,
-      record.fact_key,
-      record.active_fact,
-      record.thread,
-      record.risk_level,
-      record.urgency_level,
-      record.tension_score,
-      record.response_posture,
-      record.audit_state,
-      record.valence,
-      record.arousal,
-      record.importance,
-      record.confidence,
-      record.status,
-      record.pinned,
-      record.tags,
-      record.source,
-      record.source_message_ids,
-      record.vector_id,
-      record.created_at,
-      record.updated_at,
-      record.expires_at
-    )
-    .run();
+      ) SELECT ${placeholders}${guard ? ` WHERE ${guard.sql}` : ""}`
+    ).bind(...values, ...(guard?.binds ?? []));
+}
 
+export async function createMemory(db: D1Database, input: CreateMemoryInput): Promise<MemoryRecord> {
+  const record = buildMemoryRecord(input);
+  await prepareMemoryInsert(db, record).run();
   return record;
 }
 
@@ -373,16 +401,10 @@ export async function listActiveMemoriesByFactKeys(
     .slice(0, input.limit);
 }
 
-export async function updateMemory(
+export function prepareMemoryUpdate(
   db: D1Database,
-  input: {
-    namespace: string;
-    id: string;
-    patch: UpdateMemoryInput;
-    expectedStatus?: string;
-    requireUnpinned?: boolean;
-  }
-): Promise<MemoryRecord | null> {
+  input: PrepareMemoryUpdateInput
+): D1PreparedStatement | null {
   const assignments: string[] = [];
   const binds: unknown[] = [];
 
@@ -416,9 +438,13 @@ export async function updateMemory(
   if (input.patch.expiresAt !== undefined) set("expires_at", input.patch.expiresAt);
   if (input.patch.vectorSyncStatus !== undefined) set("vector_sync_status", input.patch.vectorSyncStatus);
 
-  if (assignments.length === 0) return getMemoryById(db, input);
+  if (assignments.length === 0) return null;
 
-  set("updated_at", nowIso());
+  if (input.markVectorUnsynced && input.patch.vectorSyncStatus === undefined) {
+    set("vector_synced", 0);
+  }
+
+  set("updated_at", input.now ?? nowIso());
 
   const where = ["namespace = ?", "id = ?"];
   const whereBinds: unknown[] = [input.namespace, input.id];
@@ -430,10 +456,29 @@ export async function updateMemory(
     where.push("pinned = 0");
   }
 
-  const result = await db
-    .prepare(`UPDATE memories SET ${assignments.join(", ")} WHERE ${where.join(" AND ")}`)
-    .bind(...binds, ...whereBinds)
-    .run();
+  if (input.guard) {
+    where.push(`(${input.guard.sql})`);
+    whereBinds.push(...input.guard.binds);
+  }
+
+  return db.prepare(`UPDATE memories SET ${assignments.join(", ")} WHERE ${where.join(" AND ")}`)
+    .bind(...binds, ...whereBinds);
+}
+
+export async function updateMemory(
+  db: D1Database,
+  input: {
+    namespace: string;
+    id: string;
+    patch: UpdateMemoryInput;
+    expectedStatus?: string;
+    requireUnpinned?: boolean;
+  }
+): Promise<MemoryRecord | null> {
+  const statement = prepareMemoryUpdate(db, input);
+  if (!statement) return getMemoryById(db, input);
+
+  const result = await statement.run();
 
   if ((result.meta.changes ?? 0) === 0) return null;
   if (input.patch.vectorSyncStatus === undefined) await markMemoryVectorUnsynced(db, input);

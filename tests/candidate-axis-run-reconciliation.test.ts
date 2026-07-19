@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  commitMemoryCandidateApproval,
   dismissPendingMemoryCandidateByExternalKey,
   resolveMemoryCandidate,
   rollbackMemoryCandidate
@@ -175,6 +176,49 @@ describe("candidate and five-axis run reconciliation", () => {
     await expect(rollbackMemoryCandidate(db, "default", "cand_1")).resolves.toBe(true);
     expect((await getFiveAxisRun(db, key(1)))?.status).toBe("skipped");
     expect((await getFiveAxisRun(db, key(2)))?.status).toBe("skipped");
+  });
+
+  it("commits a business mutation, candidate approval, and axis reconciliation in one batch", async () => {
+    insertCandidate("cand_atomic", "candidate:atomic");
+    sqlite.prepare("INSERT INTO memories (namespace, id, fact_key) VALUES ('default', 'mem_atomic', NULL)").run();
+    sqlite.prepare(
+      `INSERT INTO memory_five_axis_runs (
+         namespace, memory_id, memory_revision, axis, status, updated_at
+       ) VALUES ('default', 'mem_1', 21, 'Z', 'pending_review', '2026-07-16T00:00:00.000Z')`
+    ).run();
+    sqlite.prepare(
+      `INSERT INTO memory_candidate_axis_runs (
+         namespace, candidate_external_key, memory_id, memory_revision, axis, created_at
+       ) VALUES ('default', 'candidate:atomic', 'mem_1', 21, 'Z', '2026-07-16T00:00:00.000Z')`
+    ).run();
+
+    await expect(commitMemoryCandidateApproval(db, {
+      namespace: "default",
+      id: "cand_atomic",
+      expectedStatus: "pending",
+      resultMemoryId: "mem_atomic",
+      businessStatements: [
+        db.prepare(
+          `UPDATE memories SET fact_key = 'atomic.fact'
+           WHERE namespace = 'default' AND id = 'mem_atomic'
+             AND EXISTS (
+               SELECT 1 FROM memory_candidates
+               WHERE namespace = 'default' AND id = 'cand_atomic' AND status = 'pending'
+             )`
+        )
+      ],
+      successGuard: {
+        sql: "EXISTS (SELECT 1 FROM memories WHERE namespace = 'default' AND id = 'mem_atomic' AND fact_key = 'atomic.fact')",
+        binds: []
+      }
+    })).resolves.toBe(true);
+
+    expect(sqlite.prepare(
+      "SELECT status, result_memory_id FROM memory_candidates WHERE id = 'cand_atomic'"
+    ).get()).toMatchObject({ status: "approved", result_memory_id: "mem_atomic" });
+    expect(sqlite.prepare("SELECT fact_key FROM memories WHERE id = 'mem_atomic'").get())
+      .toMatchObject({ fact_key: "atomic.fact" });
+    await expect(getFiveAxisRun(db, key(21, "Z"))).resolves.toMatchObject({ status: "applied" });
   });
 
   it("immediately reuses an already-approved de-duplicated candidate", async () => {
