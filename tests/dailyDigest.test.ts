@@ -278,7 +278,6 @@ describe("retry, cursor, and empty output", () => {
     const msgs = windowMessages();
     vi.mocked(listMessagesByNamespaceInRange).mockResolvedValue(msgs);
     vi.mocked(callOpenAICompat).mockResolvedValue(llmResponse(defaultDigestJson()));
-    vi.mocked(env).mockClear?.();
 
     await runDailyMemoryDigest(env({ DREAM_MAX_MESSAGES: "4" }), NAMESPACE, { dateLabel: "2026-07-19" });
 
