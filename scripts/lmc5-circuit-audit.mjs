@@ -52,6 +52,12 @@ const candidateDb = fs.readFileSync("src/db/memoryCandidates.ts", "utf8");
 const memoryState = fs.readFileSync("src/memory/state.ts", "utf8");
 const legacyRelations = fs.readFileSync("src/memory/legacyRelations.ts", "utf8");
 const diarySplit = fs.readFileSync("src/memory/diarySplit.ts", "utf8");
+const diarySplitParse = fs.readFileSync("src/memory/diarySplitParse.ts", "utf8");
+const diarySplitPrompt = fs.readFileSync("src/memory/diarySplitPrompt.ts", "utf8");
+const diarySplitDates = fs.readFileSync("src/memory/diarySplitDates.ts", "utf8");
+function diarySplitAny(needle) {
+  return diarySplit.includes(needle) || diarySplitParse.includes(needle) || diarySplitPrompt.includes(needle) || diarySplitDates.includes(needle);
+}
 const diarySplitState = fs.readFileSync("src/db/diarySplitState.ts", "utf8");
 const candidateActions = fs.readFileSync("src/api/adminBoard/candidateActions.ts", "utf8");
 const candidateActionContract = fs.readFileSync("src/memory/candidateActionContract.ts", "utf8");
@@ -234,25 +240,25 @@ const checks = [
   ],
   [
     "Diary split: v2 requires a day node, verbatim evidence, and bounded sparse output",
-    diarySplit.includes("Never return an empty items array for a formal diary") &&
-      diarySplit.includes("timeline_day_fallback:verbatim") &&
-      diarySplit.includes("Return 2-6 high-signal items") &&
-      diarySplit.includes("the diary narrator '我' is KLD") &&
-      diarySplit.includes("Never store KLD's own behavior") &&
-    diarySplit.includes("!diary.includes(evidence)") &&
-      diarySplit.includes('type === "quote" && !diary.includes(content)') &&
-      diarySplit.includes("content.length > 360") &&
-      diarySplit.includes("diary.length * 0.65") &&
-      diarySplit.includes("datesFromDiary") &&
-      diarySplit.includes("allowedDateSet.has") &&
-      diarySplit.includes("timelineDates.has(itemDate)") &&
-      diarySplit.includes("MAX_ITEMS_PER_DIARY = 6") &&
+    diarySplitAny("Never return an empty items array for a formal diary") &&
+      diarySplitAny("timeline_day_fallback:verbatim") &&
+      diarySplitAny("Return 2-6 high-signal items") &&
+      diarySplitAny("the diary narrator '我' is KLD") &&
+      diarySplitAny("Never store KLD's own behavior") &&
+    diarySplitAny("!diary.includes(evidence)") &&
+      diarySplitAny('type === "quote" && !diary.includes(content)') &&
+      diarySplitAny("content.length > 360") &&
+      diarySplitAny("diary.length * 0.65") &&
+      diarySplitAny("datesFromDiary") &&
+      diarySplitAny("allowedDateSet.has") &&
+      diarySplitAny("timelineDates.has(itemDate)") &&
+      diarySplitAny("MAX_ITEMS_PER_DIARY = 6") &&
       diarySplit.includes("max_tokens: 4200"),
   ],
   [
     "Diary split: fact-like items are review-first with approval evidence revalidation",
-    diarySplit.includes('action: "diary_split_fact"') &&
-      diarySplit.includes("REVIEW_TYPES.has(type)") &&
+    diarySplitAny('action: "diary_split_fact"') &&
+      diarySplitAny("REVIEW_TYPES.has(type)") &&
       candidateActions.includes('case "diary_split_fact"') &&
       candidateActions.includes("approveDiarySplitFact") &&
       candidateActions.includes("!diary.content.includes(evidence)") &&
@@ -260,9 +266,9 @@ const checks = [
   ],
   [
     "Diary split: item hashes and completion events make partial retries idempotent",
-    diarySplit.includes('crypto.subtle.digest("SHA-256"') &&
-      diarySplit.includes("split_item:") &&
-      diarySplit.includes("existingSplitItemId") &&
+    diarySplitAny('crypto.subtle.digest("SHA-256"') &&
+      diarySplitAny("split_item:") &&
+      diarySplitAny("existingSplitItemId") &&
       diarySplit.includes("DIARY_SPLIT_INCOMPLETE_EVENT") &&
       diarySplitState.includes('DIARY_SPLIT_COMPLETE_EVENT = "diary_split_v2_complete"') &&
       diarySplitState.includes("json_extract(payload_json, '$.item_count')") &&
