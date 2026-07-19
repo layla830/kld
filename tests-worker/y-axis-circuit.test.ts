@@ -6,7 +6,7 @@ import {
   rollbackRelationReviewCandidate
 } from "../src/api/adminBoard/relationReviewActions";
 import { createMemoryRelation, listRelationExpandedMemories } from "../src/db/memoryRelations";
-import { createMemory } from "../src/db/memories";
+import { createMemory, updateMemory } from "../src/db/memories";
 import { queueRelationReviewCandidate } from "../src/memory/relationReview";
 import { projectMemoryIntoFiveAxes } from "../src/memory/fiveAxis/projection";
 import {
@@ -110,6 +110,14 @@ describe("Y-axis Worker circuit", () => {
     expect(beforeApproval.map((memory) => memory.id)).not.toContain(c.id);
     expect(beforeApproval.map((memory) => memory.id)).not.toContain(d.id);
 
+    const approvePayload = JSON.parse(approveCandidate!.payload_json) as Record<string, unknown>;
+    expect(approvePayload).toMatchObject({ source_revision: 1, target_revision: 1 });
+    await env.DB.prepare(
+      `UPDATE memories
+       SET vector_id = ?, vector_synced = 1, urgency_level = 'high', updated_at = ?
+       WHERE namespace = 'default' AND id = ?`
+    ).bind("vector-infrastructure-only", "2026-07-19T01:00:00.000Z", approvePayload.source_id).run();
+
     await expect(approveRelationReviewCandidate(env, formFor(approveCandidate!.id)))
       .resolves.toMatchObject({ axis: "Y", action: "approve", changed: true });
     await expect(rejectRelationReviewCandidate(env, formFor(rejectCandidate!.id))).resolves.toBe(true);
@@ -160,5 +168,118 @@ describe("Y-axis Worker circuit", () => {
 
     await expect(runRelationBuild(env, "default", { dryRun: true, memoryIds: [a.id] }, dependencies))
       .resolves.toMatchObject({ inserted: 0, review: 0, proposed: 1, candidates: 1 });
+  });
+
+  it("uses the linked axis revision for legacy candidates after infrastructure-only updates", async () => {
+    const [source, target] = await Promise.all([
+      createYMemory("Y legacy revision source"),
+      createYMemory("Y legacy revision target")
+    ]);
+    const dependencies = {
+      findCandidates: async () => [{ pairId: "legacy", source, target, vectorScore: 0.9 }],
+      proposeRelations: async () => ({
+        hints: [{ pair_id: "legacy", relation_type: "supports", strength: 0.8 }]
+      }),
+      createRelation: createMemoryRelation,
+      queueReviewCandidate: queueRelationReviewCandidate
+    } satisfies RelationBuildDependencies;
+
+    await projectMemoryIntoFiveAxes(env, {
+      namespace: "default",
+      memoryId: source.id,
+      memoryRevision: 1,
+      projectionKey: "legacy-y-revision"
+    }, {
+      projectRelations: (runtimeEnv, namespace, options) => runRelationBuild(
+        runtimeEnv,
+        namespace,
+        options,
+        dependencies
+      )
+    });
+    const candidate = await env.DB.prepare(
+      `SELECT id, status, payload_json FROM memory_candidates
+       WHERE namespace = 'default' AND action = 'y_relation_review' AND status = 'pending'
+         AND json_extract(payload_json, '$.source_id') = ?
+         AND json_extract(payload_json, '$.target_id') = ?`
+    ).bind(source.id, target.id).first<CandidateRow>();
+    expect(candidate).toBeTruthy();
+    const legacyPayload = JSON.parse(candidate!.payload_json) as Record<string, unknown>;
+    delete legacyPayload.source_revision;
+    delete legacyPayload.target_revision;
+    await env.DB.prepare(
+      "UPDATE memory_candidates SET payload_json = ? WHERE namespace = 'default' AND id = ?"
+    ).bind(JSON.stringify(legacyPayload), candidate!.id).run();
+    await env.DB.prepare(
+      `UPDATE memories
+       SET vector_id = ?, vector_synced = 1, response_posture = 'internal update', updated_at = ?
+       WHERE namespace = 'default' AND id = ?`
+    ).bind("legacy-vector", "2026-07-19T02:00:00.000Z", source.id).run();
+    await env.DB.prepare(
+      `UPDATE memories
+       SET vector_id = ?, vector_synced = 1, response_posture = 'target internal update', updated_at = ?
+       WHERE namespace = 'default' AND id = ?`
+    ).bind("legacy-target-vector", "2026-07-19T02:00:01.000Z", target.id).run();
+
+    await expect(approveRelationReviewCandidate(env, formFor(candidate!.id)))
+      .resolves.toMatchObject({ axis: "Y", action: "approve", changed: true });
+  });
+
+  it("still rejects a reviewed relation after a semantic memory revision", async () => {
+    const [source, target] = await Promise.all([
+      createYMemory("Y semantic revision source"),
+      createYMemory("Y semantic revision target")
+    ]);
+    const externalKey = await queueRelationReviewCandidate(env, "default", {
+      relationType: "supports",
+      source,
+      target,
+      strength: 0.8
+    });
+    const candidate = await env.DB.prepare(
+      `SELECT id, status, payload_json FROM memory_candidates
+       WHERE namespace = 'default' AND external_key = ?`
+    ).bind(externalKey).first<CandidateRow>();
+    expect(candidate).toBeTruthy();
+    await updateMemory(env.DB, {
+      namespace: "default",
+      id: source.id,
+      patch: { content: "Y semantic revision source changed" }
+    });
+
+    await expect(approveRelationReviewCandidate(env, formFor(candidate!.id)))
+      .rejects.toThrow("relation_review_candidate_is_stale");
+  });
+
+  it("does not recover a newer outbox revision for a legacy candidate built from an older snapshot", async () => {
+    const [sourceSnapshot, targetSnapshot] = await Promise.all([
+      createYMemory("Y legacy snapshot source"),
+      createYMemory("Y legacy snapshot target")
+    ]);
+    await updateMemory(env.DB, {
+      namespace: "default",
+      id: targetSnapshot.id,
+      patch: { content: "Y legacy snapshot target changed while the proposal was running" }
+    });
+    const externalKey = await queueRelationReviewCandidate(env, "default", {
+      relationType: "supports",
+      source: sourceSnapshot,
+      target: targetSnapshot,
+      strength: 0.8
+    });
+    const candidate = await env.DB.prepare(
+      `SELECT id, status, payload_json FROM memory_candidates
+       WHERE namespace = 'default' AND external_key = ?`
+    ).bind(externalKey).first<CandidateRow>();
+    expect(candidate).toBeTruthy();
+    const legacyPayload = JSON.parse(candidate!.payload_json) as Record<string, unknown>;
+    delete legacyPayload.source_revision;
+    delete legacyPayload.target_revision;
+    await env.DB.prepare(
+      "UPDATE memory_candidates SET payload_json = ? WHERE namespace = 'default' AND id = ?"
+    ).bind(JSON.stringify(legacyPayload), candidate!.id).run();
+
+    await expect(approveRelationReviewCandidate(env, formFor(candidate!.id)))
+      .rejects.toThrow("relation_review_candidate_is_stale");
   });
 });

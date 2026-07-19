@@ -215,7 +215,10 @@ export async function handleAdminBoard(request: Request, env: Env, ctx: Executio
       return Response.redirect(`${url.origin}${noticeUrl(ref, result ? "approved" : "empty")}`, 303);
     } catch (error) {
       console.error("admin metabolism approve failed", error);
-      return Response.redirect(`${url.origin}${noticeUrl(ref, "error")}`, 303);
+      const notice = error instanceof Error && error.message === "relation_review_candidate_is_stale"
+        ? "y-relation-stale"
+        : "error";
+      return Response.redirect(`${url.origin}${noticeUrl(ref, notice)}`, 303);
     }
   }
 
