@@ -406,10 +406,10 @@ describe("splitDiaryMemories plan (apply=false)", () => {
   });
 
   it("rejects a timeline_day that exceeds the 65%-of-diary relative cap even under 360 chars", async () => {
-    const shortDiaryContent = "7月20日日记\n今天和KLD一起review了记忆库。";
-    expect(shortDiaryContent.length).toBeLessThan(120);
-    const relativeTooLong = "今天和KLD一起review记忆库，这段内容超过日记长度六成五。".repeat(4);
-    expect(relativeTooLong.length).toBeGreaterThan(120);
+    const longDiaryContent = `${DIARY_CONTENT}\n${"补充日记上下文。".repeat(30)}`;
+    expect(longDiaryContent.length).toBeGreaterThan(120 / 0.65);
+    const relativeTooLong = "今天和KLD一起review记忆库，这段内容超过日记长度六成五。".repeat(8);
+    expect(relativeTooLong.length).toBeGreaterThan(longDiaryContent.length * 0.65);
     expect(relativeTooLong.length).toBeLessThan(360);
     const payload = JSON.stringify({
       items: [
@@ -418,7 +418,7 @@ describe("splitDiaryMemories plan (apply=false)", () => {
       ]
     });
 
-    const { items } = parseItemsWithDebug(payload, DIARY_DATE, [DIARY_DATE], DIARY_ID, shortDiaryContent, false);
+    const { items } = parseItemsWithDebug(payload, DIARY_DATE, [DIARY_DATE], DIARY_ID, longDiaryContent, false);
 
     const timelineDays = items.filter((item) => item.type === "timeline_day");
     expect(timelineDays).toHaveLength(0);
@@ -603,9 +603,8 @@ describe("splitDiaryMemories apply=true", () => {
       replace_importer: null,
       replaced_ids: []
     });
-    expect(Array.isArray(event.payload.created_ids)).toBe(true);
-    expect(event.payload.created_ids).toHaveLength(2);
-    expect(event.payload.candidate_keys).toHaveLength(1);
+    expect(event.payload.created_ids).toEqual(plan.created_ids);
+    expect(event.payload.candidate_keys).toEqual(plan.candidate_keys);
   });
 
   it("reuses an existing split memory id instead of inserting a duplicate", async () => {
