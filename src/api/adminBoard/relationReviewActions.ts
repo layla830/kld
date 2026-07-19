@@ -26,8 +26,14 @@ interface RelationProposal {
   targetId: string;
   sourceUpdatedAt: string;
   targetUpdatedAt: string;
+  sourceRevision: number | null;
+  targetRevision: number | null;
   strength: number;
   reason: string | null;
+}
+
+function revisionOf(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : null;
 }
 
 function proposalOf(payload: Record<string, unknown>): RelationProposal | null {
@@ -46,6 +52,8 @@ function proposalOf(payload: Record<string, unknown>): RelationProposal | null {
     targetId: pair.targetMemoryId,
     sourceUpdatedAt,
     targetUpdatedAt,
+    sourceRevision: revisionOf(payload.source_revision),
+    targetRevision: revisionOf(payload.target_revision),
     strength: typeof payload.strength === "number" && Number.isFinite(payload.strength)
       ? Math.min(Math.max(payload.strength, 0), 1)
       : 0.6,
@@ -161,6 +169,37 @@ async function readApprovedResult(
   };
 }
 
+async function legacyLinkedRevisions(
+  db: D1Database,
+  candidate: MemoryCandidateRecord,
+  proposal: RelationProposal
+): Promise<Map<string, number>> {
+  if (proposal.sourceRevision !== null && proposal.targetRevision !== null) return new Map();
+  const result = await db.prepare(
+    `SELECT memory_id, memory_revision
+     FROM memory_candidate_axis_runs
+     WHERE namespace = ? AND candidate_external_key = ? AND axis = 'Y'
+       AND memory_id IN (?, ?)`
+  ).bind(
+    candidate.namespace,
+    candidate.external_key,
+    proposal.sourceId,
+    proposal.targetId
+  ).all<{ memory_id: string; memory_revision: number }>();
+  return new Map((result.results ?? []).map((row) => [row.memory_id, row.memory_revision]));
+}
+
+function endpointIsStale(
+  memory: Awaited<ReturnType<typeof getMemoryById>>,
+  expectedRevision: number | null,
+  expectedUpdatedAt: string
+): boolean {
+  if (!memory || memory.status !== "active") return true;
+  return expectedRevision !== null
+    ? (memory.five_axis_revision ?? 1) !== expectedRevision
+    : memory.updated_at !== expectedUpdatedAt;
+}
+
 export async function approveRelationReviewCandidate(env: Env, form: FormData): Promise<RelationReviewResult | null> {
   const id = readFormText(form, "id");
   if (!id) return null;
@@ -174,8 +213,11 @@ export async function approveRelationReviewCandidate(env: Env, form: FormData): 
     getMemoryById(env.DB, { namespace, id: proposal.sourceId }),
     getMemoryById(env.DB, { namespace, id: proposal.targetId })
   ]);
-  if (!source || source.status !== "active" || source.updated_at !== proposal.sourceUpdatedAt
-    || !target || target.status !== "active" || target.updated_at !== proposal.targetUpdatedAt) {
+  const linkedRevisions = await legacyLinkedRevisions(env.DB, candidate, proposal);
+  const sourceRevision = proposal.sourceRevision ?? linkedRevisions.get(proposal.sourceId) ?? null;
+  const targetRevision = proposal.targetRevision ?? linkedRevisions.get(proposal.targetId) ?? null;
+  if (endpointIsStale(source, sourceRevision, proposal.sourceUpdatedAt)
+    || endpointIsStale(target, targetRevision, proposal.targetUpdatedAt)) {
     throw new Error("relation_review_candidate_is_stale");
   }
 

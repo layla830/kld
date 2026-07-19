@@ -64,6 +64,8 @@ function candidateFor(source: MemoryRecord, target: MemoryRecord): MemoryCandida
       relation_type: "supports",
       source_id: source.id,
       target_id: target.id,
+      source_revision: source.five_axis_revision ?? 1,
+      target_revision: target.five_axis_revision ?? 1,
       source_updated_at: source.updated_at,
       target_updated_at: target.updated_at,
       strength: 0.8,

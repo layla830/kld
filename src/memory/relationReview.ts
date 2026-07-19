@@ -22,6 +22,12 @@ export async function queueRelationReviewCandidate(
   const targetUpdatedAt = input.target.id === pair.targetMemoryId
     ? input.target.updated_at
     : input.source.updated_at;
+  const sourceRevision = input.source.id === pair.sourceMemoryId
+    ? input.source.five_axis_revision ?? 1
+    : input.target.five_axis_revision ?? 1;
+  const targetRevision = input.target.id === pair.targetMemoryId
+    ? input.target.five_axis_revision ?? 1
+    : input.source.five_axis_revision ?? 1;
   const candidateExternalKey = [
     "y-review",
     pair.relationType,
@@ -44,6 +50,8 @@ export async function queueRelationReviewCandidate(
       target_id: pair.targetMemoryId,
       source_updated_at: sourceUpdatedAt,
       target_updated_at: targetUpdatedAt,
+      source_revision: sourceRevision,
+      target_revision: targetRevision,
       strength: input.strength,
       reason: input.reason ?? null,
       vector_score: input.vectorScore ?? null
