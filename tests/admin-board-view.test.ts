@@ -89,6 +89,7 @@ describe("admin board view", () => {
     expect(TOAST_TEXT["five-axis-retried"]).toBe("五维死信已重新入队");
     expect(TOAST_TEXT["x-approved"]).toBe("日期标签已更新");
     expect(TOAST_TEXT["y-relation-stale"]).toContain("关系候选已过期");
+    expect(Object.keys(TOAST_TEXT)).toHaveLength(31);
     expect(renderToastScriptContent("x-approved")).toContain('const n="x-approved"');
     expect(renderToastScriptContent(null)).toContain("const n=null");
     expect(renderToastScriptContent(undefined)).toContain("const n=undefined");
@@ -149,6 +150,13 @@ describe("admin board view", () => {
     const lmc5 = renderPage(pageInput("lmc5"), pageData());
     expect(lmc5).toContain("LMC-5 面板没有加载出来");
     expect(lmc5).not.toContain("这里还没有内容");
+
+    const xReview = renderPage(
+      pageInput("x-review"),
+      pageData({ total: 4 })
+    );
+    expect(xReview).toContain("明确日期候选");
+    expect(xReview.indexOf("明确日期候选")).toBeLessThan(xReview.indexOf("X 时间轴审核"));
 
     const review = renderPage(
       pageInput("review"),
