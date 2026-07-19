@@ -3,7 +3,7 @@ import { runFiveAxisNightlyMaintenance, type FiveAxisNightlyDependencies } from 
 import type { Env } from "../src/types";
 
 describe("five-axis nightly orchestration", () => {
-  it("runs Y once and consolidates Z/M into the operational review scan", async () => {
+  it("runs Y once, consolidates Z/M, and observes recall metabolism in shadow", async () => {
     const calls: string[] = [];
     const dependencies: FiveAxisNightlyDependencies = {
       runRelations: async (_env, namespace, options) => {
@@ -15,6 +15,15 @@ describe("five-axis nightly orchestration", () => {
         return {
           z: { conflicts: 1, candidates: 1 },
           m: { archive: 0, relations: 0 }
+        };
+      },
+      observeRecallMetabolism: async (_env, namespace, options) => {
+        calls.push(`M-shadow:${namespace}:${options?.dryRun}`);
+        return {
+          scanned: 2,
+          activeBands: 1,
+          transitions: 1,
+          bands: { none: 1, cooled_after_use: 0, promote: 1, configuration_conflict: 0 }
         };
       }
     };
@@ -28,13 +37,20 @@ describe("five-axis nightly orchestration", () => {
 
     expect(calls).toEqual([
       "Y:default:true:2026-07-12T00:00:00.000Z",
-      "Z/M:default:true"
+      "Z/M:default:true",
+      "M-shadow:default:true"
     ]);
     expect(result).toEqual({
       relations: { scanned: 2, inserted: 0, review: 1, proposed: 1, candidates: 3 },
       operationalReview: {
         z: { conflicts: 1, candidates: 1 },
         m: { archive: 0, relations: 0 }
+      },
+      recallMetabolismShadow: {
+        scanned: 2,
+        activeBands: 1,
+        transitions: 1,
+        bands: { none: 1, cooled_after_use: 0, promote: 1, configuration_conflict: 0 }
       }
     });
   });

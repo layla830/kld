@@ -3,6 +3,8 @@ import {
   deleteOldUsageLogs,
   deleteOldMemoryEvents,
   deleteOldIdempotencyKeys,
+  deleteOldRecallReceipts,
+  deleteOldRecallDailyRows,
   listHardDeletableMemories,
   hardDeleteMemoriesBatched,
   readCursor,
@@ -108,6 +110,8 @@ async function runMemoryRetentionInner(
   stats.usageLogs = await deleteOldUsageLogs(env.DB, namespace, daysAgo(clock, policy.usageLogsDays));
   stats.memoryEvents = await deleteOldMemoryEvents(env.DB, namespace, daysAgo(clock, policy.memoryEventsDays));
   stats.idempotencyKeys = await deleteOldIdempotencyKeys(env.DB, daysAgo(clock, policy.idempotencyKeysDays));
+  stats.recallReceipts = await deleteOldRecallReceipts(env.DB, namespace, daysAgo(clock, policy.recallReceiptsDays));
+  stats.recallDailyRows = await deleteOldRecallDailyRows(env.DB, namespace, daysAgo(clock, policy.recallDailyDays));
   stats.vectorResynced = await resyncUnsyncedVectors(env, namespace);
 
   // Active long-term memories do not expire automatically. Manual deletes still

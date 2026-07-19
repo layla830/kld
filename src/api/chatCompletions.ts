@@ -6,6 +6,7 @@ import { saveAssistantMessage, saveUserMessages } from "../db/messages";
 import { getLatestSummary } from "../db/summaries";
 import { saveUsageLog } from "../db/usageLogs";
 import { extractLastUserText, injectMemoryPatchAsSystemMessage, selectMemoriesForInjection } from "../memory/inject";
+import { recallOperationIdForRequest } from "../memory/recallSignalOperation";
 import { toMemoryApiRecord } from "../memory/search";
 import { assemble } from "../assembler/assemble";
 import { PERSONA_MEMORY_TYPES } from "../assembler/types";
@@ -116,7 +117,10 @@ export async function handleChatCompletions(
 
   const memories = await selectMemoriesForInjection(env, {
     profile: auth.profile,
-    query: extractLastUserText(body.messages)
+    query: extractLastUserText(body.messages),
+    operationId: latestUserMessageId
+      ? `gateway_message:${latestUserMessageId}`
+      : recallOperationIdForRequest(request, "gateway")
   });
 
   const pinnedPersonaMemories = await fetchPinnedPersonaMemories(env.DB, auth.profile.namespace);

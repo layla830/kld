@@ -1,8 +1,10 @@
 import { authenticate } from "../auth/apiKey";
 import { createMemory, listMemories, searchMemoriesByText, softDeleteMemory, updateMemory } from "../db/memories";
+import { recordRecallSignals } from "../db/recallSignals";
 import { deleteMemoryEmbedding, upsertMemoryEmbedding } from "../memory/embedding";
 import { searchMemories, toMemoryApiRecord } from "../memory/search";
 import { recordRecallSearchObservation } from "../memory/eAxisObservability";
+import { recallOperationIdForRequest, recallOperationIdForRpc } from "../memory/recallSignalOperation";
 import { buildStartupContext } from "../memory/startupContext";
 import { enqueueDiarySplitIfNeeded } from "../queue/producer";
 import {
@@ -427,7 +429,13 @@ async function databaseHealth(db: D1Database, namespace: string): Promise<Record
   return { status: "healthy", backend: "cloudflare-d1-vectorize", namespace, statistics: counts ?? {}, types: byType.results ?? [] };
 }
 
-async function callTool(env: Env, ctx: ExecutionContext, profile: KeyProfile, params: ToolCallParams): Promise<Record<string, unknown>> {
+async function callTool(
+  env: Env,
+  ctx: ExecutionContext,
+  profile: KeyProfile,
+  params: ToolCallParams,
+  operationId: string
+): Promise<Record<string, unknown>> {
   const args = isRecord(params.arguments) ? params.arguments : {};
 
   if (params.name === "memory_search") {
@@ -458,9 +466,15 @@ async function callTool(env: Env, ctx: ExecutionContext, profile: KeyProfile, pa
       types: readStringArray(args.types),
       onEAxisTrace: (trace) => { eAxisTrace = trace; }
     });
+    const feedback: Promise<unknown>[] = [recordRecallSignals(env.DB, {
+      namespace,
+      operationId,
+      source: "mcp_retrieve",
+      memoryIds: data.map((record) => record.id)
+    }).catch((error) => console.error("MCP recall signal write failed", error))];
     if (eAxisTrace) {
       const trace = eAxisTrace;
-      ctx.waitUntil(recordRecallSearchObservation(env, {
+      feedback.push(recordRecallSearchObservation(env, {
         namespace,
         query,
         source: "mcp_retrieve",
@@ -468,6 +482,7 @@ async function callTool(env: Env, ctx: ExecutionContext, profile: KeyProfile, pa
         eAxis: trace
       }).catch((error) => console.error("MCP recall observation write failed", error)));
     }
+    ctx.waitUntil(Promise.all(feedback).then(() => undefined));
     return textToolResult({ data });
   }
 
@@ -613,13 +628,25 @@ async function callTool(env: Env, ctx: ExecutionContext, profile: KeyProfile, pa
   return toolError(`Unknown tool: ${String(params.name || "")}`);
 }
 
-async function handleRpc(request: JsonRpcRequest, env: Env, ctx: ExecutionContext, profile: KeyProfile): Promise<Record<string, unknown> | null> {
+async function handleRpc(
+  request: JsonRpcRequest,
+  env: Env,
+  ctx: ExecutionContext,
+  profile: KeyProfile,
+  requestScope: string
+): Promise<Record<string, unknown> | null> {
   if (!request.id && request.method?.startsWith("notifications/")) return null;
   if (request.method === "initialize") return rpcResult(request.id, { protocolVersion: "2025-06-18", capabilities: { tools: { listChanged: false } }, serverInfo: { name: "companion-memory-mcp", version: "0.1.0" } });
   if (request.method === "tools/list") return rpcResult(request.id, { tools: getTools() });
   if (request.method === "resources/list") return rpcResult(request.id, { resources: [] });
   if (request.method === "prompts/list") return rpcResult(request.id, { prompts: [] });
-  if (request.method === "tools/call") return rpcResult(request.id, await callTool(env, ctx, profile, isRecord(request.params) ? request.params as ToolCallParams : {}));
+  if (request.method === "tools/call") return rpcResult(request.id, await callTool(
+    env,
+    ctx,
+    profile,
+    isRecord(request.params) ? request.params as ToolCallParams : {},
+    recallOperationIdForRpc(requestScope, request.id)
+  ));
   if (request.method === "ping") return rpcResult(request.id, {});
   return rpcError(request.id, -32601, "Method not found");
 }
@@ -633,6 +660,7 @@ export async function handleMcp(request: Request, env: Env, ctx: ExecutionContex
 
   const auth = await authenticate(request, env);
   if (!auth.ok) return json(rpcError(null, -32001, "Unauthorized"), { status: 401 });
+  const requestScope = recallOperationIdForRequest(request, "mcp");
 
   let body: unknown;
   try {
@@ -642,11 +670,11 @@ export async function handleMcp(request: Request, env: Env, ctx: ExecutionContex
   }
 
   if (Array.isArray(body)) {
-    const results = (await Promise.all(body.filter((item): item is JsonRpcRequest => isRecord(item)).map((item) => handleRpc(item, env, ctx, auth.profile)))).filter((item): item is Record<string, unknown> => item !== null);
+    const results = (await Promise.all(body.filter((item): item is JsonRpcRequest => isRecord(item)).map((item) => handleRpc(item, env, ctx, auth.profile, requestScope)))).filter((item): item is Record<string, unknown> => item !== null);
     return results.length > 0 ? json(results) : new Response(null, { status: 202 });
   }
 
   if (!isRecord(body)) return json(rpcError(null, -32600, "Invalid Request"), { status: 400 });
-  const result = await handleRpc(body, env, ctx, auth.profile);
+  const result = await handleRpc(body, env, ctx, auth.profile, requestScope);
   return result ? json(result) : new Response(null, { status: 202 });
 }

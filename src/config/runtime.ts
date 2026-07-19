@@ -196,6 +196,8 @@ export interface RetentionConfig {
   usageLogsDays: number;
   memoryEventsDays: number;
   idempotencyKeysDays: number;
+  recallReceiptsDays: number;
+  recallDailyDays: number;
   terminalMemoryHardDeleteDays: number;
   throttleHours: number;
 }
@@ -208,6 +210,8 @@ export function loadRetentionConfig(env: Env): RetentionConfig {
     usageLogsDays: positiveInteger(env.MEMORY_RETENTION_USAGE_LOGS_DAYS, 30),
     memoryEventsDays: positiveInteger(env.MEMORY_RETENTION_EVENTS_DAYS, 30),
     idempotencyKeysDays: positiveInteger(env.MEMORY_RETENTION_IDEMPOTENCY_DAYS, 7),
+    recallReceiptsDays: positiveInteger(env.MEMORY_RETENTION_RECALL_RECEIPTS_DAYS, 7),
+    recallDailyDays: positiveInteger(env.MEMORY_RETENTION_RECALL_DAILY_DAYS, 400),
     terminalMemoryHardDeleteDays: positiveInteger(env.MEMORY_RETENTION_TERMINAL_MEMORY_DAYS, 30),
     throttleHours: positiveInteger(env.MEMORY_RETENTION_THROTTLE_HOURS, 24)
   };
