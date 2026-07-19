@@ -32,7 +32,11 @@ describe("typed runtime config", () => {
       namespace: "default",
       model: "dream-model"
     });
-    expect(loadRetentionConfig({ CC_CONNECT_MESSAGE_RETENTION_DAYS: "0" } as Env).ccConnectProcessedMessagesDays).toBe(7);
+    expect(loadRetentionConfig({ CC_CONNECT_MESSAGE_RETENTION_DAYS: "0" } as Env)).toMatchObject({
+      ccConnectProcessedMessagesDays: 7,
+      recallReceiptsDays: 7,
+      recallDailyDays: 400
+    });
   });
 
   it("provides an injectable clock for deterministic application code", () => {

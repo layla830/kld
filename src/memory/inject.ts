@@ -1,4 +1,5 @@
-import { listMemories, markMemoriesRecalled } from "../db/memories";
+import { listMemories } from "../db/memories";
+import { recordRecallSignals } from "../db/recallSignals";
 import type { Env, InjectionMode, KeyProfile, MemoryApiRecord, OpenAIChatMessage, OpenAIChatRequest } from "../types";
 import { loadRecallConfig } from "../config/runtime";
 import { filterAndCompressMemories } from "./filter";
@@ -63,12 +64,18 @@ async function searchMemoriesForInjection(
 async function finalizeInjectionSelection(
   env: Env,
   namespace: string,
+  operationId: string,
   memories: MemoryApiRecord[]
 ): Promise<MemoryApiRecord[]> {
   const memoryIds = memories.map((memory) => memory.id).filter((id) => !id.startsWith("msg_"));
   if (memoryIds.length > 0) {
     try {
-      await markMemoriesRecalled(env.DB, { namespace, ids: memoryIds });
+      await recordRecallSignals(env.DB, {
+        namespace,
+        operationId,
+        source: "gateway_injection",
+        memoryIds
+      });
     } catch (error) {
       console.error("memory injection feedback write failed", error);
     }
@@ -91,7 +98,7 @@ function dedupeMemories(memories: MemoryApiRecord[]): MemoryApiRecord[] {
 
 export async function selectMemoriesForInjection(
   env: Env,
-  input: { profile: KeyProfile; query: string }
+  input: { profile: KeyProfile; query: string; operationId: string }
 ): Promise<MemoryApiRecord[]> {
   const mode = resolveInjectionMode(input.profile, env);
   if (mode === "none") return [];
@@ -105,7 +112,7 @@ export async function selectMemoriesForInjection(
       limit: 100
     });
 
-    return finalizeInjectionSelection(env, namespace, await filterAndCompressMemories(env, {
+    return finalizeInjectionSelection(env, namespace, input.operationId, await filterAndCompressMemories(env, {
       query: input.query,
       memories: excludeAutoDiary(records.map((record) => toMemoryApiRecord(record)))
     }));
@@ -120,7 +127,7 @@ export async function selectMemoriesForInjection(
     : [];
 
   if (mode === "rag") {
-    return finalizeInjectionSelection(env, namespace, await filterAndCompressMemories(env, {
+    return finalizeInjectionSelection(env, namespace, input.operationId, await filterAndCompressMemories(env, {
       query: input.query,
       memories: ragMemories
     }));
@@ -133,7 +140,7 @@ export async function selectMemoriesForInjection(
   });
   const pinned = excludeAutoDiary(records.filter((record) => record.pinned).map((record) => toMemoryApiRecord(record)));
 
-  return finalizeInjectionSelection(env, namespace, await filterAndCompressMemories(env, {
+  return finalizeInjectionSelection(env, namespace, input.operationId, await filterAndCompressMemories(env, {
     query: input.query,
     memories: dedupeMemories([...pinned, ...ragMemories])
   }));

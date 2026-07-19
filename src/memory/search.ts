@@ -1,5 +1,5 @@
 import { loadRecallConfig } from "../config/runtime";
-import { listActiveMemoriesByFactKeys, listGuidanceSeedMemories, markMemoriesRecalled, searchMemoriesByText } from "../db/memories";
+import { listActiveMemoriesByFactKeys, listGuidanceSeedMemories, searchMemoriesByText } from "../db/memories";
 import { listRelationExpandedMemories } from "../db/memoryRelations";
 import { searchMessagesForRecall } from "../db/messages";
 import type { Env, MemoryApiRecord, MessageRecord } from "../types";
@@ -23,7 +23,6 @@ export interface SearchMemoriesInput {
   types?: string[];
   topK?: number;
   includeMessages?: boolean;
-  recordRecall?: boolean;
   onEAxisTrace?: (trace: EAxisFusionTrace) => void;
 }
 
@@ -134,8 +133,5 @@ export async function searchMemories(env: Env, input: SearchMemoriesInput): Prom
     }), plan.rawQuery, plan.searchQuery
   ), plan.rawQuery)).slice(0, topK);
 
-  if (input.recordRecall) {
-    await markMemoriesRecalled(env.DB, { namespace: input.namespace, ids: output.map((record) => record.id).filter((id) => !id.startsWith("msg_")) });
-  }
   return output;
 }

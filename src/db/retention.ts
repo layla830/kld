@@ -69,6 +69,30 @@ export async function deleteOldIdempotencyKeys(
   return result.meta.changes ?? 0;
 }
 
+export async function deleteOldRecallReceipts(
+  db: D1Database,
+  namespace: string,
+  cutoff: string
+): Promise<number> {
+  const result = await db
+    .prepare("DELETE FROM memory_recall_receipts WHERE namespace = ? AND created_at < ?")
+    .bind(namespace, cutoff)
+    .run();
+  return result.meta.changes ?? 0;
+}
+
+export async function deleteOldRecallDailyRows(
+  db: D1Database,
+  namespace: string,
+  cutoffDay: string
+): Promise<number> {
+  const result = await db
+    .prepare("DELETE FROM memory_recall_daily WHERE namespace = ? AND recall_day < ?")
+    .bind(namespace, cutoffDay.slice(0, 10))
+    .run();
+  return result.meta.changes ?? 0;
+}
+
 // ---------------------------------------------------------------------------
 // memories: list hard-deletable rows, status in (deleted, superseded, expired)
 //           and updated_at older than cutoff

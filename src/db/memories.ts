@@ -562,26 +562,6 @@ export async function searchMemoriesByText(
     .slice(0, input.limit);
 }
 
-export async function markMemoriesRecalled(
-  db: D1Database,
-  input: { namespace: string; ids: string[] }
-): Promise<void> {
-  if (input.ids.length === 0) return;
-
-  const idsPerQuery = D1_BIND_LIMIT - 2;
-  for (const ids of chunk(input.ids, idsPerQuery)) {
-    const placeholders = ids.map(() => "?").join(", ");
-    await db
-      .prepare(
-        `UPDATE memories
-         SET last_recalled_at = ?, recall_count = recall_count + 1
-         WHERE namespace = ? AND id IN (${placeholders})`
-      )
-      .bind(nowIso(), input.namespace, ...ids)
-      .run();
-  }
-}
-
 export async function listFactKeyConflicts(
   db: D1Database,
   input: { namespace: string; limit: number; factKeys?: string[] }

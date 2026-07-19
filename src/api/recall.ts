@@ -1,9 +1,10 @@
 import { authenticate } from "../auth/apiKey";
 import { requireScope } from "../auth/scopes";
-import { markMemoriesRecalled } from "../db/memories";
 import { createMemoryEvent } from "../db/memoryEvents";
+import { recordRecallSignals } from "../db/recallSignals";
 import { buildRecallContext } from "../recall/service";
 import { hashRecallQuery } from "../memory/eAxisObservability";
+import { recallOperationIdForRequest } from "../memory/recallSignalOperation";
 import type { Env, KeyProfile } from "../types";
 import { json, openAiError } from "../utils/json";
 
@@ -46,6 +47,7 @@ export async function handleRecall(request: Request, env: Env, ctx: ExecutionCon
   if (!prompt) return openAiError("prompt is required", 400);
 
   const namespace = resolveNamespace(auth.profile, body.namespace);
+  const operationId = readString(body.operation_id) || recallOperationIdForRequest(request, "api_recall");
   const started = Date.now();
   const result = await buildRecallContext(env, {
     namespace,
@@ -58,22 +60,28 @@ export async function handleRecall(request: Request, env: Env, ctx: ExecutionCon
     const memoryIds = result.memories.map((memory) => memory.id).filter((id) => !id.startsWith("msg_"));
     ctx.waitUntil((async () => {
       const queryHash = await hashRecallQuery(prompt);
-      await Promise.all([
-        markMemoriesRecalled(env.DB, { namespace, ids: memoryIds }),
-        createMemoryEvent(env.DB, {
-          namespace,
-          eventType: "recall_context_injected",
-          payload: {
-            query_hash: queryHash,
-            query_length: prompt.length,
-            memory_ids: memoryIds,
-            result_count: result.memories.length,
-            elapsed_ms: Date.now() - started,
-            reasons: result.reasons,
-            trace: result.trace
-          }
-        })
-      ]);
+      const signal = await recordRecallSignals(env.DB, {
+        namespace,
+        operationId,
+        source: "api_context",
+        memoryIds
+      });
+      await createMemoryEvent(env.DB, {
+        namespace,
+        eventType: "recall_context_injected",
+        payload: {
+          operation_id: operationId,
+          source: "api_context",
+          query_hash: queryHash,
+          query_length: prompt.length,
+          memory_ids: memoryIds,
+          result_count: result.memories.length,
+          recorded_count: signal.recorded,
+          elapsed_ms: Date.now() - started,
+          reasons: result.reasons,
+          trace: result.trace
+        }
+      });
     })().catch((error) => console.error("recall feedback write failed", error)));
   }
 

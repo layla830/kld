@@ -63,6 +63,7 @@ const candidateOverride = fs.readFileSync("src/memory/candidateOverride.ts", "ut
 const candidateIngress = fs.readFileSync("src/api/memoryCandidates.ts", "utf8");
 const recallTrace = fs.readFileSync("src/recall/trace.ts", "utf8");
 const recallApi = fs.readFileSync("src/api/recall.ts", "utf8");
+const recallSignals = fs.readFileSync("src/db/recallSignals.ts", "utf8");
 const recallContext = fs.readFileSync("src/recall/service.ts", "utf8");
 const recallFilter = fs.readFileSync("src/recall/candidatePolicy.ts", "utf8");
 const injection = fs.readFileSync("src/memory/inject.ts", "utf8");
@@ -82,10 +83,12 @@ const wranglerConfig = fs.readFileSync("wrangler.toml", "utf8");
 const fiveAxisRelations = fs.readFileSync("src/memory/fiveAxis/yRelations.ts", "utf8");
 const fiveAxisFacts = fs.readFileSync("src/memory/fiveAxis/zFacts.ts", "utf8");
 const fiveAxisNightly = fs.readFileSync("src/memory/fiveAxis/nightly.ts", "utf8");
+const recallMetabolismShadow = fs.readFileSync("src/memory/recallMetabolismShadow.ts", "utf8");
 const fiveAxisProjection = fs.readFileSync("src/memory/fiveAxis/projection.ts", "utf8");
 const fiveAxisOutboxMigration = fs.readFileSync("migrations/20260713_memory_five_axis_outbox.sql", "utf8");
 const fiveAxisDependencyMigration = fs.readFileSync("migrations/20260716_five_axis_dependency_triggers.sql", "utf8");
 const eAxisRuntimeMigration = fs.readFileSync("migrations/20260718_e_axis_runtime_state.sql", "utf8");
+const recallSignalMigration = fs.readFileSync("migrations/20260719_recall_signal_rollups.sql", "utf8");
 const timelineSequenceMigration = fiveAxisDependencyMigration;
 
 const checks = [
@@ -611,7 +614,10 @@ const checks = [
   [
     "Night: Y runs once before the single unified Z/M candidate scan",
     fiveAxisNightly.indexOf("const relations = await dependencies.runRelations") <
-      fiveAxisNightly.indexOf("const operationalReview = await dependencies.scanOperational") &&
+      fiveAxisNightly.indexOf("const [operationalReview, recallMetabolismShadow]") &&
+      fiveAxisNightly.includes("dependencies.scanOperational") &&
+      fiveAxisNightly.includes("dependencies.observeRecallMetabolism") &&
+      recallMetabolismShadow.includes("'metabolism_signal_observed'") &&
       !workerIndex.includes("scanOperationalReviewCandidates"),
   ],
   [
@@ -806,8 +812,11 @@ const checks = [
     "Recall: final injected memories feed M state with privacy-preserving layered trace",
     recallApi.includes('eventType: "recall_context_injected"') &&
       recallApi.includes("query_hash") &&
-      recallApi.includes("markMemoriesRecalled") &&
+      recallApi.includes("recordRecallSignals") &&
+      recallApi.includes('source: "api_context"') &&
       recallApi.includes("ctx.waitUntil") &&
+      recallSignals.includes("memory_recall_receipts") &&
+      recallSignalMigration.includes("memory_recall_daily") &&
       !recallApi.includes("payload: {\n            prompt:") &&
       recallTrace.includes('"authority"') &&
       recallTrace.includes('"evidence"') &&
@@ -818,7 +827,8 @@ const checks = [
     "Recall: gateway feedback counts final compressed output rather than search candidates",
     !injection.includes("recordRecall: true") &&
       injection.includes("finalizeInjectionSelection") &&
-      injection.includes("markMemoriesRecalled"),
+      injection.includes("recordRecallSignals") &&
+      injection.includes('source: "gateway_injection"'),
   ],
   [
     "M: listMetabolismCandidates shows pending only, no approved re-bubbling",
