@@ -3,7 +3,6 @@ import { upsertMemoryCandidate } from "../db/memoryCandidates";
 import { createMemoryEvent } from "../db/memoryEvents";
 import { callOpenAICompat } from "../proxy/openaiAdapter";
 import type { Env, MemoryRecord, OpenAIChatRequest, OpenAIChatResponse } from "../types";
-import { parseJsonStringArray } from "../utils/jsonHelpers";
 import { upsertMemoryEmbedding } from "./embedding";
 import { DIARY_SPLIT_SOURCE_TYPE, isActiveDiarySplitSource } from "./diaryPolicy";
 import { removeMemoryVector } from "./state";
@@ -13,53 +12,24 @@ import {
   hasActiveV2DiaryDay,
   hasSuccessfulDiarySplit
 } from "../db/diarySplitState";
+import { dateFromDiary, datesFromDiary, normalizeDate } from "./diarySplitDates";
+import {
+  buildVerbatimTimelineDay,
+  MAX_ITEMS_PER_DIARY,
+  parseItemsWithDebug,
+  splitItemKey,
+  SPLIT_VERSION_TAG,
+  type DiarySplitDebug,
+  type DiarySplitItem
+} from "./diarySplitParse";
+import { buildSplitPrompt } from "./diarySplitPrompt";
+import { cleanImporter } from "./diarySplitImporter";
+
+export { dateFromDiary };
+export type { DiarySplitItem };
 
 const TIMELINE_SOURCE = "timeline_split";
 const DEFAULT_SPLIT_MODEL = "deepseek/deepseek-v4-flash";
-const MAX_DIARY_CHARS = 18000;
-const MAX_ITEMS_PER_DIARY = 6;
-const FACT_TYPES = new Set(["rule", "preference", "project_state", "lesson"]);
-const REVIEW_TYPES = new Set(["rule", "preference", "project_state", "lesson"]);
-const SPLIT_VERSION_TAG = "split_version:v2";
-const MEMORY_TYPES = new Set([
-  "timeline_day",
-  "quote",
-  "lesson",
-  "milestone",
-  "insight",
-  "rule",
-  "preference",
-  "project_state",
-  "warmth",
-  "event"
-]);
-const ITEM_ARRAY_KEYS = ["items", "memories", "records", "results", "entries"];
-
-export interface DiarySplitItem {
-  date: string;
-  type: string;
-  content: string;
-  summary: string | null;
-  importance: number;
-  confidence: number;
-  tags: string[];
-  fact_key: string | null;
-  evidence: string;
-  temporal_scope: "day" | "current" | "historical";
-  review_required: boolean;
-}
-
-interface DiarySplitDebug {
-  model_text_chars: number;
-  parsed_kind: string;
-  parsed_keys: string[];
-  raw_item_count: number;
-  accepted_item_count: number;
-  raw_type_sample: string[];
-  raw_key_sample: string[][];
-  text_preview?: string;
-  fallback?: "verbatim_timeline_day";
-}
 
 export interface DiarySplitPlan {
   diary_id: string;
@@ -81,376 +51,6 @@ export interface SplitDiaryInput {
   force?: boolean;
   debug?: boolean;
   replaceImporter?: string;
-}
-
-interface RawSplitItem {
-  date?: unknown;
-  type?: unknown;
-  memory_type?: unknown;
-  category?: unknown;
-  content?: unknown;
-  text?: unknown;
-  memory?: unknown;
-  summary?: unknown;
-  importance?: unknown;
-  confidence?: unknown;
-  tags?: unknown;
-  fact_key?: unknown;
-  fact_like?: unknown;
-  evidence?: unknown;
-  temporal_scope?: unknown;
-}
-
-function clamp(value: unknown, fallback: number): number {
-  return typeof value === "number" && Number.isFinite(value) ? Math.min(Math.max(value, 0), 1) : fallback;
-}
-
-function cleanString(value: unknown, maxChars: number): string {
-  return typeof value === "string" ? value.trim().slice(0, maxChars) : "";
-}
-
-function cleanTags(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
-  return [...new Set(value.filter((item): item is string => typeof item === "string").map((item) => item.trim()).filter(Boolean))].slice(0, 12);
-}
-
-function normalizeDate(value: string): string | null {
-  const match = value.trim().match(/^(20\d{2})-(\d{1,2})-(\d{1,2})$/);
-  if (!match) return null;
-  const [, year, month, day] = match;
-  return `${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`;
-}
-
-export function dateFromDiary(record: MemoryRecord): string | null {
-  const rangeMatch = record.content.match(/(?:^|\n)\s*(\d{1,2})\s*月\s*(\d{1,2})\s*[-–—至到]\s*(\d{1,2})\s*日/)
-    || parseJsonStringArray(record.tags).join(" ").match(/(\d{1,2})\s*月\s*(\d{1,2})\s*[-–—至到]\s*(\d{1,2})\s*日/);
-  const contentMatch = record.content.match(/(?:^|\n)\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日(?:日记)?/);
-  const tagMatch = parseJsonStringArray(record.tags).join(" ").match(/(\d{1,2})\s*月\s*(\d{1,2})\s*日/);
-  const match = rangeMatch || contentMatch || tagMatch;
-  if (!match) return null;
-  const year = new Date(record.created_at || Date.now()).getUTCFullYear();
-  return `${year}-${match[1].padStart(2, "0")}-${match[2].padStart(2, "0")}`;
-}
-
-function sourceLabel(date: string): string {
-  return `diary_${date}`;
-}
-
-function splitBatchTag(date: string): string {
-  return `split_batch:${date.replaceAll("-", "")}_diary`;
-}
-
-function buildVerbatimTimelineDay(record: MemoryRecord, date: string): DiarySplitItem {
-  const lines = record.content.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-  const evidence = (lines.find((line, index) => index > 0 && line.length >= 4) ?? lines[0] ?? date).slice(0, 80);
-  return {
-    date,
-    type: "timeline_day",
-    content: `${date}：${evidence}`.slice(0, 360),
-    summary: "正式日记原文日节点（模型摘要不可用）",
-    importance: 0.55,
-    confidence: 1,
-    tags: [
-      "timeline",
-      `date:${date}`,
-      "timeline_day",
-      "timeline_day_fallback:verbatim",
-      `origin:${record.id}`,
-      `source_label:${sourceLabel(date)}`,
-      "temporal_scope:day",
-      splitBatchTag(date),
-      SPLIT_VERSION_TAG
-    ],
-    fact_key: null,
-    evidence,
-    temporal_scope: "day",
-    review_required: false
-  };
-}
-
-function temporalScope(raw: RawSplitItem): "day" | "current" | "historical" {
-  const value = cleanString(raw.temporal_scope, 20).toLowerCase();
-  return value === "current" || value === "historical" ? value : "day";
-}
-
-function datesFromDiary(record: MemoryRecord, fallback: string): string[] {
-  const year = new Date(record.created_at || Date.now()).getUTCFullYear();
-  const text = `${record.content.slice(0, 300)} ${parseJsonStringArray(record.tags).join(" ")}`;
-  const dates = new Set<string>();
-  for (const match of text.matchAll(/(\d{1,2})\s*月\s*(\d{1,2})(?:\s*[-–—至到]\s*(\d{1,2}))?\s*日/g)) {
-    const month = match[1].padStart(2, "0");
-    dates.add(`${year}-${month}-${match[2].padStart(2, "0")}`);
-    if (match[3]) dates.add(`${year}-${month}-${match[3].padStart(2, "0")}`);
-  }
-  if (dates.size === 0) dates.add(fallback);
-  return [...dates];
-}
-
-function factKeyForItem(raw: RawSplitItem, type: string, scope: "day" | "current" | "historical"): string | null {
-  const factKey = cleanString(raw.fact_key, 120);
-  if (!factKey || !FACT_TYPES.has(type) || raw.fact_like !== true || scope !== "current") return null;
-  if (!/^[a-z0-9_.:-]+$/i.test(factKey)) return null;
-  return factKey;
-}
-
-function rawItemType(raw: RawSplitItem): string {
-  return cleanString(raw.type ?? raw.memory_type ?? raw.category, 40).toLowerCase();
-}
-
-function rawItemContent(raw: RawSplitItem): string {
-  return cleanString(raw.content ?? raw.text ?? raw.memory, 1200);
-}
-
-function extractRawItems(parsed: unknown): RawSplitItem[] {
-  if (Array.isArray(parsed)) return parsed as RawSplitItem[];
-  if (!parsed || typeof parsed !== "object") return [];
-
-  const record = parsed as Record<string, unknown>;
-  for (const key of ITEM_ARRAY_KEYS) {
-    if (Array.isArray(record[key])) return record[key] as RawSplitItem[];
-  }
-
-  const firstArray = Object.values(record).find((value) => Array.isArray(value));
-  return Array.isArray(firstArray) ? (firstArray as RawSplitItem[]) : [];
-}
-
-function candidateShapeCount(parsed: unknown): number {
-  return extractRawItems(parsed).filter((item) => {
-    if (!item || typeof item !== "object") return false;
-    return Boolean(rawItemType(item) && rawItemContent(item));
-  }).length;
-}
-
-function parsedKind(parsed: unknown): string {
-  if (Array.isArray(parsed)) return "array";
-  if (parsed === null) return "null";
-  return typeof parsed;
-}
-
-function parsedKeys(parsed: unknown): string[] {
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return [];
-  return Object.keys(parsed as Record<string, unknown>).slice(0, 20);
-}
-
-function extractJsonPayload(text: string): unknown | null {
-  const candidates: unknown[] = [];
-  try {
-    candidates.push(JSON.parse(text) as unknown);
-  } catch {
-    // Providers sometimes wrap JSON in prose or code fences.
-  }
-
-  for (let start = 0; start < text.length; start += 1) {
-    const opener = text[start];
-    if (opener !== "{" && opener !== "[") continue;
-    const closer = opener === "{" ? "}" : "]";
-    let depth = 0;
-    let inString = false;
-    let escaped = false;
-
-    for (let index = start; index < text.length; index += 1) {
-      const char = text[index];
-      if (inString) {
-        if (escaped) {
-          escaped = false;
-        } else if (char === "\\") {
-          escaped = true;
-        } else if (char === "\"") {
-          inString = false;
-        }
-        continue;
-      }
-
-      if (char === "\"") {
-        inString = true;
-      } else if (char === opener) {
-        depth += 1;
-      } else if (char === closer) {
-        depth -= 1;
-        if (depth === 0) {
-          try {
-            candidates.push(JSON.parse(text.slice(start, index + 1)) as unknown);
-          } catch {
-            break;
-          }
-        }
-      }
-    }
-  }
-
-  const objectStart = text.indexOf("{");
-  const objectEnd = text.lastIndexOf("}");
-  if (objectStart !== -1 && objectEnd > objectStart) {
-    try {
-      candidates.push(JSON.parse(text.slice(objectStart, objectEnd + 1)) as unknown);
-    } catch {
-      // Continue and try array-shaped output.
-    }
-  }
-
-  const arrayStart = text.indexOf("[");
-  const arrayEnd = text.lastIndexOf("]");
-  if (arrayStart !== -1 && arrayEnd > arrayStart) {
-    try {
-      candidates.push(JSON.parse(text.slice(arrayStart, arrayEnd + 1)) as unknown);
-    } catch {
-      // Fall through to choosing the best earlier candidate.
-    }
-  }
-
-  if (candidates.length === 0) return null;
-  return candidates
-    .map((candidate, index) => ({
-      candidate,
-      index,
-      shapeCount: candidateShapeCount(candidate),
-      count: extractRawItems(candidate).length
-    }))
-    .sort((a, b) => b.shapeCount - a.shapeCount || b.count - a.count || b.index - a.index)[0].candidate;
-}
-
-function parseItemsWithDebug(text: string, date: string, allowedDates: string[], originId: string, diary: string, includeDebug: boolean): { items: DiarySplitItem[]; debug?: DiarySplitDebug } {
-  const parsed = extractJsonPayload(text);
-  const rawItems = extractRawItems(parsed);
-  const items: DiarySplitItem[] = [];
-  const seen = new Set<string>();
-  const timelineDates = new Set<string>();
-  const allowedDateSet = new Set(allowedDates);
-
-  for (const raw of rawItems.slice(0, MAX_ITEMS_PER_DIARY)) {
-    if (!raw || typeof raw !== "object") continue;
-    const type = rawItemType(raw);
-    const content = rawItemContent(raw);
-    const evidence = cleanString(raw.evidence, 80);
-    if (content === "Chinese memory text") continue;
-    if (!MEMORY_TYPES.has(type) || content.length < 4) continue;
-    if (!evidence || !diary.includes(evidence)) continue;
-    if (type === "quote" && !diary.includes(content)) continue;
-    const requestedDate = normalizeDate(cleanString(raw.date, 20));
-    const itemDate = requestedDate && allowedDateSet.has(requestedDate) ? requestedDate : date;
-    if (type === "timeline_day") {
-      if (content.length > 360 || content.length > Math.max(120, diary.length * 0.65)) continue;
-      if (timelineDates.has(itemDate)) continue;
-      timelineDates.add(itemDate);
-    }
-    const dedupeKey = `${type}:${content.replace(/\s+/g, " ").trim().toLowerCase()}`;
-    if (seen.has(dedupeKey)) continue;
-    seen.add(dedupeKey);
-    const scope = temporalScope(raw);
-
-    const tags = [
-      "timeline",
-      `date:${itemDate}`,
-      type,
-      ...cleanTags(raw.tags),
-      `origin:${originId}`,
-      `source_label:${sourceLabel(itemDate)}`,
-      `temporal_scope:${scope}`,
-      splitBatchTag(itemDate),
-      SPLIT_VERSION_TAG
-    ];
-
-    items.push({
-      date: itemDate,
-      type,
-      content,
-      summary: cleanString(raw.summary, 300) || null,
-      importance: clamp(raw.importance, type === "timeline_day" ? 0.55 : 0.7),
-      confidence: clamp(raw.confidence, 0.8),
-      tags: [...new Set(tags)],
-      fact_key: factKeyForItem(raw, type, scope),
-      evidence,
-      temporal_scope: scope,
-      review_required: REVIEW_TYPES.has(type)
-    });
-  }
-
-  return {
-    items,
-    debug: includeDebug
-      ? {
-          model_text_chars: text.length,
-          parsed_kind: parsedKind(parsed),
-          parsed_keys: parsedKeys(parsed),
-          raw_item_count: rawItems.length,
-          accepted_item_count: items.length,
-          raw_type_sample: rawItems.map((item) => rawItemType(item)).filter(Boolean).slice(0, 12),
-          raw_key_sample: rawItems
-            .filter((item) => item && typeof item === "object")
-            .map((item) => Object.keys(item as Record<string, unknown>).slice(0, 12))
-            .slice(0, 6),
-          text_preview: items.length === 0 ? text.slice(0, 500) : undefined
-        }
-      : undefined
-  };
-}
-
-function buildSplitPrompt(record: MemoryRecord, date: string, allowedDates: string[]): string {
-  const diary = record.content.slice(0, MAX_DIARY_CHARS);
-  return [
-    "Split this Chinese diary into searchable long-term memory records.",
-    "Return JSON only. Do not use markdown.",
-    "Never return an empty items array for a formal diary. Always include a timeline_day for the default date.",
-    "Return 2-6 high-signal items. Fewer is better than padding. Do not create one item for every allowed type.",
-    "The goal is one compact day overview plus only the few atomic memories that would be useful in a future search.",
-    "Do not repeat the same scene or conclusion across timeline_day, quote, lesson, insight, and rule records.",
-    "Reject generic quotes, routine details, literary restatements, and interpretations that merely repeat the day overview.",
-    "Each non-timeline item must still be useful when read alone without the source diary.",
-    "Identity is fixed: the diary narrator '我' is KLD; '她', '老婆', and the addressed user are Layla/the user.",
-    "Never store KLD's own behavior, preference, lesson, or project state under a user.* fact_key.",
-    "",
-    "Allowed item types:",
-    "- timeline_day: at most one compact day-level summary.",
-    "- quote: an exact memorable line copied from the diary. Never paraphrase a quote.",
-    "- lesson: a durable lesson explicitly stated by the narrator, not a model interpretation.",
-    "- milestone: a relationship/project milestone.",
-    "- insight: a stable interpretation worth recalling.",
-    "- rule/preference/project_state: only when the diary explicitly states a durable current fact; these will require human review.",
-    "- warmth/event: warm memory or concrete event.",
-    "",
-    "fact_key rules:",
-    "- fact_key is optional.",
-    "- Only set fact_like=true and fact_key for rule, preference, project_state, or lesson records with temporal_scope=current.",
-    "- Never set fact_key for diary, timeline_day, quote, milestone, warmth, or one-off event records.",
-    "- A one-day event, temporary mood, role-play statement, apology, argument, or inference is not a durable current fact.",
-    "- Do not infer a rule, preference, project state, or lesson merely because the diary describes one occurrence.",
-    "- Use lowercase dotted keys with the correct subject, for example kld.preference.response_style, user.preference.food, relationship.rule.honesty, or project.kld.memory_schema.",
-    "",
-    "evidence rules:",
-    "- Every item must include evidence: an exact verbatim substring from the diary, at most 80 Chinese characters.",
-    "- The evidence must directly support the item. Do not invent or paraphrase evidence.",
-    "- For quote items, content itself must also be an exact substring of the diary.",
-    "- temporal_scope must be day, current, or historical. Use current only for facts explicitly stated as still true.",
-    "- Do not generate relations or XYZEM coordinates; downstream maintenance handles them.",
-    `- Each item must set date to one of these dates found in the diary title: ${allowedDates.join(", ")}.`,
-    "- If the diary covers multiple dates, assign each item to the date of its supporting evidence; each date may have at most one timeline_day.",
-    "",
-    "Output schema:",
-    JSON.stringify({
-      items: [
-        {
-          date,
-          type: "timeline_day",
-          content: "Chinese memory text",
-          summary: "optional short summary",
-          importance: 0.65,
-          confidence: 0.85,
-          tags: ["keyword"],
-          evidence: "exact diary substring",
-          temporal_scope: "day",
-          fact_like: false,
-          fact_key: null
-        }
-      ]
-    }),
-    "",
-    `Default date: ${date}`,
-    `Allowed dates: ${allowedDates.join(", ")}`,
-    `Diary memory id: ${record.id}`,
-    "",
-    "Diary:",
-    diary
-  ].join("\n");
 }
 
 async function callSplitModel(env: Env, record: MemoryRecord, date: string, includeDebug: boolean): Promise<{ items: DiarySplitItem[]; debug?: DiarySplitDebug }> {
@@ -516,12 +116,6 @@ async function existingV2SplitCount(db: D1Database, input: { namespace: string; 
     .bind(input.namespace, TIMELINE_SOURCE, `%origin:${input.originId}%`, `%${SPLIT_VERSION_TAG}%`)
     .first<{ count: number }>();
   return row?.count ?? 0;
-}
-
-async function splitItemKey(diaryId: string, item: DiarySplitItem): Promise<string> {
-  const normalized = `${diaryId}\n${item.date}\n${item.type}\n${item.content.replace(/\s+/g, " ").trim().toLowerCase()}`;
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(normalized));
-  return Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, "0")).join("").slice(0, 24);
 }
 
 async function existingSplitItemId(db: D1Database, namespace: string, itemKey: string): Promise<string | null> {
@@ -657,11 +251,6 @@ export async function ensureVerbatimTimelineDay(
   ).bind(input.namespace, memoryId).first<MemoryRecord>();
   if (!memory) throw new Error("timeline_day_repair_not_found");
   return memory;
-}
-
-function cleanImporter(value: string | undefined): string | null {
-  const importer = value?.trim().toLowerCase();
-  return importer && /^[a-z0-9._-]{1,40}$/.test(importer) ? importer : null;
 }
 
 async function diaryAlreadyRescreened(
