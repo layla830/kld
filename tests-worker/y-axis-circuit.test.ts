@@ -215,6 +215,11 @@ describe("Y-axis Worker circuit", () => {
        SET vector_id = ?, vector_synced = 1, response_posture = 'internal update', updated_at = ?
        WHERE namespace = 'default' AND id = ?`
     ).bind("legacy-vector", "2026-07-19T02:00:00.000Z", source.id).run();
+    await env.DB.prepare(
+      `UPDATE memories
+       SET vector_id = ?, vector_synced = 1, response_posture = 'target internal update', updated_at = ?
+       WHERE namespace = 'default' AND id = ?`
+    ).bind("legacy-target-vector", "2026-07-19T02:00:01.000Z", target.id).run();
 
     await expect(approveRelationReviewCandidate(env, formFor(candidate!.id)))
       .resolves.toMatchObject({ axis: "Y", action: "approve", changed: true });
@@ -241,6 +246,38 @@ describe("Y-axis Worker circuit", () => {
       id: source.id,
       patch: { content: "Y semantic revision source changed" }
     });
+
+    await expect(approveRelationReviewCandidate(env, formFor(candidate!.id)))
+      .rejects.toThrow("relation_review_candidate_is_stale");
+  });
+
+  it("does not recover a newer outbox revision for a legacy candidate built from an older snapshot", async () => {
+    const [sourceSnapshot, targetSnapshot] = await Promise.all([
+      createYMemory("Y legacy snapshot source"),
+      createYMemory("Y legacy snapshot target")
+    ]);
+    await updateMemory(env.DB, {
+      namespace: "default",
+      id: targetSnapshot.id,
+      patch: { content: "Y legacy snapshot target changed while the proposal was running" }
+    });
+    const externalKey = await queueRelationReviewCandidate(env, "default", {
+      relationType: "supports",
+      source: sourceSnapshot,
+      target: targetSnapshot,
+      strength: 0.8
+    });
+    const candidate = await env.DB.prepare(
+      `SELECT id, status, payload_json FROM memory_candidates
+       WHERE namespace = 'default' AND external_key = ?`
+    ).bind(externalKey).first<CandidateRow>();
+    expect(candidate).toBeTruthy();
+    const legacyPayload = JSON.parse(candidate!.payload_json) as Record<string, unknown>;
+    delete legacyPayload.source_revision;
+    delete legacyPayload.target_revision;
+    await env.DB.prepare(
+      "UPDATE memory_candidates SET payload_json = ? WHERE namespace = 'default' AND id = ?"
+    ).bind(JSON.stringify(legacyPayload), candidate!.id).run();
 
     await expect(approveRelationReviewCandidate(env, formFor(candidate!.id)))
       .rejects.toThrow("relation_review_candidate_is_stale");

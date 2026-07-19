@@ -94,6 +94,14 @@ async function commitApproval(
     proposal
   });
   const statements: D1PreparedStatement[] = [];
+  const endpointGuard = (memoryId: string, revision: number | null, updatedAt: string): unknown[] => [
+    candidate.namespace,
+    memoryId,
+    revision,
+    revision,
+    revision,
+    updatedAt
+  ];
   if (inserted) {
     statements.push(env.DB.prepare(
       `INSERT INTO memory_relations (
@@ -103,6 +111,16 @@ async function commitApproval(
        WHERE EXISTS (
          SELECT 1 FROM memory_candidates
          WHERE namespace = ? AND id = ? AND status = 'pending' AND action = 'y_relation_review'
+       )
+       AND EXISTS (
+         SELECT 1 FROM memories
+         WHERE namespace = ? AND id = ? AND status = 'active'
+           AND ((? IS NOT NULL AND five_axis_revision = ?) OR (? IS NULL AND updated_at = ?))
+       )
+       AND EXISTS (
+         SELECT 1 FROM memories
+         WHERE namespace = ? AND id = ? AND status = 'active'
+           AND ((? IS NOT NULL AND five_axis_revision = ?) OR (? IS NULL AND updated_at = ?))
        )`
     ).bind(
       relationId,
@@ -114,7 +132,9 @@ async function commitApproval(
       proposal.reason,
       now,
       candidate.namespace,
-      candidate.id
+      candidate.id,
+      ...endpointGuard(proposal.sourceId, proposal.sourceRevision, proposal.sourceUpdatedAt),
+      ...endpointGuard(proposal.targetId, proposal.targetRevision, proposal.targetUpdatedAt)
     ));
   }
   const updateIndex = statements.length;
@@ -122,8 +142,37 @@ async function commitApproval(
     `UPDATE memory_candidates
      SET payload_json = ?, status = 'approved', result_memory_id = ?,
          resolved_at = ?, updated_at = ?
-     WHERE namespace = ? AND id = ? AND status = 'pending' AND action = 'y_relation_review'`
-  ).bind(approvedPayload, relationId, now, now, candidate.namespace, candidate.id));
+     WHERE namespace = ? AND id = ? AND status = 'pending' AND action = 'y_relation_review'
+       AND EXISTS (
+         SELECT 1 FROM memories
+         WHERE namespace = ? AND id = ? AND status = 'active'
+           AND ((? IS NOT NULL AND five_axis_revision = ?) OR (? IS NULL AND updated_at = ?))
+       )
+       AND EXISTS (
+         SELECT 1 FROM memories
+         WHERE namespace = ? AND id = ? AND status = 'active'
+           AND ((? IS NOT NULL AND five_axis_revision = ?) OR (? IS NULL AND updated_at = ?))
+       )
+       AND EXISTS (
+         SELECT 1 FROM memory_relations
+         WHERE namespace = ? AND id = ? AND source_memory_id = ?
+           AND target_memory_id = ? AND relation_type = ?
+       )`
+  ).bind(
+    approvedPayload,
+    relationId,
+    now,
+    now,
+    candidate.namespace,
+    candidate.id,
+    ...endpointGuard(proposal.sourceId, proposal.sourceRevision, proposal.sourceUpdatedAt),
+    ...endpointGuard(proposal.targetId, proposal.targetRevision, proposal.targetUpdatedAt),
+    candidate.namespace,
+    relationId,
+    proposal.sourceId,
+    proposal.targetId,
+    proposal.relationType
+  ));
   statements.push(env.DB.prepare(
     `INSERT INTO memory_events (id, namespace, event_type, memory_id, payload_json, created_at)
      SELECT ?, ?, 'y_relation_approved', ?, ?, ?
@@ -169,24 +218,48 @@ async function readApprovedResult(
   };
 }
 
-async function legacyLinkedRevisions(
+async function legacyRevision(
   db: D1Database,
   candidate: MemoryCandidateRecord,
-  proposal: RelationProposal
-): Promise<Map<string, number>> {
-  if (proposal.sourceRevision !== null && proposal.targetRevision !== null) return new Map();
-  const result = await db.prepare(
-    `SELECT memory_id, memory_revision
+  memoryId: string,
+  expectedUpdatedAt: string
+): Promise<number | null> {
+  const linked = await db.prepare(
+    `SELECT memory_revision
      FROM memory_candidate_axis_runs
      WHERE namespace = ? AND candidate_external_key = ? AND axis = 'Y'
-       AND memory_id IN (?, ?)`
+       AND memory_id = ?
+     ORDER BY memory_revision DESC
+     LIMIT 1`
   ).bind(
     candidate.namespace,
     candidate.external_key,
-    proposal.sourceId,
-    proposal.targetId
-  ).all<{ memory_id: string; memory_revision: number }>();
-  return new Map((result.results ?? []).map((row) => [row.memory_id, row.memory_revision]));
+    memoryId
+  ).first<{ memory_revision: number }>();
+  if (linked?.memory_revision) return linked.memory_revision;
+
+  const historical = await db.prepare(
+    `SELECT memory_revision
+     FROM memory_five_axis_outbox
+     WHERE namespace = ? AND memory_id = ?
+       AND memory_updated_at <= ? AND created_at <= ?
+     ORDER BY memory_revision DESC
+     LIMIT 1`
+  ).bind(candidate.namespace, memoryId, expectedUpdatedAt, candidate.created_at)
+    .first<{ memory_revision: number }>();
+  return historical?.memory_revision ?? null;
+}
+
+async function resolveProposalRevisions(
+  db: D1Database,
+  candidate: MemoryCandidateRecord,
+  proposal: RelationProposal
+): Promise<RelationProposal> {
+  const [sourceRevision, targetRevision] = await Promise.all([
+    proposal.sourceRevision ?? legacyRevision(db, candidate, proposal.sourceId, proposal.sourceUpdatedAt),
+    proposal.targetRevision ?? legacyRevision(db, candidate, proposal.targetId, proposal.targetUpdatedAt)
+  ]);
+  return { ...proposal, sourceRevision, targetRevision };
 }
 
 function endpointIsStale(
@@ -200,6 +273,24 @@ function endpointIsStale(
     : memory.updated_at !== expectedUpdatedAt;
 }
 
+async function resolveApprovalFailure(
+  env: Env,
+  candidate: MemoryCandidateRecord,
+  proposal: RelationProposal
+): Promise<RelationReviewResult> {
+  const approved = await readApprovedResult(env, candidate.namespace, candidate.id);
+  if (approved) return approved;
+  const [source, target] = await Promise.all([
+    getMemoryById(env.DB, { namespace: candidate.namespace, id: proposal.sourceId }),
+    getMemoryById(env.DB, { namespace: candidate.namespace, id: proposal.targetId })
+  ]);
+  if (endpointIsStale(source, proposal.sourceRevision, proposal.sourceUpdatedAt)
+    || endpointIsStale(target, proposal.targetRevision, proposal.targetUpdatedAt)) {
+    throw new Error("relation_review_candidate_is_stale");
+  }
+  throw new Error("relation_review_candidate_changed");
+}
+
 export async function approveRelationReviewCandidate(env: Env, form: FormData): Promise<RelationReviewResult | null> {
   const id = readFormText(form, "id");
   if (!id) return null;
@@ -209,15 +300,13 @@ export async function approveRelationReviewCandidate(env: Env, form: FormData): 
   const proposal = proposalOf(payloadOf(candidate.payload_json));
   if (!proposal) return null;
 
+  const resolvedProposal = await resolveProposalRevisions(env.DB, candidate, proposal);
   const [source, target] = await Promise.all([
     getMemoryById(env.DB, { namespace, id: proposal.sourceId }),
     getMemoryById(env.DB, { namespace, id: proposal.targetId })
   ]);
-  const linkedRevisions = await legacyLinkedRevisions(env.DB, candidate, proposal);
-  const sourceRevision = proposal.sourceRevision ?? linkedRevisions.get(proposal.sourceId) ?? null;
-  const targetRevision = proposal.targetRevision ?? linkedRevisions.get(proposal.targetId) ?? null;
-  if (endpointIsStale(source, sourceRevision, proposal.sourceUpdatedAt)
-    || endpointIsStale(target, targetRevision, proposal.targetUpdatedAt)) {
+  if (endpointIsStale(source, resolvedProposal.sourceRevision, proposal.sourceUpdatedAt)
+    || endpointIsStale(target, resolvedProposal.targetRevision, proposal.targetUpdatedAt)) {
     throw new Error("relation_review_candidate_is_stale");
   }
 
@@ -226,11 +315,9 @@ export async function approveRelationReviewCandidate(env: Env, form: FormData): 
   if (!relation) {
     const deterministicId = `rel_yreview_${candidate.id}`;
     try {
-      const changed = await commitApproval(env, candidate, proposal, deterministicId, true);
+      const changed = await commitApproval(env, candidate, resolvedProposal, deterministicId, true);
       if (!changed) {
-        const approved = await readApprovedResult(env, namespace, candidate.id);
-        if (approved) return approved;
-        throw new Error("relation_review_candidate_changed");
+        return await resolveApprovalFailure(env, candidate, resolvedProposal);
       }
       return { axis: "Y", action: "approve", relationId: deterministicId, changed: true };
     } catch (error) {
@@ -239,10 +326,8 @@ export async function approveRelationReviewCandidate(env: Env, form: FormData): 
     }
   }
 
-  if (!await commitApproval(env, candidate, proposal, relation.id, inserted)) {
-    const approved = await readApprovedResult(env, namespace, candidate.id);
-    if (approved) return approved;
-    throw new Error("relation_review_candidate_changed");
+  if (!await commitApproval(env, candidate, resolvedProposal, relation.id, inserted)) {
+    return await resolveApprovalFailure(env, candidate, resolvedProposal);
   }
   return { axis: "Y", action: "approve", relationId: relation.id, changed: false };
 }

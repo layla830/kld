@@ -82,7 +82,13 @@ function candidateFor(source: MemoryRecord, target: MemoryRecord): MemoryCandida
   };
 }
 
-function harness(options: { failApprovalUpdate?: boolean; concurrentApprovalOnRetry?: boolean } = {}) {
+function harness(options: {
+  failApprovalUpdate?: boolean;
+  concurrentApprovalOnRetry?: boolean;
+  semanticChangeBeforeBatch?: boolean;
+  existingRelation?: boolean;
+  deleteExistingRelationBeforeBatch?: boolean;
+} = {}) {
   const source = endpoint("mem_a", "2026-07-15T00:00:01.000Z");
   const target = endpoint("mem_b", "2026-07-15T00:00:02.000Z");
   const candidate = candidateFor(source, target);
@@ -90,6 +96,26 @@ function harness(options: { failApprovalUpdate?: boolean; concurrentApprovalOnRe
   const relations = new Map<string, MemoryRelationRecord>();
   const events: string[] = [];
   let proposalRelationReads = 0;
+  let injectedSemanticChange = false;
+  if (options.existingRelation) {
+    relations.set("rel_existing", {
+      id: "rel_existing",
+      namespace: "default",
+      source_memory_id: source.id,
+      target_memory_id: target.id,
+      relation_type: "supports",
+      strength: 0.8,
+      reason: "existing relation",
+      created_at: source.updated_at
+    });
+  }
+
+  function endpointsMatchCandidate(): boolean {
+    const payload = JSON.parse(candidate.payload_json) as Record<string, unknown>;
+    return source.status === "active" && target.status === "active"
+      && source.five_axis_revision === payload.source_revision
+      && target.five_axis_revision === payload.target_revision;
+  }
 
   function statement(sql: string, args: unknown[]) {
     return {
@@ -139,7 +165,7 @@ function harness(options: { failApprovalUpdate?: boolean; concurrentApprovalOnRe
         }
         if (sql.includes("INSERT INTO memory_relations")) {
           if (options.concurrentApprovalOnRetry) throw new Error("UNIQUE constraint failed");
-          if (candidate.status !== "pending") return { meta: { changes: 0 } };
+          if (candidate.status !== "pending" || !endpointsMatchCandidate()) return { meta: { changes: 0 } };
           const duplicate = [...relations.values()].some((relation) => relation.namespace === args[1]
             && relation.source_memory_id === args[2] && relation.target_memory_id === args[3]
             && relation.relation_type === args[4]);
@@ -160,7 +186,8 @@ function harness(options: { failApprovalUpdate?: boolean; concurrentApprovalOnRe
         if (sql.trim().startsWith("UPDATE memory_candidates")
           && sql.includes("status = 'approved', result_memory_id = ?")) {
           if (options.failApprovalUpdate) throw new Error("injected approval failure");
-          if (candidate.status !== "pending") return { meta: { changes: 0 } };
+          if (candidate.status !== "pending" || !endpointsMatchCandidate()
+            || !relations.has(String(args[1]))) return { meta: { changes: 0 } };
           candidate.payload_json = String(args[0]);
           candidate.status = "approved";
           candidate.result_memory_id = String(args[1]);
@@ -194,6 +221,13 @@ function harness(options: { failApprovalUpdate?: boolean; concurrentApprovalOnRe
       return { bind: (...args: unknown[]) => statement(sql, args) };
     },
     async batch(statements: Array<ReturnType<typeof statement>>) {
+      if (options.semanticChangeBeforeBatch && !injectedSemanticChange) {
+        injectedSemanticChange = true;
+        source.content = "changed between validation and commit";
+        source.five_axis_revision = (source.five_axis_revision ?? 1) + 1;
+        source.updated_at = "2026-07-15T00:00:03.000Z";
+      }
+      if (options.deleteExistingRelationBeforeBatch) relations.delete("rel_existing");
       const candidateBefore = { ...candidate };
       const relationsBefore = new Map(relations);
       const eventsBefore = [...events];
@@ -265,5 +299,29 @@ describe("Y relation review actions", () => {
     });
     expect(state.candidate.status).toBe("approved");
     expect(state.relations.size).toBe(1);
+  });
+
+  it("rejects a semantic change that lands after validation but before the approval batch", async () => {
+    const state = harness({ semanticChangeBeforeBatch: true });
+    const form = new FormData();
+    form.set("id", state.candidate.id);
+
+    await expect(approveRelationReviewCandidate(state.env, form))
+      .rejects.toThrow("relation_review_candidate_is_stale");
+    expect(state.candidate.status).toBe("pending");
+    expect(state.relations.size).toBe(0);
+    expect(state.events).toEqual([]);
+  });
+
+  it("does not approve a reused relation that disappears before the approval batch", async () => {
+    const state = harness({ existingRelation: true, deleteExistingRelationBeforeBatch: true });
+    const form = new FormData();
+    form.set("id", state.candidate.id);
+
+    await expect(approveRelationReviewCandidate(state.env, form))
+      .rejects.toThrow("relation_review_candidate_changed");
+    expect(state.candidate.status).toBe("pending");
+    expect(state.relations.size).toBe(0);
+    expect(state.events).toEqual([]);
   });
 });
