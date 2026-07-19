@@ -88,7 +88,9 @@ const fiveAxisFacts = fs.readFileSync("src/memory/fiveAxis/zFacts.ts", "utf8");
 const fiveAxisNightly = fs.readFileSync("src/memory/fiveAxis/nightly.ts", "utf8");
 const recallMetabolismShadow = fs.readFileSync("src/memory/recallMetabolismShadow.ts", "utf8");
 const fiveAxisProjection = fs.readFileSync("src/memory/fiveAxis/projection.ts", "utf8");
+const fiveAxisStatuses = fs.readFileSync("src/db/fiveAxisStatuses.ts", "utf8");
 const fiveAxisOutboxMigration = fs.readFileSync("migrations/20260713_memory_five_axis_outbox.sql", "utf8");
+const fiveAxisOutboxStatusMigration = fs.readFileSync("migrations/20260719_five_axis_outbox_status_check.sql", "utf8");
 const fiveAxisDependencyMigration = fs.readFileSync("migrations/20260716_five_axis_dependency_triggers.sql", "utf8");
 const eAxisRuntimeMigration = fs.readFileSync("migrations/20260718_e_axis_runtime_state.sql", "utf8");
 const recallSignalMigration = fs.readFileSync("migrations/20260719_recall_signal_rollups.sql", "utf8");
@@ -474,6 +476,18 @@ const checks = [
       queueProducer.includes("enqueuePendingFiveAxisProjections") &&
       queueConsumer.includes('case "memory_five_axis_projection"') &&
       workerIndex.includes("enqueuePendingFiveAxisProjections(env, 5)"),
+  ],
+  [
+    "Ingest safety: outbox statuses share one typed contract and fail closed in D1",
+    fiveAxisStatuses.includes("FIVE_AXIS_OUTBOX_STATUSES") &&
+      fiveAxisStatuses.includes("FIVE_AXIS_OUTBOX_TRANSITIONS") &&
+      fiveAxisOutboxStatusMigration.includes(
+        "CHECK (status IN ('pending', 'queued', 'failed', 'dead_letter', 'completed', 'skipped'))"
+      ) &&
+      fiveAxisOutboxStatusMigration.includes("idx_memory_five_axis_outbox_due") &&
+      fiveAxisOutboxStatusMigration.includes("trg_memories_five_axis_after_material_update") &&
+      queueProducer.includes("claimFiveAxisOutboxForDelivery") &&
+      queueConsumer.includes("claimFiveAxisOutboxForExecution"),
   ],
   [
     "Ingest behavior: the default test command runs the Workers runtime circuit",

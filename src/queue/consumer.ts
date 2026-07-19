@@ -8,10 +8,11 @@ import { createMemoryEvent } from "../db/memoryEvents";
 import { fetchMemoriesByIds } from "../db/memories";
 import { syncMemoryVector } from "../memory/state";
 import {
+  claimFiveAxisOutboxForExecution,
+  completeFiveAxisOutboxExecution,
+  failFiveAxisOutboxClaim,
   getFiveAxisOutbox,
-  hasNewerFiveAxisOutboxVersion,
-  markFiveAxisOutboxCompleted,
-  markFiveAxisOutboxFailed
+  hasNewerFiveAxisOutboxVersion
 } from "../db/memoryFiveAxisOutbox";
 import { getMemoryById } from "../db/memories";
 import { projectMemoryIntoFiveAxes } from "../memory/fiveAxis/projection";
@@ -19,6 +20,7 @@ import { rebuildTimelineSequenceForMemory } from "../memory/timelineRelations";
 import { loadFiveAxisConfig } from "../config/runtime";
 import { isFiveAxisMemoryTypeEligible } from "../memory/fiveAxis/eligibility";
 import { hasSuccessfulDiarySplit } from "../db/diarySplitState";
+import { FIVE_AXIS_OUTBOX_STATUS } from "../db/fiveAxisStatuses";
 
 export async function handleQueueMessage(message: QueueMessage, env: Env): Promise<void> {
   switch (message.type) {
@@ -82,7 +84,14 @@ export async function handleQueueMessage(message: QueueMessage, env: Env): Promi
     case "memory_five_axis_projection": {
       if (!loadFiveAxisConfig(env).enabled) return;
       const outbox = await getFiveAxisOutbox(env.DB, message.outboxId);
-      if (!outbox || outbox.status === "completed" || outbox.status === "skipped") return;
+      if (!outbox || outbox.status !== FIVE_AXIS_OUTBOX_STATUS.QUEUED) return;
+      if (!Number.isInteger(message.outboxAttempt) || message.outboxAttempt < 1 || !message.outboxQueuedAt) return;
+      const execution = await claimFiveAxisOutboxForExecution(env.DB, {
+        id: message.outboxId,
+        attempt: message.outboxAttempt,
+        queuedAt: message.outboxQueuedAt
+      });
+      if (!execution) return;
       const outboxRevision = outbox.memory_revision ?? 1;
       const messageRevision = message.memoryRevision ?? outboxRevision;
       if (
@@ -91,7 +100,7 @@ export async function handleQueueMessage(message: QueueMessage, env: Env): Promi
         || outbox.memory_updated_at !== message.memoryUpdatedAt
         || outboxRevision !== messageRevision
       ) {
-        await markFiveAxisOutboxCompleted(env.DB, message.outboxId, "skipped", {
+        await completeFiveAxisOutboxExecution(env.DB, execution, "skipped", {
           reason: "outbox_message_identity_mismatch",
           expected: {
             namespace: outbox.namespace,
@@ -111,7 +120,7 @@ export async function handleQueueMessage(message: QueueMessage, env: Env): Promi
       const memory = await getMemoryById(env.DB, { namespace: message.namespace, id: message.memoryId });
       if (!memory || memory.status !== "active" || !isFiveAxisMemoryTypeEligible(memory.type)) {
         if (memory) await rebuildTimelineSequenceForMemory(env.DB, memory);
-        await markFiveAxisOutboxCompleted(env.DB, message.outboxId, "skipped", {
+        await completeFiveAxisOutboxExecution(env.DB, execution, "skipped", {
           reason: !memory
             ? "memory_not_found"
             : memory.status !== "active" ? "memory_not_active" : "memory_type_not_projectable"
@@ -120,7 +129,7 @@ export async function handleQueueMessage(message: QueueMessage, env: Env): Promi
       }
       const currentRevision = memory.five_axis_revision ?? 1;
       if (currentRevision !== outboxRevision) {
-        await markFiveAxisOutboxCompleted(env.DB, message.outboxId, "skipped", {
+        await completeFiveAxisOutboxExecution(env.DB, execution, "skipped", {
           reason: "memory_revision_mismatch",
           expected: outboxRevision,
           current: currentRevision
@@ -128,11 +137,12 @@ export async function handleQueueMessage(message: QueueMessage, env: Env): Promi
         return;
       }
       if (await hasNewerFiveAxisOutboxVersion(env.DB, outbox)) {
-        await markFiveAxisOutboxCompleted(env.DB, message.outboxId, "skipped", {
+        await completeFiveAxisOutboxExecution(env.DB, execution, "skipped", {
           reason: "superseded_by_newer_memory_version"
         });
         return;
       }
+      let failureRecorded = false;
       try {
         const result = await projectMemoryIntoFiveAxes(env, {
           namespace: message.namespace,
@@ -146,15 +156,15 @@ export async function handleQueueMessage(message: QueueMessage, env: Env): Promi
             result.deferredAxes.length ? `deferred=${result.deferredAxes.join(",")}` : ""
           ].filter(Boolean).join(";");
           const error = new Error(`five_axis_stages_incomplete:${detail}`);
-          await markFiveAxisOutboxFailed(env.DB, message.outboxId, error, result);
+          await failFiveAxisOutboxClaim(env.DB, execution, error, result);
+          failureRecorded = true;
           throw error;
         }
-        await markFiveAxisOutboxCompleted(env.DB, message.outboxId, result ? "completed" : "skipped", result ?? {
+        await completeFiveAxisOutboxExecution(env.DB, execution, result ? "completed" : "skipped", result ?? {
           reason: "memory_not_projectable"
         });
       } catch (error) {
-        const latest = await getFiveAxisOutbox(env.DB, message.outboxId);
-        if (latest?.status !== "failed") await markFiveAxisOutboxFailed(env.DB, message.outboxId, error);
+        if (!failureRecorded) await failFiveAxisOutboxClaim(env.DB, execution, error);
         throw error;
       }
       return;

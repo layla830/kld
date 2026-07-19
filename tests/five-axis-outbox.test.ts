@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { hasNewerFiveAxisOutboxVersion } from "../src/db/memoryFiveAxisOutbox";
 import { handleQueueMessage } from "../src/queue/consumer";
 import { enqueuePendingFiveAxisProjections } from "../src/queue/producer";
@@ -24,10 +24,86 @@ describe("five-axis outbox policy", () => {
       memoryUpdatedAt: "2026-07-15T00:00:00.000Z",
       memoryRevision: 1,
       outboxId: 1,
+      outboxAttempt: 1,
+      outboxQueuedAt: "2026-07-15T00:00:00.000Z",
       idempotencyKey: "five-axis:1:v1"
     };
     const env = { ENABLE_FIVE_AXIS: "false", DB: inaccessibleDb() } as Env;
     await expect(handleQueueMessage(message, env)).resolves.toBeUndefined();
+  });
+
+  it("does not execute a late queue delivery after the outbox becomes dead letter", async () => {
+    const db = {
+      prepare(sql: string) {
+        expect(sql).toBe("SELECT * FROM memory_five_axis_outbox WHERE id = ?");
+        return {
+          bind() {
+            return { first: async () => ({ id: 1, status: "dead_letter" }) };
+          }
+        };
+      }
+    } as unknown as D1Database;
+    const message: MemoryFiveAxisProjectionQueueMessage = {
+      type: "memory_five_axis_projection",
+      namespace: "default",
+      memoryId: "mem_dead",
+      memoryUpdatedAt: "2026-07-19T00:00:00.000Z",
+      memoryRevision: 1,
+      outboxId: 1,
+      outboxAttempt: 5,
+      outboxQueuedAt: "2026-07-19T00:00:00.000Z",
+      idempotencyKey: "five-axis:1:r1"
+    };
+
+    await expect(handleQueueMessage(message, { DB: db, ENABLE_FIVE_AXIS: "true" } as Env))
+      .resolves.toBeUndefined();
+  });
+
+  it("does not project when the finalizer wins after the consumer read", async () => {
+    const vectorQuery = vi.fn(async () => ({ matches: [] }));
+    const outbox = {
+      id: 2,
+      status: "queued",
+      attempts: 5,
+      queued_at: "2026-07-19T00:00:00.000Z"
+    };
+    const db = {
+      prepare(sql: string) {
+        return {
+          bind() {
+            if (sql === "SELECT * FROM memory_five_axis_outbox WHERE id = ?") {
+              return { first: async () => outbox };
+            }
+            if (sql.includes("SET queued_at = ?, updated_at = ?")) {
+              return { run: async () => {
+                outbox.status = "dead_letter";
+                return { meta: { changes: 0 } };
+              } };
+            }
+            throw new Error(`projection continued after execution claim failed: ${sql}`);
+          }
+        };
+      }
+    } as unknown as D1Database;
+    const message: MemoryFiveAxisProjectionQueueMessage = {
+      type: "memory_five_axis_projection",
+      namespace: "default",
+      memoryId: "mem_race",
+      memoryUpdatedAt: "2026-07-19T00:00:00.000Z",
+      memoryRevision: 1,
+      outboxId: 2,
+      outboxAttempt: 5,
+      outboxQueuedAt: outbox.queued_at,
+      idempotencyKey: "five-axis:2:r1"
+    };
+
+    await expect(handleQueueMessage(message, {
+      DB: db,
+      ENABLE_FIVE_AXIS: "true",
+      VECTORIZE: { query: vectorQuery }
+    } as unknown as Env)).resolves.toBeUndefined();
+    expect(outbox.status).toBe("dead_letter");
+    expect(vectorQuery).not.toHaveBeenCalled();
   });
 
   it("detects a newer durable outbox version for the same memory", async () => {
@@ -61,7 +137,9 @@ describe("five-axis outbox policy", () => {
       memory_id: "mem_1",
       memory_updated_at: "2026-07-15T00:00:00.000Z",
       memory_revision: 1,
-      status: "queued"
+      status: "queued",
+      attempts: 1,
+      queued_at: "2026-07-15T00:00:00.000Z"
     };
     const db = {
       prepare(sql: string) {
@@ -72,6 +150,9 @@ describe("five-axis outbox policy", () => {
             }
             if (sql === "SELECT * FROM memories WHERE namespace = ? AND id = ?") {
               return { first: async () => ({ id: "mem_1", status: "active", five_axis_revision: 2 }) };
+            }
+            if (sql.includes("SET queued_at = ?, updated_at = ?")) {
+              return { run: async () => ({ meta: { changes: 1 } }) };
             }
             if (sql.startsWith("UPDATE memory_five_axis_outbox")) {
               return {
@@ -93,6 +174,8 @@ describe("five-axis outbox policy", () => {
       memoryUpdatedAt: outbox.memory_updated_at,
       memoryRevision: outbox.memory_revision,
       outboxId: outbox.id,
+      outboxAttempt: outbox.attempts,
+      outboxQueuedAt: outbox.queued_at,
       idempotencyKey: "five-axis:11:r1"
     };
 
@@ -108,7 +191,9 @@ describe("five-axis outbox policy", () => {
       namespace: "default",
       memory_id: "mem_1",
       memory_updated_at: "2026-07-15T00:00:00.000Z",
-      status: "queued"
+      status: "queued",
+      attempts: 1,
+      queued_at: "2026-07-15T00:00:00.000Z"
     };
     const db = {
       prepare(sql: string) {
@@ -122,6 +207,9 @@ describe("five-axis outbox policy", () => {
             }
             if (sql.includes("id > ?")) {
               return { first: async () => ({ id: 12 }) };
+            }
+            if (sql.includes("SET queued_at = ?, updated_at = ?")) {
+              return { run: async () => ({ meta: { changes: 1 } }) };
             }
             if (sql.startsWith("UPDATE memory_five_axis_outbox")) {
               return {
@@ -142,6 +230,8 @@ describe("five-axis outbox policy", () => {
       memoryId: "mem_1",
       memoryUpdatedAt: outbox.memory_updated_at,
       outboxId: outbox.id,
+      outboxAttempt: outbox.attempts,
+      outboxQueuedAt: outbox.queued_at,
       idempotencyKey: "five-axis:11:legacy"
     };
 
@@ -160,7 +250,9 @@ describe("five-axis outbox policy", () => {
       memory_id: "mem_1",
       memory_updated_at: "2026-07-15T00:00:00.000Z",
       memory_revision: 2,
-      status: "queued"
+      status: "queued",
+      attempts: 1,
+      queued_at: "2026-07-15T00:00:00.000Z"
     };
     const excluded = {
       id: "mem_1",
@@ -194,6 +286,9 @@ describe("five-axis outbox policy", () => {
                 return { meta: { changes: 1 } };
               } };
             }
+            if (sql.includes("SET queued_at = ?, updated_at = ?")) {
+              return { run: async () => ({ meta: { changes: 1 } }) };
+            }
             if (sql.startsWith("UPDATE memory_five_axis_outbox")) {
               return { run: async () => {
                 completion = JSON.parse(String(values[3])) as Record<string, unknown>;
@@ -216,6 +311,8 @@ describe("five-axis outbox policy", () => {
       memoryUpdatedAt: outbox.memory_updated_at,
       memoryRevision: outbox.memory_revision,
       outboxId: outbox.id,
+      outboxAttempt: outbox.attempts,
+      outboxQueuedAt: outbox.queued_at,
       idempotencyKey: "five-axis:13:r2"
     };
 

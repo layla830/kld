@@ -18,6 +18,8 @@ interface OutboxRow {
   memory_updated_at: string;
   memory_revision: number;
   status: string;
+  attempts: number;
+  queued_at: string | null;
 }
 
 interface CandidateRow {
@@ -117,6 +119,8 @@ describe("five-axis Worker circuit", () => {
       memoryUpdatedAt: queuedOutbox!.memory_updated_at,
       memoryRevision: queuedOutbox!.memory_revision,
       outboxId: queuedOutbox!.id,
+      outboxAttempt: queuedOutbox!.attempts,
+      outboxQueuedAt: queuedOutbox!.queued_at!,
       idempotencyKey: `five-axis:${queuedOutbox!.id}:r${queuedOutbox!.memory_revision}`
     };
     const batch = createMessageBatch<MemoryFiveAxisProjectionQueueMessage>("companion-memory", [{
@@ -307,6 +311,8 @@ describe("five-axis Worker circuit", () => {
         memoryUpdatedAt: outbox.memory_updated_at,
         memoryRevision: outbox.memory_revision,
         outboxId: outbox.id,
+        outboxAttempt: outbox.attempts,
+        outboxQueuedAt: outbox.queued_at!,
         idempotencyKey: `five-axis:${outbox.id}:r${outbox.memory_revision}`
       };
       const projectionBatch = createMessageBatch<MemoryFiveAxisProjectionQueueMessage>("companion-memory", [{
@@ -341,6 +347,8 @@ describe("five-axis Worker circuit", () => {
         memoryUpdatedAt: outbox.memory_updated_at,
         memoryRevision: outbox.memory_revision,
         outboxId: outbox.id,
+        outboxAttempt: outbox.attempts,
+        outboxQueuedAt: outbox.queued_at!,
         idempotencyKey: `five-axis:${outbox.id}:r${outbox.memory_revision}`
       };
       const projectionBatch = createMessageBatch<MemoryFiveAxisProjectionQueueMessage>("companion-memory", [{
