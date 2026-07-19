@@ -13,15 +13,25 @@ vi.mock("../src/memory/state", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../src/memory/state")>();
   return { ...actual, removeMemoryVector: vi.fn(async () => "deleted" as const) };
 });
+vi.mock("../src/db/memoryEvents", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/db/memoryEvents")>();
+  return { ...actual, createMemoryEvent: vi.fn(async () => undefined) };
+});
 
 import { callOpenAICompat } from "../src/proxy/openaiAdapter";
 import { upsertMemoryEmbedding } from "../src/memory/embedding";
 import { removeMemoryVector } from "../src/memory/state";
+import { createMemoryEvent } from "../src/db/memoryEvents";
+import {
+  DIARY_SPLIT_COMPLETE_EVENT,
+  DIARY_SPLIT_INCOMPLETE_EVENT
+} from "../src/db/diarySplitState";
 import {
   dateFromDiary,
   ensureVerbatimTimelineDay,
   splitDiaryMemories
 } from "../src/memory/diarySplit";
+import { parseItemsWithDebug } from "../src/memory/diarySplitParse";
 
 const DIARY_ID = "diary_1";
 const DIARY_DATE = "2026-07-20";
@@ -143,6 +153,7 @@ beforeEach(() => {
   vi.mocked(callOpenAICompat).mockReset();
   vi.mocked(upsertMemoryEmbedding).mockReset();
   vi.mocked(removeMemoryVector).mockReset();
+  vi.mocked(createMemoryEvent).mockReset();
 });
 
 describe("dateFromDiary", () => {
@@ -357,7 +368,7 @@ describe("splitDiaryMemories plan (apply=false)", () => {
     expect(quote.confidence).toBe(0.8);
   });
 
-  it("keeps only one timeline_day per date and rejects over-long summaries", async () => {
+  it("keeps only one timeline_day per date", async () => {
     setLlm(llmResponse([
       {
         date: DIARY_DATE, type: "timeline_day", content: "和KLD一起review记忆库。",
@@ -376,6 +387,41 @@ describe("splitDiaryMemories plan (apply=false)", () => {
 
     const timelineDays = plans[0].items.filter((item) => item.type === "timeline_day");
     expect(timelineDays).toHaveLength(1);
+  });
+
+  it("rejects a timeline_day content beyond the 360-char hard cap at the parser layer", async () => {
+    const overLong = "和KLD一起review记忆库。".repeat(30);
+    expect(overLong.length).toBeGreaterThan(360);
+    const payload = JSON.stringify({
+      items: [
+        { date: DIARY_DATE, type: "timeline_day", content: overLong,
+          evidence: "今天和KLD一起review了记忆库", temporal_scope: "day", fact_key: null }
+      ]
+    });
+
+    const { items } = parseItemsWithDebug(payload, DIARY_DATE, [DIARY_DATE], DIARY_ID, DIARY_CONTENT, false);
+
+    const timelineDays = items.filter((item) => item.type === "timeline_day");
+    expect(timelineDays).toHaveLength(0);
+  });
+
+  it("rejects a timeline_day that exceeds the 65%-of-diary relative cap even under 360 chars", async () => {
+    const shortDiaryContent = "7月20日日记\n今天和KLD一起review了记忆库。";
+    expect(shortDiaryContent.length).toBeLessThan(120);
+    const relativeTooLong = "今天和KLD一起review记忆库，这段内容超过日记长度六成五。".repeat(4);
+    expect(relativeTooLong.length).toBeGreaterThan(120);
+    expect(relativeTooLong.length).toBeLessThan(360);
+    const payload = JSON.stringify({
+      items: [
+        { date: DIARY_DATE, type: "timeline_day", content: relativeTooLong,
+          evidence: "今天和KLD一起review了记忆库", temporal_scope: "day", fact_key: null }
+      ]
+    });
+
+    const { items } = parseItemsWithDebug(payload, DIARY_DATE, [DIARY_DATE], DIARY_ID, shortDiaryContent, false);
+
+    const timelineDays = items.filter((item) => item.type === "timeline_day");
+    expect(timelineDays).toHaveLength(0);
   });
 
   it("skips diaries that already have a successful v2 split event", async () => {
@@ -542,6 +588,24 @@ describe("splitDiaryMemories apply=true", () => {
 
     expect(vi.mocked(upsertMemoryEmbedding)).toHaveBeenCalledTimes(2);
     expect(vi.mocked(removeMemoryVector)).not.toHaveBeenCalled();
+
+    expect(vi.mocked(createMemoryEvent)).toHaveBeenCalledTimes(1);
+    const event = vi.mocked(createMemoryEvent).mock.calls[0][1];
+    expect(event).toMatchObject({
+      namespace: "default",
+      eventType: DIARY_SPLIT_COMPLETE_EVENT,
+      memoryId: DIARY_ID
+    });
+    expect(event.payload).toMatchObject({
+      diary_id: DIARY_ID,
+      date: DIARY_DATE,
+      item_count: 3,
+      replace_importer: null,
+      replaced_ids: []
+    });
+    expect(Array.isArray(event.payload.created_ids)).toBe(true);
+    expect(event.payload.created_ids).toHaveLength(2);
+    expect(event.payload.candidate_keys).toHaveLength(1);
   });
 
   it("reuses an existing split memory id instead of inserting a duplicate", async () => {
@@ -573,6 +637,16 @@ describe("splitDiaryMemories apply=true", () => {
     expect(plans[0].created_ids).toHaveLength(1);
     expect(plans[0].candidate_keys).toEqual([]);
     expect(vi.mocked(upsertMemoryEmbedding)).toHaveBeenCalledTimes(1);
+
+    expect(vi.mocked(createMemoryEvent)).toHaveBeenCalledTimes(1);
+    const event = vi.mocked(createMemoryEvent).mock.calls[0][1];
+    expect(event.eventType).toBe(DIARY_SPLIT_COMPLETE_EVENT);
+    expect(event.payload).toMatchObject({
+      item_count: 1,
+      created_ids: plans[0].created_ids,
+      candidate_keys: []
+    });
+    expect(event.eventType).not.toBe(DIARY_SPLIT_INCOMPLETE_EVENT);
   });
 
   it("rejects an invalid replace_importer shape", async () => {
