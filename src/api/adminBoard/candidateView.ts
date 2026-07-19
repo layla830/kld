@@ -1,12 +1,16 @@
 import type { MemoryCandidateRecord } from "../../db/memoryCandidates";
 import { assessCandidateQuality } from "../../memory/candidateQuality";
 import { canOverrideCandidateValidation } from "../../memory/candidateOverride";
+import {
+  isApprovableCandidateAction,
+  type CandidateAction
+} from "../../memory/candidateActionContract";
 import { attr, htmlEscape } from "./utils";
 
 function parse(text: string): unknown { try { return JSON.parse(text); } catch { return text; } }
 function pretty(value: unknown): string { return typeof value === "string" ? value : JSON.stringify(value, null, 2); }
 
-const ACTIONS: Record<string, { title: string; effect: string; approve: string }> = {
+const ACTIONS = {
   add: { title: "建议新增记忆", effect: "接受后：新增一条长期记忆，不修改旧记忆。", approve: "接受并新增" },
   excerpt: { title: "建议保存关键原话", effect: "接受后：把这段原话保存成一条新的摘录记忆。", approve: "保存为新记忆" },
   update: { title: "建议更新已有记忆", effect: "接受后：用下方新内容修改指定的旧记忆。", approve: "确认更新旧记忆" },
@@ -14,7 +18,7 @@ const ACTIONS: Record<string, { title: string; effect: string; approve: string }
   relation: { title: "建议建立记忆关联", effect: "它只建议连接两条记忆，不会修改记忆正文；目前暂不支持执行。", approve: "暂不支持执行" },
   fact_group: { title: "建议归并为同一事实组", effect: "接受后：组内记忆会共享事实槽，并建立同事实关系；正文不变。", approve: "确认整组归并" },
   diary_split_fact: { title: "日记拆分 · 事实型候选", effect: "接受后：从原日记新增一条可召回的事实型记忆；原日记正文不变。", approve: "核对证据并新增" }
-};
+} satisfies Partial<Record<CandidateAction, { title: string; effect: string; approve: string }>>;
 
 const ERRORS: Record<string, string> = {
   ambiguous_pronoun: "正文中的‘我、你、她’指代不清，需要先改成人名或明确主体。",
@@ -27,6 +31,10 @@ const ERRORS: Record<string, string> = {
   evidence_not_verbatim_in_source_chunks: "候选正文可以保留，但引用证据不是来源关键原话中的逐字片段。",
   missing_chunk_summary: "没有足够完整的对话块摘要支撑这条长期记忆，请核对来源后再决定。"
 };
+
+function isCandidateActionWithPresentation(value: string): value is keyof typeof ACTIONS {
+  return Object.prototype.hasOwnProperty.call(ACTIONS, value);
+}
 
 function sourceQuotes(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
@@ -57,12 +65,18 @@ export function renderMemoryCandidate(candidate: MemoryCandidateRecord): string 
   const content = payload?._kind === "coordinate_backfill"
     ? { before: payload._before, proposed: Object.fromEntries(Object.entries(payload).filter(([key]) => !key.startsWith("_"))) }
     : payload?.content ?? payload?.quote ?? payload?.reason ?? "（没有候选正文）";
-  const action = ACTIONS[candidate.action] || { title: "待审核候选", effect: "请核对内容和来源。", approve: "接受" };
+  const action = isCandidateActionWithPresentation(candidate.action)
+    ? ACTIONS[candidate.action]
+    : { title: "待审核候选", effect: "请核对内容和来源。", approve: "接受" };
   const quality = assessCandidateQuality(candidate);
   const blocked = candidate.status !== "pending";
   const targetAvailable = !(candidate.action === "update" || candidate.action === "delete") || Boolean(candidate.target_content);
-  const canApprove = !blocked && candidate.action !== "relation" && targetAvailable;
-  const canOverride = canOverrideCandidateValidation(candidate) && targetAvailable;
+  const approvable = isApprovableCandidateAction(candidate.action);
+  const canApprove = !blocked && approvable && targetAvailable;
+  const canOverride = approvable && canOverrideCandidateValidation(candidate) && targetAvailable;
+  const disabledLabel = !approvable
+    ? candidate.action === "relation" ? "关联功能尚未开放" : "此类候选需使用专用审核入口"
+    : blocked ? "此类校验不能人工越过" : "找不到旧记忆，不能执行";
   const subject = candidate.subject ? `<span class="tag-pill">主体：${htmlEscape(candidate.subject)}</span>` : "";
   const sourceLabel = candidate.action === "diary_split_fact" ? "来自日记拆分" : "来自 VPS Dream";
   const status = blocked ? '<span class="tag-pill">校验未通过，等待人工决定</span>' : '<span class="tag-pill">等待你决定</span>';
@@ -89,6 +103,6 @@ export function renderMemoryCandidate(candidate: MemoryCandidateRecord): string 
     ? `${batchChoice}<form method="POST" action="/admin/memories/candidates/approve" onsubmit="return confirm('${attr(action.effect)}')"><input type="hidden" name="id" value="${attr(candidate.id)}"><button class="action-btn approve-review">${htmlEscape(action.approve)}</button></form>`
     : canOverride
       ? `<form method="POST" action="/admin/memories/candidates/approve" onsubmit="return confirm('这条候选仍有校验警告。确认你已核对正文与来源，并以人工决定执行；系统会记录本次越过校验。')"><input type="hidden" name="id" value="${attr(candidate.id)}"><input type="hidden" name="override_validation" value="1"><button class="action-btn approve-review">人工确认并通过</button></form>`
-      : `<button class="action-btn" disabled>${candidate.action === "relation" ? "关联功能尚未开放" : blocked ? "此类校验不能人工越过" : "找不到旧记忆，不能执行"}</button>`;
+      : `<button class="action-btn" disabled>${disabledLabel}</button>`;
   return `<article class="memory-card review-card ${blocked ? "muted" : ""}"><div class="message-header"><strong>${htmlEscape(action.title)}</strong></div><div class="memory-meta"><span class="score-pill">${htmlEscape(sourceLabel)}</span>${subject}${status}${qualityPill}</div><div class="lmc-explain"><p><strong>这条会做什么：</strong>${htmlEscape(action.effect)}</p></div><div class="message-content" style="white-space:pre-wrap">${htmlEscape(pretty(content))}</div>${candidate.action === "diary_split_fact" ? `<div class="review-warning"><strong>原文证据：</strong>${htmlEscape(pretty(payload.evidence || "（缺失）"))}</div>` : ""}${qualityWarning}${warning}${evidenceRepair}${comparison(candidate, content)}<details class="memory-detail"><summary>为什么生成这条？查看来源对话摘要</summary><div class="char-count">来源片段：${htmlEscape(pretty(sourceIds))}</div><pre style="white-space:pre-wrap;overflow-wrap:anywhere">${htmlEscape(pretty(chunks))}</pre><details><summary>查看技术载荷</summary><pre style="white-space:pre-wrap;overflow-wrap:anywhere">${htmlEscape(pretty(payload))}</pre></details></details><div class="actions review-actions">${qualityChoice}${approve}<form method="POST" action="/admin/memories/candidates/reject" onsubmit="return confirm('确认拒绝这条建议？不会修改任何记忆。')"><input type="hidden" name="id" value="${attr(candidate.id)}"><button class="action-btn delete">拒绝，不做改动</button></form></div><div class="char-count">${htmlEscape(candidate.dream_date)} · ${htmlEscape(candidate.id)}</div></article>`;
 }

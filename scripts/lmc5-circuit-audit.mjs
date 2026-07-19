@@ -54,6 +54,7 @@ const legacyRelations = fs.readFileSync("src/memory/legacyRelations.ts", "utf8")
 const diarySplit = fs.readFileSync("src/memory/diarySplit.ts", "utf8");
 const diarySplitState = fs.readFileSync("src/db/diarySplitState.ts", "utf8");
 const candidateActions = fs.readFileSync("src/api/adminBoard/candidateActions.ts", "utf8");
+const candidateActionContract = fs.readFileSync("src/memory/candidateActionContract.ts", "utf8");
 const candidateView = fs.readFileSync("src/api/adminBoard/candidateView.ts", "utf8");
 const adminBoard = fs.readFileSync("src/api/adminBoard.ts", "utf8");
 const adminView = fs.readFileSync("src/api/adminBoard/view.ts", "utf8");
@@ -250,7 +251,8 @@ const checks = [
     "Diary split: fact-like items are review-first with approval evidence revalidation",
     diarySplit.includes('action: "diary_split_fact"') &&
       diarySplit.includes("REVIEW_TYPES.has(type)") &&
-      candidateActions.includes('candidate.action === "diary_split_fact"') &&
+      candidateActions.includes('case "diary_split_fact"') &&
+      candidateActions.includes("approveDiarySplitFact") &&
       candidateActions.includes("!diary.content.includes(evidence)") &&
       candidateView.includes("原文证据："),
   ],
@@ -560,9 +562,17 @@ const checks = [
     fs
       .readFileSync("src/memory/factGroups.ts", "utf8")
       .includes('action:"fact_group"') &&
-      fs
-        .readFileSync("src/api/adminBoard/candidateActions.ts", "utf8")
-        .includes('candidate.action === "fact_group"'),
+      candidateActions.includes('case "fact_group"') &&
+      candidateActions.includes("approveFactGroup"),
+  ],
+  [
+    "Admin: generic candidate approval is typed and exhaustively dispatched",
+    candidateActionContract.includes("APPROVABLE_CANDIDATE_ACTIONS") &&
+      candidateActionContract.includes("type ApprovableCandidateAction") &&
+      candidateActions.includes("isApprovableCandidateAction(candidate.action)") &&
+      candidateActions.includes("return assertNever(action)") &&
+      candidateView.includes("isApprovableCandidateAction(candidate.action)") &&
+      candidateActions.includes("commitMemoryCandidateApproval"),
   ],
   [
     "Z: merge supersede creates a visible review instead of mutating facts",

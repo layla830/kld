@@ -2,6 +2,7 @@ import type { MemoryRecord } from "../types";
 import { newId } from "../utils/ids";
 import { nowIso } from "../utils/time";
 import { fetchMemoriesByIds } from "./memories";
+import type { MemoryMutationGuard } from "./memories";
 
 const D1_BIND_LIMIT = 90;
 
@@ -112,21 +113,44 @@ export async function createMemoryRelation(
     reason?: string | null;
   }
 ): Promise<boolean> {
-  if (input.sourceMemoryId === input.targetMemoryId) return false;
+  const statement = prepareMemoryRelationInsert(db, input);
+  if (!statement) return false;
+  const result = await statement.run();
+  return Boolean(result.meta.changes);
+}
+
+export function prepareMemoryRelationInsert(
+  db: D1Database,
+  input: {
+    namespace: string;
+    sourceMemoryId: string;
+    targetMemoryId: string;
+    relationType: string;
+    strength?: number;
+    reason?: string | null;
+  },
+  guard?: MemoryMutationGuard
+): D1PreparedStatement | null {
+  if (input.sourceMemoryId === input.targetMemoryId) return null;
   const pair = normalizeRelationPair(input.sourceMemoryId, input.targetMemoryId, input.relationType);
-  if (!SAFE_RELATION_TYPES.has(pair.relationType)) return false;
+  if (!SAFE_RELATION_TYPES.has(pair.relationType)) return null;
   const strength = typeof input.strength === "number" && Number.isFinite(input.strength) ? clamp(input.strength, 0, 1) : 1;
 
-  const result = await db
-    .prepare(
+  return db.prepare(
       `INSERT OR IGNORE INTO memory_relations (
         id, namespace, source_memory_id, target_memory_id, relation_type, strength, reason, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-    )
-    .bind(newId("rel"), input.namespace, pair.sourceMemoryId, pair.targetMemoryId, pair.relationType, strength, input.reason ?? null, nowIso())
-    .run();
-
-  return Boolean(result.meta.changes);
+      ) SELECT ?, ?, ?, ?, ?, ?, ?, ?${guard ? ` WHERE ${guard.sql}` : ""}`
+    ).bind(
+      newId("rel"),
+      input.namespace,
+      pair.sourceMemoryId,
+      pair.targetMemoryId,
+      pair.relationType,
+      strength,
+      input.reason ?? null,
+      nowIso(),
+      ...(guard?.binds ?? [])
+    );
 }
 
 export async function getMemoryRelationById(

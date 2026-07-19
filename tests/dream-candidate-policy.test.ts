@@ -74,4 +74,29 @@ describe("candidate validation override boundary", () => {
     expect(html).toContain("人工确认并通过");
     expect(html).toContain('name="override_validation" value="1"');
   });
+
+  it("does not render a generic approve form for an unknown action", () => {
+    const record: MemoryCandidateRecord = {
+      id: "cand-unknown",
+      namespace: "default",
+      external_key: "unknown-1",
+      dream_date: "2026-07-19",
+      action: "unknown_candidate_action",
+      subject: null,
+      target_id: null,
+      payload_json: "{}",
+      source_chunk_ids_json: "[]",
+      source_chunks_json: "[]",
+      status: "pending",
+      validation_error: null,
+      created_at: "2026-07-19T00:00:00Z",
+      updated_at: "2026-07-19T00:00:00Z",
+      resolved_at: null,
+      result_memory_id: null
+    };
+
+    const html = renderMemoryCandidate(record);
+    expect(html).not.toContain('action="/admin/memories/candidates/approve"');
+    expect(html).toContain("此类候选需使用专用审核入口");
+  });
 });

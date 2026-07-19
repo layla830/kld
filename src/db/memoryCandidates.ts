@@ -1,5 +1,6 @@
 import { newId } from "../utils/ids";
 import { nowIso } from "../utils/time";
+import type { CandidateAction } from "../memory/candidateActionContract";
 import {
   prepareCandidateAxisRunReconciliation,
   prepareCandidateAxisRunReconciliationByExternalKey
@@ -38,7 +39,7 @@ export interface MemoryCandidateRecord {
 export interface CandidateInput {
   externalKey: string;
   dreamDate: string;
-  action: string;
+  action: CandidateAction;
   subject?: string | null;
   targetId?: string | null;
   payload: Record<string, unknown>;
@@ -255,6 +256,41 @@ export async function resolveMemoryCandidate(db: D1Database, namespace: string, 
     prepareCandidateAxisRunReconciliation(db, namespace, id, now)
   ]);
   return (results[0]?.meta.changes ?? 0) > 0;
+}
+
+export async function commitMemoryCandidateApproval(
+  db: D1Database,
+  input: {
+    namespace: string;
+    id: string;
+    expectedStatus: string;
+    resultMemoryId: string;
+    businessStatements: D1PreparedStatement[];
+    successGuard?: { sql: string; binds: unknown[] };
+  }
+): Promise<boolean> {
+  const now = nowIso();
+  const successClause = input.successGuard ? ` AND (${input.successGuard.sql})` : "";
+  const update = db.prepare(
+    `UPDATE memory_candidates
+     SET status = 'approved', result_memory_id = ?, resolved_at = ?, updated_at = ?
+     WHERE namespace = ? AND id = ? AND status = ?${successClause}`
+  ).bind(
+    input.resultMemoryId,
+    now,
+    now,
+    input.namespace,
+    input.id,
+    input.expectedStatus,
+    ...(input.successGuard?.binds ?? [])
+  );
+  const updateIndex = input.businessStatements.length;
+  const results = await db.batch([
+    ...input.businessStatements,
+    update,
+    prepareCandidateAxisRunReconciliation(db, input.namespace, input.id, now)
+  ]);
+  return (results[updateIndex]?.meta.changes ?? 0) === 1;
 }
 
 export async function rollbackMemoryCandidate(db: D1Database, namespace: string, id: string): Promise<boolean> {

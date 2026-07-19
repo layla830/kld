@@ -3,11 +3,11 @@ import { requireScope } from "../auth/scopes";
 import { upsertMemoryCandidate, type CandidateInput } from "../db/memoryCandidates";
 import { createMemoryEvent } from "../db/memoryEvents";
 import { applyDreamCandidatePolicy } from "../memory/dreamCandidatePolicy";
+import { isDreamIngressCandidateAction } from "../memory/candidateActionContract";
 import type { Env } from "../types";
 import { json, openAiError } from "../utils/json";
 import { readBody, resolveNamespace } from "./common";
 
-const ACTIONS = new Set(["add", "update", "delete", "excerpt", "relation", "fact_group"]);
 const STATUSES = new Set(["pending", "needs_subject_review"]);
 
 function candidateInput(value: unknown): CandidateInput | null {
@@ -19,7 +19,7 @@ function candidateInput(value: unknown): CandidateInput | null {
   const status = typeof row.status === "string" ? row.status.trim() : "";
   const payload = row.payload && typeof row.payload === "object" && !Array.isArray(row.payload)
     ? row.payload as Record<string, unknown> : null;
-  if (!externalKey || !dreamDate || !ACTIONS.has(action) || !STATUSES.has(status) || !payload) return null;
+  if (!externalKey || !dreamDate || !isDreamIngressCandidateAction(action) || !STATUSES.has(status) || !payload) return null;
   return {
     externalKey,
     dreamDate,
