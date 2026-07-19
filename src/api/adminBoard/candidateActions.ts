@@ -1,4 +1,9 @@
-import { getMemoryCandidate, resolveMemoryCandidate, updateMemoryCandidateEvidence } from "../../db/memoryCandidates";
+import {
+  getMemoryCandidate,
+  resolveMemoryCandidate,
+  updateMemoryCandidateEvidence,
+  type MemoryCandidateRecord
+} from "../../db/memoryCandidates";
 import { createMemory, getMemoryById, softDeleteMemory, updateMemory, type UpdateMemoryInput } from "../../db/memories";
 import type { Env, MemoryRecord } from "../../types";
 import { isActiveDiarySplitSource } from "../../memory/diaryPolicy";
@@ -141,6 +146,25 @@ export interface DiaryFactBatchResult {
 
 const MAX_DIARY_FACT_BATCH_SIZE = 100;
 
+export const APPROVABLE_CANDIDATE_ACTIONS = [
+  "add",
+  "excerpt",
+  "diary_split_fact",
+  "update",
+  "delete",
+  "fact_group"
+] as const;
+
+export type ApprovableCandidateAction = typeof APPROVABLE_CANDIDATE_ACTIONS[number];
+
+export function isApprovableCandidateAction(value: string): value is ApprovableCandidateAction {
+  return APPROVABLE_CANDIDATE_ACTIONS.some((action) => action === value);
+}
+
+function assertNever(value: never): never {
+  throw new Error(`unhandled_candidate_action:${String(value)}`);
+}
+
 export async function batchReviewDiaryFactCandidates(env: Env, form: FormData): Promise<DiaryFactBatchResult | null> {
   const decision = readFormText(form, "decision");
   if (decision !== "approve" && decision !== "reject") return null;
@@ -168,11 +192,157 @@ export async function batchReviewDiaryFactCandidates(env: Env, form: FormData): 
   return { decision, selected: ids.length, processed, skipped: ids.length - processed, targets };
 }
 
+async function approveCreateCandidate(
+  env: Env,
+  candidate: MemoryCandidateRecord,
+  payload: Record<string, unknown>,
+  action: "add" | "excerpt",
+  validationOverride: boolean
+): Promise<MemoryRecord | null> {
+  const content = action === "excerpt"
+    ? `【${candidate.dream_date} 重要原文】\n${text(payload.quote) ?? ""}${text(payload.reason) ? `\n保存原因：${text(payload.reason)}` : ""}`
+    : text(payload.content) ?? "";
+  if (!content.trim()) return null;
+  return createMemory(env.DB, {
+    namespace: "default",
+    type: text(payload.type) ?? (action === "excerpt" ? "excerpt" : "note"),
+    content,
+    factKey: text(payload.fact_key) ?? null,
+    thread: text(payload.thread) ?? null,
+    riskLevel: text(payload.risk_level) ?? null,
+    urgencyLevel: text(payload.urgency_level) ?? null,
+    tensionScore: number(payload.tension_score),
+    responsePosture: text(payload.response_posture) ?? null,
+    importance: number(payload.importance) ?? 0.7,
+    confidence: number(payload.confidence) ?? 0.82,
+    status: "active",
+    pinned: false,
+    tags: tags(payload.tags),
+    source: validationOverride ? "vps-dream-candidate-override" : "vps-dream-candidate",
+    sourceMessageIds: [],
+    expiresAt: null
+  });
+}
+
+async function approveDiarySplitFact(
+  env: Env,
+  payload: Record<string, unknown>
+): Promise<MemoryRecord | null> {
+  const diaryId = text(payload.origin_diary_id);
+  const evidence = text(payload.evidence);
+  const itemKey = text(payload.split_item_key);
+  const content = text(payload.content);
+  const memoryType = text(payload.type);
+  if (!diaryId || !evidence || !itemKey || !content || !memoryType
+    || !["rule", "preference", "project_state", "lesson"].includes(memoryType)) return null;
+  const diary = await getMemoryById(env.DB, { namespace: "default", id: diaryId });
+  if (!diary || !isActiveDiarySplitSource(diary) || !diary.content.includes(evidence)) return null;
+  const existing = await existingDiarySplitMemory(env, itemKey);
+  if (existing) return existing;
+  return createMemory(env.DB, {
+    namespace: "default",
+    type: memoryType,
+    content,
+    summary: text(payload.summary) ?? null,
+    factKey: text(payload.fact_key) ?? null,
+    importance: number(payload.importance) ?? 0.7,
+    confidence: number(payload.confidence) ?? 0.82,
+    status: "active",
+    pinned: false,
+    tags: [...new Set([
+      ...(tags(payload.tags) ?? []),
+      `origin:${diary.id}`,
+      `split_item:${itemKey}`,
+      "split_version:v2"
+    ])],
+    source: "timeline_split",
+    sourceMessageIds: [diary.id],
+    expiresAt: null
+  });
+}
+
+async function approveUpdateCandidate(
+  env: Env,
+  candidate: MemoryCandidateRecord,
+  payload: Record<string, unknown>
+): Promise<MemoryRecord | null> {
+  if (!candidate.target_id
+    || !(await getMemoryById(env.DB, { namespace: "default", id: candidate.target_id }))) return null;
+  return updateMemory(env.DB, {
+    namespace: "default",
+    id: candidate.target_id,
+    patch: candidateUpdatePatch(payload)
+  });
+}
+
+async function approveDeleteCandidate(
+  env: Env,
+  candidate: MemoryCandidateRecord
+): Promise<MemoryRecord | null> {
+  return candidate.target_id
+    ? softDeleteMemory(env.DB, { namespace: "default", id: candidate.target_id })
+    : null;
+}
+
+async function approveFactGroup(
+  env: Env,
+  payload: Record<string, unknown>
+): Promise<MemoryRecord | null> {
+  const factKey = text(payload.fact_key);
+  const ids = Array.isArray(payload.memory_ids)
+    ? [...new Set(payload.memory_ids.map(String))].slice(0, 8)
+    : [];
+  if (!factKey || ids.length < 2) return null;
+  const updated: MemoryRecord[] = [];
+  for (const memoryId of ids) {
+    if (!(await getMemoryById(env.DB, { namespace: "default", id: memoryId }))) return null;
+    const memory = await updateMemory(env.DB, { namespace: "default", id: memoryId, patch: { factKey } });
+    if (memory) updated.push(memory);
+  }
+  if (updated.length !== ids.length) return null;
+  for (const memory of updated.slice(1)) {
+    await createMemoryRelation(env.DB, {
+      namespace: "default",
+      sourceMemoryId: updated[0].id,
+      targetMemoryId: memory.id,
+      relationType: "same_fact_key",
+      strength: 0.92,
+      reason: "approved fact group"
+    });
+  }
+  await Promise.all(updated.map((memory) => syncMemoryVector(env, memory)));
+  return updated[0];
+}
+
+async function approveByAction(
+  env: Env,
+  candidate: MemoryCandidateRecord,
+  payload: Record<string, unknown>,
+  action: ApprovableCandidateAction,
+  validationOverride: boolean
+): Promise<MemoryRecord | null> {
+  switch (action) {
+    case "add":
+    case "excerpt":
+      return approveCreateCandidate(env, candidate, payload, action, validationOverride);
+    case "diary_split_fact":
+      return approveDiarySplitFact(env, payload);
+    case "update":
+      return approveUpdateCandidate(env, candidate, payload);
+    case "delete":
+      return approveDeleteCandidate(env, candidate);
+    case "fact_group":
+      return approveFactGroup(env, payload);
+    default:
+      return assertNever(action);
+  }
+}
+
 export async function approveCandidate(env: Env, form: FormData): Promise<MemoryRecord | null> {
   const id = readFormText(form, "id");
   if (!id) return null;
   const candidate = await getMemoryCandidate(env.DB, "default", id);
-  if (!candidate || candidate.action === "relation" || candidate.action === "timeline_date") return null;
+  if (!candidate || !isApprovableCandidateAction(candidate.action)) return null;
   const overrideRequested = readFormText(form, "override_validation") === "1";
   const validationOverride = overrideRequested && canOverrideCandidateValidation(candidate);
   if (candidate.status !== "pending" && !validationOverride) return null;
@@ -190,69 +360,7 @@ export async function approveCandidate(env: Env, form: FormData): Promise<Memory
       }
     });
   }
-  let target: MemoryRecord | null = null;
-  if (candidate.action === "add" || candidate.action === "excerpt") {
-    const content = candidate.action === "excerpt"
-      ? `【${candidate.dream_date} 重要原文】\n${text(payload.quote) ?? ""}${text(payload.reason) ? `\n保存原因：${text(payload.reason)}` : ""}`
-      : text(payload.content) ?? "";
-    if (!content.trim()) return null;
-    target = await createMemory(env.DB, {
-      namespace: "default", type: text(payload.type) ?? (candidate.action === "excerpt" ? "excerpt" : "note"), content,
-      factKey: text(payload.fact_key) ?? null, thread: text(payload.thread) ?? null,
-      riskLevel: text(payload.risk_level) ?? null, urgencyLevel: text(payload.urgency_level) ?? null,
-      tensionScore: number(payload.tension_score), responsePosture: text(payload.response_posture) ?? null,
-      importance: number(payload.importance) ?? 0.7, confidence: number(payload.confidence) ?? 0.82,
-      status: "active", pinned: false, tags: tags(payload.tags),
-      source: validationOverride ? "vps-dream-candidate-override" : "vps-dream-candidate",
-      sourceMessageIds: [], expiresAt: null
-    });
-  } else if (candidate.action === "diary_split_fact") {
-    const diaryId = text(payload.origin_diary_id);
-    const evidence = text(payload.evidence);
-    const itemKey = text(payload.split_item_key);
-    const content = text(payload.content);
-    const memoryType = text(payload.type);
-    if (!diaryId || !evidence || !itemKey || !content || !memoryType || !["rule", "preference", "project_state", "lesson"].includes(memoryType)) return null;
-    const diary = await getMemoryById(env.DB, { namespace: "default", id: diaryId });
-    if (!diary || !isActiveDiarySplitSource(diary) || !diary.content.includes(evidence)) return null;
-    target = await existingDiarySplitMemory(env, itemKey);
-    if (!target) {
-      target = await createMemory(env.DB, {
-        namespace: "default",
-        type: memoryType,
-        content,
-        summary: text(payload.summary) ?? null,
-        factKey: text(payload.fact_key) ?? null,
-        importance: number(payload.importance) ?? 0.7,
-        confidence: number(payload.confidence) ?? 0.82,
-        status: "active",
-        pinned: false,
-        tags: [...new Set([...(tags(payload.tags) ?? []), `origin:${diary.id}`, `split_item:${itemKey}`, "split_version:v2"])],
-        source: "timeline_split",
-        sourceMessageIds: [diary.id],
-        expiresAt: null
-      });
-    }
-  } else if (candidate.action === "update" && candidate.target_id) {
-    if (!(await getMemoryById(env.DB, { namespace: "default", id: candidate.target_id }))) return null;
-    target = await updateMemory(env.DB, { namespace: "default", id: candidate.target_id, patch: candidateUpdatePatch(payload) });
-  } else if (candidate.action === "delete" && candidate.target_id) {
-    target = await softDeleteMemory(env.DB, { namespace: "default", id: candidate.target_id });
-  } else if (candidate.action === "fact_group") {
-    const factKey = text(payload.fact_key);
-    const ids = Array.isArray(payload.memory_ids) ? [...new Set(payload.memory_ids.map(String))].slice(0, 8) : [];
-    if (!factKey || ids.length < 2) return null;
-    const updated: MemoryRecord[] = [];
-    for (const memoryId of ids) {
-      if (!(await getMemoryById(env.DB, { namespace: "default", id: memoryId }))) return null;
-      const memory = await updateMemory(env.DB, { namespace: "default", id: memoryId, patch: { factKey } });
-      if (memory) updated.push(memory);
-    }
-    if (updated.length !== ids.length) return null;
-    for (const memory of updated.slice(1)) await createMemoryRelation(env.DB, { namespace:"default", sourceMemoryId:updated[0].id, targetMemoryId:memory.id, relationType:"same_fact_key", strength:0.92, reason:"approved fact group" });
-    await Promise.all(updated.map((memory) => syncMemoryVector(env, memory)));
-    target = updated[0];
-  }
+  const target = await approveByAction(env, candidate, payload, candidate.action, validationOverride);
   if (!target) return null;
   await resolveMemoryCandidate(env.DB, "default", id, "approved", target.id);
   if (validationOverride) {
