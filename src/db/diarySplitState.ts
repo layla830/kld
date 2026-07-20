@@ -4,27 +4,34 @@ import { DIARY_SPLIT_SOURCE_TYPE } from "../memory/diaryPolicy";
 export const DIARY_SPLIT_COMPLETE_EVENT = "diary_split_v2_complete";
 export const DIARY_SPLIT_INCOMPLETE_EVENT = "diary_split_v2_incomplete";
 
+function successfulCompletionSql(eventAlias: string): string {
+  return `(
+    COALESCE(CAST(json_extract(${eventAlias}.payload_json, '$.item_count') AS INTEGER), 0) > 0
+    OR json_extract(${eventAlias}.payload_json, '$.outcome') = 'no_durable_items'
+  )`;
+}
+
 export async function hasSuccessfulDiarySplit(
   db: D1Database,
   input: { namespace: string; diaryId: string }
 ): Promise<boolean> {
   const row = await db.prepare(
-    `SELECT id FROM memory_events
-     WHERE namespace = ? AND memory_id = ? AND event_type = ?
-       AND COALESCE(CAST(json_extract(payload_json, '$.item_count') AS INTEGER), 0) > 0
+    `SELECT id FROM memory_events AS event
+     WHERE event.namespace = ? AND event.memory_id = ? AND event.event_type = ?
+       AND ${successfulCompletionSql("event")}
      LIMIT 1`
   ).bind(input.namespace, input.diaryId, DIARY_SPLIT_COMPLETE_EVENT).first<{ id: string }>();
   return Boolean(row?.id);
 }
 
-export async function hasActiveV2DiaryDay(
+export async function hasActiveV2DiarySplitItem(
   db: D1Database,
   input: { namespace: string; diaryId: string }
 ): Promise<boolean> {
   const row = await db.prepare(
     `SELECT split.id FROM memories AS split
      WHERE split.namespace = ? AND split.status IN ('active','review')
-       AND split.source = 'timeline_split' AND split.type = 'timeline_day'
+       AND split.source = 'timeline_split' AND split.type != 'timeline_day'
        AND EXISTS (
          SELECT 1 FROM json_each(CASE WHEN json_valid(split.tags) THEN split.tags ELSE '[]' END)
          WHERE value = ?
@@ -50,12 +57,12 @@ export async function listMissedDiarySplitCandidates(
          SELECT 1 FROM memory_events AS event
          WHERE event.namespace = m.namespace AND event.memory_id = m.id
            AND event.event_type = ?
-           AND COALESCE(CAST(json_extract(event.payload_json, '$.item_count') AS INTEGER), 0) > 0
+           AND ${successfulCompletionSql("event")}
        )
        AND NOT EXISTS (
          SELECT 1 FROM memories AS split
          WHERE split.namespace = m.namespace AND split.status IN ('active','review')
-           AND split.source = 'timeline_split' AND split.type = 'timeline_day'
+           AND split.source = 'timeline_split' AND split.type != 'timeline_day'
            AND EXISTS (
              SELECT 1 FROM json_each(CASE WHEN json_valid(split.tags) THEN split.tags ELSE '[]' END)
              WHERE value = 'origin:' || m.id
