@@ -1,8 +1,8 @@
 import type { Env, MemoryRecord } from "../types";
 import { nowIso } from "../utils/time";
-import { ensureVerbatimTimelineDay } from "./diarySplit";
 import { DIARY_SPLIT_SOURCE_TYPE } from "./diaryPolicy";
 import { rebuildDiaryTimelineForMemory } from "./diaryTimeline";
+import { removeMemoryVector } from "./state";
 
 const TIMELINE_SOURCE = "timeline_split";
 const DATE_TAG = /^date:(20\d{2}-\d{2}-\d{2})$/;
@@ -44,22 +44,16 @@ function singleDate(memory: MemoryRecord): string | null {
   return dates.length === 1 ? dates[0] : null;
 }
 
-function coverageForDiary(diary: MemoryRecord, items: MemoryRecord[]): DiaryTimelineCoverageRow {
+function coverageForDiary(diary: MemoryRecord, allItems: MemoryRecord[]): DiaryTimelineCoverageRow {
+  const timelineDays = allItems.filter((memory) => memory.type === "timeline_day").length;
+  const items = allItems.filter((memory) => memory.type !== "timeline_day");
   const dated = items.flatMap((memory) => {
     const date = singleDate(memory);
     return date ? [{ memory, date }] : [];
   });
   const dates = [...new Set(dated.map((item) => item.date))].sort();
-  const timelineDays = dated.filter((item) => item.memory.type === "timeline_day").length;
-  const dayCountByDate = new Map<string, number>();
-  for (const item of dated) {
-    if (item.memory.type === "timeline_day") dayCountByDate.set(item.date, (dayCountByDate.get(item.date) ?? 0) + 1);
-  }
   const lowCoverageReasons: DiaryTimelineCoverageRow["lowCoverageReasons"] = [];
   if (items.length === 0) lowCoverageReasons.push("no_split_items");
-  const missingTimelineDates = dates.filter((date) => (dayCountByDate.get(date) ?? 0) === 0);
-  if (missingTimelineDates.length > 0) lowCoverageReasons.push("missing_timeline_day");
-  if ([...dayCountByDate.values()].some((count) => count > 1)) lowCoverageReasons.push("multiple_timeline_days");
   if (dated.length !== items.length) lowCoverageReasons.push("undated_items");
   return {
     diaryId: diary.id,
@@ -67,7 +61,7 @@ function coverageForDiary(diary: MemoryRecord, items: MemoryRecord[]): DiaryTime
     dates,
     activeItems: items.length,
     timelineDays,
-    missingTimelineDates,
+    missingTimelineDates: [],
     undatedItems: items.length - dated.length,
     lowCoverageReasons,
     backfilled: false,
@@ -93,6 +87,20 @@ async function markLatestSkippedXRunsApplied(db: D1Database, namespace: string, 
          WHERE latest.namespace = run.namespace AND latest.memory_id = run.memory_id AND latest.axis = 'X'
        )`
   ).bind(diaryId, now, now, namespace, namespace, diaryId).run();
+}
+
+async function retireLegacyDayNodes(env: Env, namespace: string, nodes: MemoryRecord[]): Promise<void> {
+  if (nodes.length === 0) return;
+  const ids = nodes.map((memory) => memory.id);
+  const placeholders = ids.map(() => "?").join(", ");
+  const now = nowIso();
+  await env.DB.prepare(
+    `UPDATE memories
+     SET status = 'deleted', active_fact = 0, pinned = 0,
+         vector_synced = 0, vector_sync_status = 'pending', updated_at = ?
+     WHERE namespace = ? AND id IN (${placeholders}) AND type = 'timeline_day'`
+  ).bind(now, namespace, ...ids).run();
+  for (const node of nodes) await removeMemoryVector(env, node);
 }
 
 export async function scanDiaryTimelineBackfill(
@@ -122,27 +130,25 @@ export async function scanDiaryTimelineBackfill(
          )
        ORDER BY memory.created_at, memory.id`
     ).bind(namespace, TIMELINE_SOURCE, `origin:${diary.id}`).all<MemoryRecord>();
-    const items = split.results ?? [];
-    const coverage = coverageForDiary(diary, items);
-    const canRepairMissingDays = coverage.missingTimelineDates.length > 0
-      && coverage.lowCoverageReasons.every((reason) => reason === "missing_timeline_day");
-    if (options.apply && (coverage.lowCoverageReasons.length === 0 || canRepairMissingDays)) {
-      const repairedDays: MemoryRecord[] = [];
-      if (canRepairMissingDays) {
-        for (const date of coverage.missingTimelineDates) {
-          repairedDays.push(await ensureVerbatimTimelineDay(env, { namespace, diary, date }));
-        }
+    const allItems = split.results ?? [];
+    const items = allItems.filter((memory) => memory.type !== "timeline_day");
+    const legacyDays = allItems.filter((memory) => memory.type === "timeline_day");
+    const coverage = coverageForDiary(diary, allItems);
+    if (options.apply) {
+      await retireLegacyDayNodes(env, namespace, legacyDays);
+      const representativeByDate = new Map<string, MemoryRecord>();
+      for (const item of items) {
+        const date = singleDate(item);
+        if (date && !representativeByDate.has(date)) representativeByDate.set(date, item);
       }
-      for (const day of [...items.filter((memory) => memory.type === "timeline_day"), ...repairedDays]) {
-        await rebuildDiaryTimelineForMemory(env.DB, day);
+      for (const item of representativeByDate.values()) {
+        await rebuildDiaryTimelineForMemory(env.DB, item);
       }
-      await markLatestSkippedXRunsApplied(env.DB, namespace, diary.id);
-      coverage.backfilled = true;
-      coverage.repairedTimelineDays = repairedDays.length;
-      coverage.timelineDays += repairedDays.length;
-      coverage.activeItems += repairedDays.length;
+      if (representativeByDate.size > 0) await markLatestSkippedXRunsApplied(env.DB, namespace, diary.id);
+      coverage.backfilled = representativeByDate.size > 0 || legacyDays.length > 0;
+      coverage.timelineDays = 0;
       coverage.missingTimelineDates = [];
-      coverage.lowCoverageReasons = [];
+      coverage.repairedTimelineDays = 0;
     }
     rows.push(coverage);
   }
