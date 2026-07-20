@@ -8,14 +8,11 @@ import { DIARY_SPLIT_SOURCE_TYPE, isActiveDiarySplitSource } from "./diaryPolicy
 import { removeMemoryVector } from "./state";
 import {
   DIARY_SPLIT_COMPLETE_EVENT,
-  DIARY_SPLIT_INCOMPLETE_EVENT,
-  hasActiveV2DiaryDay,
+  hasActiveV2DiarySplitItem,
   hasSuccessfulDiarySplit
 } from "../db/diarySplitState";
 import { dateFromDiary, datesFromDiary, normalizeDate } from "./diarySplitDates";
 import {
-  buildVerbatimTimelineDay,
-  MAX_ITEMS_PER_DIARY,
   parseItemsWithDebug,
   splitItemKey,
   SPLIT_VERSION_TAG,
@@ -53,53 +50,38 @@ export interface SplitDiaryInput {
   replaceImporter?: string;
 }
 
-async function callSplitModel(env: Env, record: MemoryRecord, date: string, includeDebug: boolean): Promise<{ items: DiarySplitItem[]; debug?: DiarySplitDebug }> {
+async function callSplitModel(
+  env: Env,
+  record: MemoryRecord,
+  date: string,
+  includeDebug: boolean
+): Promise<{ items: DiarySplitItem[]; debug?: DiarySplitDebug }> {
   const allowedDates = datesFromDiary(record, date);
-  const model = env.CC_CONNECT_CHUNK_EXTRACT_MODEL || env.MEMORY_MODEL || env.AUTO_CHUNK_SUMMARY_MODEL || env.CHAT_MODEL || DEFAULT_SPLIT_MODEL;
-  const basePrompt = buildSplitPrompt(record, date, allowedDates);
-  let lastMissingDates: string[] = [];
-  let lastResult: { items: DiarySplitItem[]; debug?: DiarySplitDebug } = { items: [] };
-
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    const request: OpenAIChatRequest = {
-      model,
-      messages: [
-        { role: "system", content: "You are a strict JSON generator for Chinese memory extraction. Output JSON only. Do not explain or show reasoning." },
-        {
-          role: "user",
-          content: attempt === 0
-            ? basePrompt
-            : `${basePrompt}\n\nYour previous output was invalid because these required dates had no timeline_day: ${lastMissingDates.join(", ")}. Return exactly one timeline_day for the default date and every date represented by any item.`
-        }
-      ],
-      temperature: 0.1,
-      max_tokens: 4200,
-      response_format: { type: "json_object" },
-      stream: false
-    };
-
-    const response = await callOpenAICompat(env, request);
-    if (!response.ok) throw new Error(`split model failed: ${response.status}`);
-
-    const parsed = (await response.json()) as OpenAIChatResponse;
-    const message = parsed.choices?.[0]?.message;
-    const content = typeof message?.content === "string" ? message.content.trim() : "";
-    const reasoningContent = typeof message?.reasoning_content === "string" ? message.reasoning_content.trim() : "";
-    const text = content || reasoningContent;
-    const result = parseItemsWithDebug(text, date, allowedDates, record.id, record.content, includeDebug);
-    lastResult = result;
-    const representedDates = new Set(result.items.map((item) => item.date));
-    const timelineDates = new Set(result.items.filter((item) => item.type === "timeline_day").map((item) => item.date));
-    const requiredDates = new Set([date, ...representedDates]);
-    lastMissingDates = [...requiredDates].filter((itemDate) => !timelineDates.has(itemDate));
-    if (lastMissingDates.length === 0) return result;
-  }
-
-  const fallbacks = lastMissingDates.map((itemDate) => buildVerbatimTimelineDay(record, itemDate));
-  return {
-    items: [...fallbacks, ...lastResult.items].slice(0, MAX_ITEMS_PER_DIARY),
-    debug: lastResult.debug ? { ...lastResult.debug, fallback: "verbatim_timeline_day" } : undefined
+  const model = env.CC_CONNECT_CHUNK_EXTRACT_MODEL
+    || env.MEMORY_MODEL
+    || env.AUTO_CHUNK_SUMMARY_MODEL
+    || env.CHAT_MODEL
+    || DEFAULT_SPLIT_MODEL;
+  const request: OpenAIChatRequest = {
+    model,
+    messages: [
+      { role: "system", content: "You are a strict JSON generator for Chinese memory extraction. Output JSON only. Do not explain or show reasoning." },
+      { role: "user", content: buildSplitPrompt(record, date, allowedDates) }
+    ],
+    temperature: 0.1,
+    max_tokens: 4200,
+    response_format: { type: "json_object" },
+    stream: false
   };
+
+  const response = await callOpenAICompat(env, request);
+  if (!response.ok) throw new Error(`split model failed: ${response.status}`);
+
+  const parsed = (await response.json()) as OpenAIChatResponse;
+  const message = parsed.choices?.[0]?.message;
+  const content = typeof message?.content === "string" ? message.content.trim() : "";
+  const reasoningContent = typeof message?.reasoning_content === "string" ? message.reasoning_content.trim() : "";
+  return parseItemsWithDebug(content || reasoningContent, date, allowedDates, record.id, record.content, includeDebug);
 }
 
 async function existingSplitCount(db: D1Database, input: { namespace: string; originId: string }): Promise<number> {
@@ -112,7 +94,7 @@ async function existingSplitCount(db: D1Database, input: { namespace: string; or
 
 async function existingV2SplitCount(db: D1Database, input: { namespace: string; originId: string }): Promise<number> {
   const row = await db
-    .prepare("SELECT COUNT(*) AS count FROM memories WHERE namespace = ? AND status = 'active' AND source = ? AND tags LIKE ? AND tags LIKE ?")
+    .prepare("SELECT COUNT(*) AS count FROM memories WHERE namespace = ? AND status = 'active' AND source = ? AND type != 'timeline_day' AND tags LIKE ? AND tags LIKE ?")
     .bind(input.namespace, TIMELINE_SOURCE, `%origin:${input.originId}%`, `%${SPLIT_VERSION_TAG}%`)
     .first<{ count: number }>();
   return row?.count ?? 0;
@@ -231,26 +213,18 @@ async function persistItems(
   return { createdIds, candidateKeys };
 }
 
+/**
+ * Kept as a fail-closed compatibility export for older callers. Synthetic day
+ * memories are no longer part of the diary split contract.
+ */
 export async function ensureVerbatimTimelineDay(
-  env: Env,
+  _env: Env,
   input: { namespace: string; diary: MemoryRecord; date: string }
 ): Promise<MemoryRecord> {
   if (!isActiveDiarySplitSource(input.diary)) {
     throw new Error("timeline_day_repair_requires_active_diary");
   }
-  const persisted = await persistItems(env, {
-    namespace: input.namespace,
-    diary: input.diary,
-    date: input.date,
-    items: [buildVerbatimTimelineDay(input.diary, input.date)]
-  });
-  const memoryId = persisted.createdIds[0];
-  if (!memoryId) throw new Error("timeline_day_repair_not_persisted");
-  const memory = await env.DB.prepare(
-    "SELECT * FROM memories WHERE namespace = ? AND id = ? LIMIT 1"
-  ).bind(input.namespace, memoryId).first<MemoryRecord>();
-  if (!memory) throw new Error("timeline_day_repair_not_found");
-  return memory;
+  throw new Error("timeline_day_memories_removed");
 }
 
 async function diaryAlreadyRescreened(
@@ -330,48 +304,26 @@ export async function splitDiaryMemories(env: Env, input: SplitDiaryInput): Prom
       plans.push({ diary_id: record.id, date, skipped: true, reason: "already_rescreened", items: [] });
       continue;
     }
-    const [existing, existingV2, completedV2, activeV2Day] = await Promise.all([
+    const [existing, existingV2, completedV2, activeV2Item] = await Promise.all([
       existingSplitCount(env.DB, { namespace: input.namespace, originId: record.id }),
       existingV2SplitCount(env.DB, { namespace: input.namespace, originId: record.id }),
       hasSuccessfulDiarySplit(env.DB, { namespace: input.namespace, diaryId: record.id }),
-      hasActiveV2DiaryDay(env.DB, { namespace: input.namespace, diaryId: record.id })
+      hasActiveV2DiarySplitItem(env.DB, { namespace: input.namespace, diaryId: record.id })
     ]);
-    if (!input.force && (completedV2 || activeV2Day || (existing > 0 && existingV2 === 0))) {
+    if (!input.force && (completedV2 || activeV2Item || (existing > 0 && existingV2 === 0))) {
       plans.push({ diary_id: record.id, date, skipped: true, reason: "already_split", existing_count: existing, items: [] });
       continue;
     }
 
     const { items, debug } = await callSplitModel(env, record, date, input.debug === true);
-    if (items.length === 0) {
-      if (input.apply) {
-        const replacedIds = replaceImporter
-          ? await activateRescreenedDiary(env, {
-              namespace: input.namespace,
-              diaryId: record.id,
-              importer: replaceImporter,
-              createdIds: []
-            })
-          : [];
-        await createMemoryEvent(env.DB, {
-          namespace: input.namespace,
-          eventType: DIARY_SPLIT_INCOMPLETE_EVENT,
-          memoryId: record.id,
-          payload: {
-            diary_id: record.id,
-            date,
-            created_ids: [],
-            candidate_keys: [],
-            item_count: 0,
-            replace_importer: replaceImporter,
-            replaced_ids: replacedIds
-          }
-        });
-      }
-      plans.push({ diary_id: record.id, date, skipped: true, reason: "no_items", items: [], debug });
-      continue;
-    }
-
-    const plan: DiarySplitPlan = { diary_id: record.id, date, skipped: false, items, debug };
+    const plan: DiarySplitPlan = {
+      diary_id: record.id,
+      date,
+      skipped: false,
+      ...(items.length === 0 ? { reason: "no_durable_items" } : {}),
+      items,
+      debug
+    };
     if (input.apply) {
       const persisted = await persistItems(env, {
         namespace: input.namespace,
@@ -401,6 +353,7 @@ export async function splitDiaryMemories(env: Env, input: SplitDiaryInput): Prom
           created_ids: persisted.createdIds,
           candidate_keys: persisted.candidateKeys,
           item_count: items.length,
+          outcome: items.length === 0 ? "no_durable_items" : "items_created",
           replace_importer: replaceImporter,
           replaced_ids: replacedIds
         }
