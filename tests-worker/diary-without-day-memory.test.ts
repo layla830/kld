@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createMemory } from "../src/db/memories";
 import { rebuildDiaryTimelineForMemory } from "../src/memory/diaryTimeline";
 import { splitDiaryMemories } from "../src/memory/diarySplit";
-import type { Env, MemoryRecord } from "../src/types";
+import type { Env } from "../src/types";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -13,11 +13,11 @@ async function count(sql: string, ...binds: unknown[]): Promise<number> {
 }
 
 describe("formal diary timeline without synthetic day memories", () => {
-  it("uses the original diary as the day anchor and sequences original diaries", async () => {
+  it("uses real split items as day anchors and supports multiple diary dates", async () => {
     const firstDiary = await createMemory(env.DB, {
       namespace: "default",
       type: "diary",
-      content: "7月18日日记\n今天留下了一句真实的摘录。",
+      content: "7月18日日记\n今天留下了一句真实的摘录和一件具体的事。",
       source: "mcp"
     });
     const secondDiary = await createMemory(env.DB, {
@@ -26,10 +26,20 @@ describe("formal diary timeline without synthetic day memories", () => {
       content: "7月19日日记\n今天又留下了一件具体的事。",
       source: "mcp"
     });
-    const firstItem = await createMemory(env.DB, {
+    const firstQuote = await createMemory(env.DB, {
       namespace: "default",
       type: "quote",
       content: "一句真实的摘录",
+      importance: 0.6,
+      source: "timeline_split",
+      sourceMessageIds: [firstDiary.id],
+      tags: ["timeline", "date:2026-07-18", `origin:${firstDiary.id}`, "split_version:v2"]
+    });
+    const firstAnchor = await createMemory(env.DB, {
+      namespace: "default",
+      type: "event",
+      content: "留下了一件具体的事",
+      importance: 0.9,
       source: "timeline_split",
       sourceMessageIds: [firstDiary.id],
       tags: ["timeline", "date:2026-07-18", `origin:${firstDiary.id}`, "split_version:v2"]
@@ -43,15 +53,15 @@ describe("formal diary timeline without synthetic day memories", () => {
       tags: ["timeline", "date:2026-07-19", `origin:${secondDiary.id}`, "split_version:v2"]
     });
 
-    await expect(rebuildDiaryTimelineForMemory(env.DB, firstItem)).resolves.toMatchObject({
+    await expect(rebuildDiaryTimelineForMemory(env.DB, firstQuote)).resolves.toMatchObject({
       outcome: "diary_timeline_reconciled",
-      dayMemoryId: firstDiary.id,
-      items: 1,
+      dayMemoryId: firstAnchor.id,
+      items: 2,
       episodeEdges: 1
     });
     await expect(rebuildDiaryTimelineForMemory(env.DB, secondItem)).resolves.toMatchObject({
       outcome: "diary_timeline_reconciled",
-      dayMemoryId: secondDiary.id,
+      dayMemoryId: secondItem.id,
       items: 1,
       sequenceMemories: 2,
       sequenceEdges: 1
@@ -62,12 +72,12 @@ describe("formal diary timeline without synthetic day memories", () => {
     )).resolves.toBe(0);
     await expect(count(
       "SELECT COUNT(*) AS count FROM memory_diary_timeline_memberships WHERE namespace = 'default' AND role = 'day' AND memory_id IN (?, ?)",
-      firstDiary.id,
-      secondDiary.id
+      firstAnchor.id,
+      secondItem.id
     )).resolves.toBe(2);
     await expect(count(
       "SELECT COUNT(*) AS count FROM memory_relations WHERE namespace = 'default' AND relation_type = 'in_episode' AND reason LIKE 'diary_day:%'"
-    )).resolves.toBe(2);
+    )).resolves.toBe(1);
     await expect(count(
       "SELECT COUNT(*) AS count FROM memory_relations WHERE namespace = 'default' AND relation_type = 'temporal_sequence' AND reason = 'diary_timeline:diary:kld'"
     )).resolves.toBe(1);
