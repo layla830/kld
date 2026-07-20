@@ -46,5 +46,5 @@ const TOAST_MAP_SCRIPT = `{${TOAST_ENTRIES.map(([key, value]) => {
 }).join(",")}}`;
 
 export function renderToastScriptContent(notice: string | null | undefined): string {
-  return `const n=${JSON.stringify(notice)};const m=${TOAST_MAP_SCRIPT};if(n&&m[n]){const t=document.getElementById('toast');t.textContent=m[n];t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2500);history.replaceState(null,'',location.pathname+location.search.replace(/[?&]notice=[^&]*/,''));}`;
+  return `document.querySelectorAll('.timeline-card .tl-timeline_day').forEach(b=>b.closest('.timeline-card')?.remove());const n=${JSON.stringify(notice)};const m=${TOAST_MAP_SCRIPT};if(n&&m[n]){const t=document.getElementById('toast');t.textContent=m[n];t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2500);history.replaceState(null,'',location.pathname+location.search.replace(/[?&]notice=[^&]*/,''));}`;
 }
