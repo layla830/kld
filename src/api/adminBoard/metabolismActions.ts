@@ -1,6 +1,11 @@
 import { createMemoryEvent } from "../../db/memoryEvents";
 import { loadDreamConfig } from "../../config/runtime";
-import { getMemoryCandidate, resolveMemoryCandidate, rollbackMemoryCandidate } from "../../db/memoryCandidates";
+import {
+  commitMemoryCandidateApproval,
+  getMemoryCandidate,
+  resolveMemoryCandidate,
+  rollbackMemoryCandidate
+} from "../../db/memoryCandidates";
 import { getMemoryById, updateMemory } from "../../db/memories";
 import type { Env, MemoryRecord } from "../../types";
 import {
@@ -8,6 +13,8 @@ import {
   COLD_MEMORY_MAX_IMPORTANCE,
   PROTECTED_MEMORY_TYPES
 } from "../../memory/metabolismReview";
+import { newId } from "../../utils/ids";
+import { nowIso } from "../../utils/time";
 import { payloadOf, readFormText } from "./utils";
 
 export type MetabolismAction = "m_archive" | "m_relation_cleanup";
@@ -39,6 +46,59 @@ async function snapshot(
     eventType: "m_snapshot",
     payload: { candidate_id: candidateId, action, before }
   });
+}
+
+function relationSnapshotStatement(
+  db: D1Database,
+  input: {
+    namespace: string;
+    candidateId: string;
+    relationId: string;
+    sourceMemoryId: string;
+    targetMemoryId: string;
+    relationType: string;
+    before: Record<string, unknown>;
+    relationWasPresent: boolean;
+  }
+): D1PreparedStatement {
+  const now = nowIso();
+  return db.prepare(
+    `INSERT INTO memory_events (id, namespace, event_type, memory_id, payload_json, created_at)
+     SELECT ?, ?, 'm_snapshot', NULL, ?, ?
+     WHERE EXISTS (
+       SELECT 1 FROM memory_candidates
+       WHERE namespace = ? AND id = ? AND status = 'pending' AND action = 'm_relation_cleanup'
+     )
+       AND (
+         NOT EXISTS (
+           SELECT 1 FROM memory_relations WHERE namespace = ? AND id = ?
+         )
+         OR EXISTS (
+           SELECT 1 FROM memory_relations
+           WHERE namespace = ? AND id = ?
+             AND source_memory_id = ? AND target_memory_id = ? AND relation_type = ?
+         )
+       )`
+  ).bind(
+    newId("ev"),
+    input.namespace,
+    JSON.stringify({
+      candidate_id: input.candidateId,
+      action: "m_relation_cleanup",
+      before: input.before,
+      relation_was_present: input.relationWasPresent
+    }),
+    now,
+    input.namespace,
+    input.candidateId,
+    input.namespace,
+    input.relationId,
+    input.namespace,
+    input.relationId,
+    input.sourceMemoryId,
+    input.targetMemoryId,
+    input.relationType
+  );
 }
 
 export async function approveMetabolismCandidate(
@@ -97,18 +157,69 @@ export async function approveMetabolismCandidate(
   }
 
   const relationId = typeof before.id === "string" ? before.id : "";
-  if (!relationId) return null;
+  const sourceMemoryId = typeof before.source_memory_id === "string" ? before.source_memory_id : "";
+  const targetMemoryId = typeof before.target_memory_id === "string" ? before.target_memory_id : "";
+  const relationType = typeof before.relation_type === "string" ? before.relation_type : "";
+  if (!relationId || !sourceMemoryId || !targetMemoryId || !relationType) {
+    throw new Error("metabolism_relation_candidate_invalid");
+  }
+
   const existing = await env.DB.prepare("SELECT * FROM memory_relations WHERE namespace = ? AND id = ?")
     .bind(namespace, relationId).first<Record<string, unknown>>();
-  if (!existing) throw new Error("metabolism_relation_candidate_is_stale");
-  for (const key of ["source_memory_id", "target_memory_id", "relation_type"]) {
-    if (existing[key] !== before[key]) throw new Error("metabolism_relation_candidate_changed");
+  if (existing) {
+    for (const key of ["source_memory_id", "target_memory_id", "relation_type"]) {
+      if (existing[key] !== before[key]) throw new Error("metabolism_relation_candidate_changed");
+    }
   }
-  await snapshot(env, namespace, candidate.id, action, before);
-  const deleted = await env.DB.prepare("DELETE FROM memory_relations WHERE namespace = ? AND id = ?")
-    .bind(namespace, relationId).run();
-  if ((deleted.meta.changes ?? 0) !== 1) return null;
-  await resolveMemoryCandidate(env.DB, namespace, candidate.id, "approved");
+
+  const deleteRelation = env.DB.prepare(
+    `DELETE FROM memory_relations
+     WHERE namespace = ? AND id = ?
+       AND source_memory_id = ? AND target_memory_id = ? AND relation_type = ?
+       AND EXISTS (
+         SELECT 1 FROM memory_candidates
+         WHERE namespace = ? AND id = ? AND status = 'pending' AND action = 'm_relation_cleanup'
+       )`
+  ).bind(
+    namespace,
+    relationId,
+    sourceMemoryId,
+    targetMemoryId,
+    relationType,
+    namespace,
+    candidate.id
+  );
+
+  const committed = await commitMemoryCandidateApproval(env.DB, {
+    namespace,
+    id: candidate.id,
+    expectedStatus: "pending",
+    resultMemoryId: relationId,
+    businessStatements: [
+      relationSnapshotStatement(env.DB, {
+        namespace,
+        candidateId: candidate.id,
+        relationId,
+        sourceMemoryId,
+        targetMemoryId,
+        relationType,
+        before,
+        relationWasPresent: Boolean(existing)
+      }),
+      deleteRelation
+    ],
+    successGuard: {
+      sql: "NOT EXISTS (SELECT 1 FROM memory_relations WHERE namespace = ? AND id = ?)",
+      binds: [namespace, relationId]
+    }
+  });
+
+  if (!committed) {
+    const current = await env.DB.prepare("SELECT id FROM memory_relations WHERE namespace = ? AND id = ?")
+      .bind(namespace, relationId).first<{ id: string }>();
+    if (current) throw new Error("metabolism_relation_candidate_changed");
+    return null;
+  }
   return { memory: null, action };
 }
 
