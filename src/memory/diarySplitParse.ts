@@ -1,13 +1,11 @@
-import type { MemoryRecord } from "../types";
 import { clamp, cleanString, cleanTags } from "./diarySplitSanitize";
 import { normalizeDate, sourceLabel, splitBatchTag } from "./diarySplitDates";
 
-export const MAX_ITEMS_PER_DIARY = 6;
+export const MAX_ITEMS_PER_DIARY = 5;
 export const FACT_TYPES = new Set(["rule", "preference", "project_state", "lesson"]);
 export const REVIEW_TYPES = new Set(["rule", "preference", "project_state", "lesson"]);
 export const SPLIT_VERSION_TAG = "split_version:v2";
 export const MEMORY_TYPES = new Set([
-  "timeline_day",
   "quote",
   "lesson",
   "milestone",
@@ -43,7 +41,6 @@ export interface DiarySplitDebug {
   raw_type_sample: string[];
   raw_key_sample: string[][];
   text_preview?: string;
-  fallback?: "verbatim_timeline_day";
 }
 
 interface RawSplitItem {
@@ -82,34 +79,6 @@ export function factKeyForItem(raw: RawSplitItem, type: string, scope: "day" | "
   if (!factKey || !FACT_TYPES.has(type) || raw.fact_like !== true || scope !== "current") return null;
   if (!/^[a-z0-9_.:-]+$/i.test(factKey)) return null;
   return factKey;
-}
-
-export function buildVerbatimTimelineDay(record: MemoryRecord, date: string): DiarySplitItem {
-  const lines = record.content.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-  const evidence = (lines.find((line, index) => index > 0 && line.length >= 4) ?? lines[0] ?? date).slice(0, 80);
-  return {
-    date,
-    type: "timeline_day",
-    content: `${date}：${evidence}`.slice(0, 360),
-    summary: "正式日记原文日节点（模型摘要不可用）",
-    importance: 0.55,
-    confidence: 1,
-    tags: [
-      "timeline",
-      `date:${date}`,
-      "timeline_day",
-      "timeline_day_fallback:verbatim",
-      `origin:${record.id}`,
-      `source_label:${sourceLabel(date)}`,
-      "temporal_scope:day",
-      splitBatchTag(date),
-      SPLIT_VERSION_TAG
-    ],
-    fact_key: null,
-    evidence,
-    temporal_scope: "day",
-    review_required: false
-  };
 }
 
 export function extractRawItems(parsed: unknown): RawSplitItem[] {
@@ -232,7 +201,6 @@ export function parseItemsWithDebug(
   const rawItems = extractRawItems(parsed);
   const items: DiarySplitItem[] = [];
   const seen = new Set<string>();
-  const timelineDates = new Set<string>();
   const allowedDateSet = new Set(allowedDates);
 
   for (const raw of rawItems.slice(0, MAX_ITEMS_PER_DIARY)) {
@@ -246,11 +214,6 @@ export function parseItemsWithDebug(
     if (type === "quote" && !diary.includes(content)) continue;
     const requestedDate = normalizeDate(cleanString(raw.date, 20));
     const itemDate = requestedDate && allowedDateSet.has(requestedDate) ? requestedDate : date;
-    if (type === "timeline_day") {
-      if (content.length > 360 || content.length > Math.max(120, diary.length * 0.65)) continue;
-      if (timelineDates.has(itemDate)) continue;
-      timelineDates.add(itemDate);
-    }
     const dedupeKey = `${type}:${content.replace(/\s+/g, " ").trim().toLowerCase()}`;
     if (seen.has(dedupeKey)) continue;
     seen.add(dedupeKey);
@@ -273,7 +236,7 @@ export function parseItemsWithDebug(
       type,
       content,
       summary: cleanString(raw.summary, 300) || null,
-      importance: clamp(raw.importance, type === "timeline_day" ? 0.55 : 0.7),
+      importance: clamp(raw.importance, 0.7),
       confidence: clamp(raw.confidence, 0.8),
       tags: [...new Set(tags)],
       fact_key: factKeyForItem(raw, type, scope),
