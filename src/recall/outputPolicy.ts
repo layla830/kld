@@ -1,6 +1,6 @@
 import type { MemoryApiRecord } from "../types";
 
-export const RECALL_EXCLUDED_TYPES = new Set(["diary", "layla_diary", "auto_diary"]);
+export const RECALL_EXCLUDED_TYPES = new Set(["diary", "layla_diary", "auto_diary", "timeline_day"]);
 export function isRecallEligible<T extends {
   type: string;
   status?: string;
