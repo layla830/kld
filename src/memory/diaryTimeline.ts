@@ -22,13 +22,14 @@ interface DiaryTimelineDescriptor {
   originDiaryId: string;
   timelineKey: string;
   eventDate: string;
+  dayMemoryId: string;
 }
 
 interface DiaryTimelineGroupResult {
   originDiaryId: string;
   eventDate: string;
   timelineKey: string | null;
-  outcome: "reconciled" | "missing_day_node" | "multiple_day_nodes" | "no_active_items";
+  outcome: "reconciled" | "no_active_items";
   items: number;
   dayMemoryId: string | null;
   episodeEdges: number;
@@ -62,21 +63,30 @@ function singleTagValue(tags: string[], pattern: RegExp): string | null {
 }
 
 function timelineKeyForDiaryType(type: string): string | null {
-  if (type === DIARY_SPLIT_SOURCE_TYPE) return "diary:kld";
-  return null;
+  return type === DIARY_SPLIT_SOURCE_TYPE ? "diary:kld" : null;
+}
+
+async function activeDiary(
+  db: D1Database,
+  namespace: string,
+  diaryId: string
+): Promise<MemoryRecord | null> {
+  return (await db.prepare(
+    "SELECT * FROM memories WHERE namespace = ? AND id = ? AND status = 'active' AND type = ? LIMIT 1"
+  ).bind(namespace, diaryId, DIARY_SPLIT_SOURCE_TYPE).first<MemoryRecord>()) ?? null;
 }
 
 async function descriptorForMemory(db: D1Database, memory: MemoryRecord): Promise<DiaryTimelineDescriptor | null> {
-  if (memory.status !== "active" || memory.source !== DIARY_TIMELINE_SOURCE) return null;
+  if (memory.status !== "active" || memory.source !== DIARY_TIMELINE_SOURCE || memory.type === "timeline_day") return null;
   const tags = tagsOf(memory);
   const eventDate = singleTagValue(tags, DATE_TAG);
   const originDiaryId = singleTagValue(tags, ORIGIN_TAG);
   if (!eventDate || !originDiaryId) return null;
-  const diary = await db.prepare(
-    "SELECT type FROM memories WHERE namespace = ? AND id = ? AND type = ? LIMIT 1"
-  ).bind(memory.namespace, originDiaryId, DIARY_SPLIT_SOURCE_TYPE).first<{ type: string }>();
+  const diary = await activeDiary(db, memory.namespace, originDiaryId);
   const timelineKey = diary ? timelineKeyForDiaryType(diary.type) : null;
-  return timelineKey ? { originDiaryId, timelineKey, eventDate } : null;
+  return diary && timelineKey
+    ? { originDiaryId, timelineKey, eventDate, dayMemoryId: diary.id }
+    : null;
 }
 
 async function listActiveDiaryItems(
@@ -86,6 +96,7 @@ async function listActiveDiaryItems(
   const rows = await db.prepare(
     `SELECT memory.* FROM memories AS memory
      WHERE memory.namespace = ? AND memory.status = 'active' AND memory.source = ?
+       AND memory.type != 'timeline_day'
        AND EXISTS (
          SELECT 1 FROM json_each(CASE WHEN json_valid(memory.tags) THEN memory.tags ELSE '[]' END)
          WHERE value = ?
@@ -128,26 +139,29 @@ async function reconcileDiaryDayGroup(
   db: D1Database,
   input: { namespace: string; originDiaryId: string; eventDate: string; timelineKey: string }
 ): Promise<DiaryTimelineGroupResult> {
-  const items = await listActiveDiaryItems(db, input);
-  const dayNodes = items.filter((memory) => memory.type === "timeline_day");
-  if (items.length === 0 || dayNodes.length !== 1) {
+  const [diary, items] = await Promise.all([
+    activeDiary(db, input.namespace, input.originDiaryId),
+    listActiveDiaryItems(db, input)
+  ]);
+  if (!diary || items.length === 0) {
     await clearDiaryDayGroup(db, input);
     return {
       originDiaryId: input.originDiaryId,
       eventDate: input.eventDate,
       timelineKey: input.timelineKey,
-      outcome: items.length === 0 ? "no_active_items" : dayNodes.length === 0 ? "missing_day_node" : "multiple_day_nodes",
+      outcome: "no_active_items",
       items: items.length,
       dayMemoryId: null,
       episodeEdges: 0
     };
   }
 
-  const dayMemoryId = dayNodes[0].id;
+  const dayMemoryId = diary.id;
   const now = nowIso();
-  const ids = items.map((memory) => memory.id);
+  const members = [diary, ...items];
+  const ids = members.map((memory) => memory.id);
   const placeholders = ids.map(() => "?").join(", ");
-  const upserts = items.map((memory) => db.prepare(
+  const upserts = members.map((memory) => db.prepare(
     `INSERT INTO memory_diary_timeline_memberships (
        namespace, memory_id, origin_diary_id, timeline_key, event_date, role, day_memory_id, updated_at
      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -181,9 +195,7 @@ async function reconcileDiaryDayGroup(
     namespace: input.namespace,
     ownerKey: `${input.originDiaryId}:${input.eventDate}`,
     relationType: "in_episode",
-    edges: items
-      .filter((memory) => memory.id !== dayMemoryId)
-      .map((memory) => ({ sourceMemoryId: memory.id, targetMemoryId: dayMemoryId }))
+    edges: items.map((memory) => ({ sourceMemoryId: memory.id, targetMemoryId: dayMemoryId }))
   });
   return {
     originDiaryId: input.originDiaryId,
@@ -207,9 +219,9 @@ async function rebuildDiaryTimelineSequence(
      JOIN memories AS memory
        ON memory.namespace = membership.namespace AND memory.id = membership.memory_id
      WHERE membership.namespace = ? AND membership.timeline_key = ? AND membership.role = 'day'
-       AND memory.status = 'active' AND memory.type = 'timeline_day'
+       AND memory.status = 'active' AND memory.type = ?
      ORDER BY membership.event_date, membership.memory_id`
-  ).bind(namespace, timelineKey).all<{ memory_id: string; event_date: string }>();
+  ).bind(namespace, timelineKey, DIARY_SPLIT_SOURCE_TYPE).all<{ memory_id: string; event_date: string }>();
   const canonicalByDate = new Map<string, string>();
   for (const row of rows.results ?? []) {
     if (!canonicalByDate.has(row.event_date)) canonicalByDate.set(row.event_date, row.memory_id);
