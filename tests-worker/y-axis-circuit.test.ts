@@ -10,6 +10,7 @@ import { createMemory, updateMemory } from "../src/db/memories";
 import { queueRelationReviewCandidate } from "../src/memory/relationReview";
 import { projectMemoryIntoFiveAxes } from "../src/memory/fiveAxis/projection";
 import {
+  createFiveAxisMemoryRelation,
   runRelationBuild,
   type RelationBuildDependencies,
   type RelationCandidate,
@@ -50,6 +51,94 @@ function createYMemory(content: string) {
 }
 
 describe("Y-axis Worker circuit", () => {
+  it("does not traverse historical diary edges as a two-hop bridge", async () => {
+    const [a, diary, b] = await Promise.all([
+      createYMemory("Y historical bridge A"),
+      createMemory(env.DB, {
+        namespace: "default",
+        type: "diary",
+        content: "Historical original diary bridge",
+        source: "cc-connect-vps",
+        importance: 0.8
+      }),
+      createYMemory("Y historical bridge B")
+    ]);
+    await createMemoryRelation(env.DB, {
+      namespace: "default",
+      sourceMemoryId: a.id,
+      targetMemoryId: diary.id,
+      relationType: "same_topic",
+      strength: 0.95,
+      reason: "legacy edge before diary eligibility guard"
+    });
+    await createMemoryRelation(env.DB, {
+      namespace: "default",
+      sourceMemoryId: diary.id,
+      targetMemoryId: b.id,
+      relationType: "same_topic",
+      strength: 0.95,
+      reason: "legacy edge before diary eligibility guard"
+    });
+
+    const expanded = await listRelationExpandedMemories(env.DB, {
+      namespace: "default",
+      baseIds: [a.id],
+      limit: 10
+    });
+
+    expect(expanded.map((memory) => memory.id)).not.toContain(diary.id);
+    expect(expanded.map((memory) => memory.id)).not.toContain(b.id);
+  });
+
+  it("keeps original diaries out of Y edges while allowing their split memories", async () => {
+    const [diary, splitMemory, target] = await Promise.all([
+      createMemory(env.DB, {
+        namespace: "default",
+        type: "diary",
+        content: "Original long diary retained as source material",
+        source: "cc-connect-vps",
+        importance: 0.8
+      }),
+      createMemory(env.DB, {
+        namespace: "default",
+        type: "lesson",
+        content: "Atomic lesson extracted from the diary",
+        source: "timeline_split",
+        tags: ["origin:mem_diary_test", "date:2026-07-17"],
+        importance: 0.8
+      }),
+      createYMemory("Y eligible relation target")
+    ]);
+
+    await expect(createFiveAxisMemoryRelation(env.DB, {
+      namespace: "default",
+      sourceMemoryId: diary.id,
+      targetMemoryId: target.id,
+      relationType: "same_topic"
+    })).resolves.toBe(false);
+    await expect(createFiveAxisMemoryRelation(env.DB, {
+      namespace: "default",
+      sourceMemoryId: splitMemory.id,
+      targetMemoryId: target.id,
+      relationType: "same_topic"
+    })).resolves.toBe(true);
+
+    const relations = await env.DB.prepare(
+      `SELECT source_memory_id, target_memory_id FROM memory_relations
+       WHERE namespace = 'default' AND relation_type = 'same_topic'
+         AND (source_memory_id IN (?, ?) OR target_memory_id IN (?, ?))`
+    ).bind(diary.id, splitMemory.id, diary.id, splitMemory.id).all<{
+      source_memory_id: string;
+      target_memory_id: string;
+    }>();
+    expect(relations.results.some((relation) =>
+      relation.source_memory_id === diary.id || relation.target_memory_id === diary.id
+    )).toBe(false);
+    expect(relations.results.some((relation) =>
+      relation.source_memory_id === splitMemory.id || relation.target_memory_id === splitMemory.id
+    )).toBe(true);
+  });
+
   it("persists safe edges immediately and gates reviewed edges through approve, reject, rollback, and two-hop recall", async () => {
     const [a, b, c, d] = await Promise.all([
       createYMemory("Y runtime A"),
@@ -249,6 +338,37 @@ describe("Y-axis Worker circuit", () => {
 
     await expect(approveRelationReviewCandidate(env, formFor(candidate!.id)))
       .rejects.toThrow("relation_review_candidate_is_stale");
+  });
+
+  it("rejects a reviewed relation when an endpoint becomes an original diary", async () => {
+    const [source, target] = await Promise.all([
+      createYMemory("Y endpoint type source"),
+      createYMemory("Y endpoint type target")
+    ]);
+    const externalKey = await queueRelationReviewCandidate(env, "default", {
+      relationType: "supports",
+      source,
+      target,
+      strength: 0.8
+    });
+    const candidate = await env.DB.prepare(
+      `SELECT id, status, payload_json FROM memory_candidates
+       WHERE namespace = 'default' AND external_key = ?`
+    ).bind(externalKey).first<CandidateRow>();
+    expect(candidate).toBeTruthy();
+    await updateMemory(env.DB, {
+      namespace: "default",
+      id: target.id,
+      patch: { type: "diary" }
+    });
+
+    await expect(approveRelationReviewCandidate(env, formFor(candidate!.id)))
+      .rejects.toThrow("relation_review_candidate_is_stale");
+    await expect(env.DB.prepare(
+      `SELECT id FROM memory_relations
+       WHERE namespace = 'default' AND source_memory_id = ? AND target_memory_id = ?
+         AND relation_type = 'supports'`
+    ).bind(source.id, target.id).first()).resolves.toBeNull();
   });
 
   it("does not recover a newer outbox revision for a legacy candidate built from an older snapshot", async () => {

@@ -1,4 +1,6 @@
 import type { MemoryCandidateRecord } from "../../db/memoryCandidates";
+import { isFiveAxisMemoryTypeEligible } from "../../memory/fiveAxis/eligibility";
+import { RECALL_EXCLUDED_TYPES } from "../../recall/outputPolicy";
 import { attr, htmlEscape, payloadOf } from "./utils";
 
 interface RelationTypeInfo {
@@ -123,11 +125,19 @@ function relationIssue(candidate: MemoryCandidateRecord, before: Record<string, 
   };
 }
 
-function endpointState(status: string | null | undefined, activeFact: number | null | undefined): string {
+export function relationEndpointState(
+  type: string | null | undefined,
+  status: string | null | undefined,
+  activeFact: number | null | undefined
+): string {
   if (!status) return "不存在";
   if (status === "review") return "审核中，仍视为可连接";
   if (status !== "active") return `${status}，已退出正常召回`;
   if (activeFact === 0) return "active，但不是当前事实";
+  const normalizedType = type?.trim().toLowerCase() ?? "";
+  if (RECALL_EXCLUDED_TYPES.has(normalizedType) || !isFiveAxisMemoryTypeEligible(normalizedType)) {
+    return `active，但 ${type || "该类型"} 原文不参与正常召回或 Y 建边`;
+  }
   return "active，正常参与召回";
 }
 
@@ -142,7 +152,7 @@ function relationEndpointCard(
   const body = content
     ? htmlEscape(short(content, 320))
     : '<span class="review-warning">找不到这条记忆正文</span>';
-  return `<div class="review-before"><strong>${htmlEscape(label)}</strong><div class="memory-meta"><span class="score-pill">${htmlEscape(type || "unknown")}</span><span class="tag-pill">${htmlEscape(endpointState(status, activeFact))}</span></div><p>${body}</p><div class="char-count">ID：${htmlEscape(id || "未知")}</div></div>`;
+  return `<div class="review-before"><strong>${htmlEscape(label)}</strong><div class="memory-meta"><span class="score-pill">${htmlEscape(type || "unknown")}</span><span class="tag-pill">${htmlEscape(relationEndpointState(type, status, activeFact))}</span></div><p>${body}</p><div class="char-count">ID：${htmlEscape(id || "未知")}</div></div>`;
 }
 
 function renderRelationEndpoints(candidate: MemoryCandidateRecord, before: Record<string, unknown>): string {

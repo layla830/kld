@@ -1,9 +1,10 @@
 import {
-  createMemoryRelation,
   normalizeRelationType,
+  prepareMemoryRelationInsert,
   REVIEW_RELATION_TYPES,
   SAFE_RELATION_TYPES
 } from "../../db/memoryRelations";
+import type { MemoryMutationGuard } from "../../db/memories";
 import { fetchMemoriesByIds, listMemoriesSince } from "../../db/memories";
 import { callOpenAICompat } from "../../proxy/openaiAdapter";
 import type { Env, MemoryRecord, OpenAIChatRequest, OpenAIChatResponse } from "../../types";
@@ -11,6 +12,10 @@ import { extractJsonObject } from "../../utils/jsonHelpers";
 import { readAssistantTexts } from "../../adapters/llm/assistantText";
 import { searchVectorMemoriesWithStatus } from "../vectorStore";
 import { queueRelationReviewCandidate } from "../relationReview";
+import {
+  fiveAxisMemoryEligibilityPredicate,
+  isFiveAxisMemoryEligible
+} from "./eligibility";
 
 function dayAgoIso(): string {
   return new Date(Date.now() - 86_400_000).toISOString();
@@ -38,8 +43,45 @@ export function selectActiveD1RelationNeighbors(
     scores.set(neighbor.id, Math.max(scores.get(neighbor.id) ?? 0, neighbor.score));
   }
   return records
-    .filter((record) => record.status === "active" && scores.has(record.id))
+    .filter((record) => isFiveAxisMemoryEligible(record) && scores.has(record.id))
     .map((memory) => ({ memory, vectorScore: scores.get(memory.id) ?? 0 }));
+}
+
+export async function createFiveAxisMemoryRelation(
+  db: D1Database,
+  input: {
+    namespace: string;
+    sourceMemoryId: string;
+    targetMemoryId: string;
+    relationType: string;
+    strength?: number;
+    reason?: string | null;
+  }
+): Promise<boolean> {
+  const source = fiveAxisMemoryEligibilityPredicate("source_memory");
+  const target = fiveAxisMemoryEligibilityPredicate("target_memory");
+  const guard: MemoryMutationGuard = {
+    sql: `EXISTS (
+        SELECT 1 FROM memories AS source_memory
+        WHERE source_memory.namespace = ? AND source_memory.id = ? AND ${source.sql}
+      )
+      AND EXISTS (
+        SELECT 1 FROM memories AS target_memory
+        WHERE target_memory.namespace = ? AND target_memory.id = ? AND ${target.sql}
+      )`,
+    binds: [
+      input.namespace,
+      input.sourceMemoryId,
+      ...source.binds,
+      input.namespace,
+      input.targetMemoryId,
+      ...target.binds
+    ]
+  };
+  const statement = prepareMemoryRelationInsert(db, input, guard);
+  if (!statement) return false;
+  const result = await statement.run();
+  return Boolean(result.meta.changes);
 }
 
 const RELATION_NEIGHBOR_TOP_K = 6;
@@ -206,14 +248,14 @@ export async function proposeRelationsViaLlm(
 export interface RelationBuildDependencies {
   findCandidates: typeof findRelationCandidates;
   proposeRelations: typeof proposeRelationsViaLlm;
-  createRelation: typeof createMemoryRelation;
+  createRelation: typeof createFiveAxisMemoryRelation;
   queueReviewCandidate: typeof queueRelationReviewCandidate;
 }
 
 const defaultRelationBuildDependencies: RelationBuildDependencies = {
   findCandidates: findRelationCandidates,
   proposeRelations: proposeRelationsViaLlm,
-  createRelation: createMemoryRelation,
+  createRelation: createFiveAxisMemoryRelation,
   queueReviewCandidate: queueRelationReviewCandidate
 };
 
@@ -234,12 +276,12 @@ export async function runRelationBuild(
   const dryRun = options.dryRun ?? true;
   const memoryIds = [...new Set((options.memoryIds ?? []).map((id) => id.trim()).filter(Boolean))].slice(0, 10);
   const memories = memoryIds.length > 0
-    ? (await fetchMemoriesByIds(env.DB, { namespace, ids: memoryIds })).filter((memory) => memory.status === "active")
+    ? (await fetchMemoriesByIds(env.DB, { namespace, ids: memoryIds })).filter(isFiveAxisMemoryEligible)
     : await listMemoriesSince(env.DB, {
         namespace,
         since: options.sinceIso ?? dayAgoIso(),
         limit: RELATION_MAX_SCAN
-      });
+      }).then((records) => records.filter(isFiveAxisMemoryEligible));
   let inserted = 0;
   let review = 0;
   let proposed = 0;
@@ -247,7 +289,9 @@ export async function runRelationBuild(
 
   let candidates: RelationCandidate[];
   try {
-    candidates = await dependencies.findCandidates(env, namespace, memories);
+    candidates = (await dependencies.findCandidates(env, namespace, memories))
+      .filter((candidate) => isFiveAxisMemoryEligible(candidate.source)
+        && isFiveAxisMemoryEligible(candidate.target));
   } catch (cause) {
     const error = cause instanceof Error ? cause.message : String(cause);
     console.error("five-axis relation candidate search failed", {

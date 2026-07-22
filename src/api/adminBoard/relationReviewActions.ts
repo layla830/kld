@@ -8,6 +8,10 @@ import {
 } from "../../db/memoryRelations";
 import { getMemoryById } from "../../db/memories";
 import { prepareCandidateAxisRunReconciliation } from "../../db/memoryFiveAxisRuns";
+import {
+  fiveAxisMemoryEligibilityPredicate,
+  isFiveAxisMemoryEligible
+} from "../../memory/fiveAxis/eligibility";
 import type { Env } from "../../types";
 import { newId } from "../../utils/ids";
 import { nowIso } from "../../utils/time";
@@ -94,14 +98,25 @@ async function commitApproval(
     proposal
   });
   const statements: D1PreparedStatement[] = [];
-  const endpointGuard = (memoryId: string, revision: number | null, updatedAt: string): unknown[] => [
-    candidate.namespace,
-    memoryId,
-    revision,
-    revision,
-    revision,
-    updatedAt
-  ];
+  const endpointGuard = (memoryId: string, revision: number | null, updatedAt: string) => {
+    const eligibility = fiveAxisMemoryEligibilityPredicate("memory");
+    return {
+      sql: `memory.namespace = ? AND memory.id = ? AND ${eligibility.sql}
+        AND ((? IS NOT NULL AND memory.five_axis_revision = ?)
+          OR (? IS NULL AND memory.updated_at = ?))`,
+      binds: [
+        candidate.namespace,
+        memoryId,
+        ...eligibility.binds,
+        revision,
+        revision,
+        revision,
+        updatedAt
+      ]
+    };
+  };
+  const sourceGuard = endpointGuard(proposal.sourceId, proposal.sourceRevision, proposal.sourceUpdatedAt);
+  const targetGuard = endpointGuard(proposal.targetId, proposal.targetRevision, proposal.targetUpdatedAt);
   if (inserted) {
     statements.push(env.DB.prepare(
       `INSERT INTO memory_relations (
@@ -113,14 +128,12 @@ async function commitApproval(
          WHERE namespace = ? AND id = ? AND status = 'pending' AND action = 'y_relation_review'
        )
        AND EXISTS (
-         SELECT 1 FROM memories
-         WHERE namespace = ? AND id = ? AND status = 'active'
-           AND ((? IS NOT NULL AND five_axis_revision = ?) OR (? IS NULL AND updated_at = ?))
+         SELECT 1 FROM memories AS memory
+         WHERE ${sourceGuard.sql}
        )
        AND EXISTS (
-         SELECT 1 FROM memories
-         WHERE namespace = ? AND id = ? AND status = 'active'
-           AND ((? IS NOT NULL AND five_axis_revision = ?) OR (? IS NULL AND updated_at = ?))
+         SELECT 1 FROM memories AS memory
+         WHERE ${targetGuard.sql}
        )`
     ).bind(
       relationId,
@@ -133,8 +146,8 @@ async function commitApproval(
       now,
       candidate.namespace,
       candidate.id,
-      ...endpointGuard(proposal.sourceId, proposal.sourceRevision, proposal.sourceUpdatedAt),
-      ...endpointGuard(proposal.targetId, proposal.targetRevision, proposal.targetUpdatedAt)
+      ...sourceGuard.binds,
+      ...targetGuard.binds
     ));
   }
   const updateIndex = statements.length;
@@ -144,14 +157,12 @@ async function commitApproval(
          resolved_at = ?, updated_at = ?
      WHERE namespace = ? AND id = ? AND status = 'pending' AND action = 'y_relation_review'
        AND EXISTS (
-         SELECT 1 FROM memories
-         WHERE namespace = ? AND id = ? AND status = 'active'
-           AND ((? IS NOT NULL AND five_axis_revision = ?) OR (? IS NULL AND updated_at = ?))
+         SELECT 1 FROM memories AS memory
+         WHERE ${sourceGuard.sql}
        )
        AND EXISTS (
-         SELECT 1 FROM memories
-         WHERE namespace = ? AND id = ? AND status = 'active'
-           AND ((? IS NOT NULL AND five_axis_revision = ?) OR (? IS NULL AND updated_at = ?))
+         SELECT 1 FROM memories AS memory
+         WHERE ${targetGuard.sql}
        )
        AND EXISTS (
          SELECT 1 FROM memory_relations
@@ -165,8 +176,8 @@ async function commitApproval(
     now,
     candidate.namespace,
     candidate.id,
-    ...endpointGuard(proposal.sourceId, proposal.sourceRevision, proposal.sourceUpdatedAt),
-    ...endpointGuard(proposal.targetId, proposal.targetRevision, proposal.targetUpdatedAt),
+    ...sourceGuard.binds,
+    ...targetGuard.binds,
     candidate.namespace,
     relationId,
     proposal.sourceId,
@@ -267,7 +278,7 @@ function endpointIsStale(
   expectedRevision: number | null,
   expectedUpdatedAt: string
 ): boolean {
-  if (!memory || memory.status !== "active") return true;
+  if (!memory || !isFiveAxisMemoryEligible(memory)) return true;
   return expectedRevision !== null
     ? (memory.five_axis_revision ?? 1) !== expectedRevision
     : memory.updated_at !== expectedUpdatedAt;
