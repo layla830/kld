@@ -247,23 +247,21 @@ const checks = [
   [
     "Recall: long diary records are excluded from every route",
     recallOutputPolicy.includes('new Set(["diary", "layla_diary", "auto_diary"])') &&
+      recallOutputPolicy.includes('TIMELINE_DAY_CONTENT_TAG = "timeline_day_content:v1"') &&
       files.search.includes("filter(isRecallEligible)"),
   ],
   [
-    "Diary split: v2 requires a day node, verbatim evidence, and bounded sparse output",
-    diarySplitAny("Never return an empty items array for a formal diary") &&
-      diarySplitAny("timeline_day_fallback:verbatim") &&
-      diarySplitAny("Return 2-6 high-signal items") &&
+    "Diary split: v2 forbids synthetic day nodes and keeps bounded verbatim output",
+    diarySplitAny("Return 0-5 high-signal atomic items") &&
+      diarySplitAny("Do not create a date-only record") &&
+      diarySplitAny("or timeline_day item") &&
       diarySplitAny("the diary narrator '我' is KLD") &&
       diarySplitAny("Never store KLD's own behavior") &&
     diarySplitAny("!diary.includes(evidence)") &&
       diarySplitAny('type === "quote" && !diary.includes(content)') &&
-      diarySplitAny("content.length > 360") &&
-      diarySplitAny("diary.length * 0.65") &&
       diarySplitAny("datesFromDiary") &&
       diarySplitAny("allowedDateSet.has") &&
-      diarySplitAny("timelineDates.has(itemDate)") &&
-      diarySplitAny("MAX_ITEMS_PER_DIARY = 6") &&
+      diarySplitAny("MAX_ITEMS_PER_DIARY = 5") &&
       diarySplit.includes("max_tokens: 4200"),
   ],
   [
@@ -280,10 +278,9 @@ const checks = [
     diarySplitAny('crypto.subtle.digest("SHA-256"') &&
       diarySplitAny("split_item:") &&
       diarySplitAny("existingSplitItemId") &&
-      diarySplit.includes("DIARY_SPLIT_INCOMPLETE_EVENT") &&
       diarySplitState.includes('DIARY_SPLIT_COMPLETE_EVENT = "diary_split_v2_complete"') &&
-      diarySplitState.includes("json_extract(payload_json, '$.item_count')") &&
-      diarySplitState.includes(") > 0"),
+      diarySplitState.includes("'$.item_count'") &&
+      diarySplitState.includes("'$.outcome') = 'no_durable_items'"),
   ],
   [
     "Recall: exact MCP search excludes diaries unless explicitly requested",
@@ -327,8 +324,9 @@ const checks = [
       dreamCandidatePolicy.includes('reason: "standalone_excerpt"') &&
       dreamCandidatePolicy.includes("missing_chunk_summary") &&
       candidateIngress.includes('eventType: "dream_candidates_suppressed"') &&
-      candidateIngress.includes('policy: "chunk_summary_first"') &&
-      candidateIngress.includes("accepted: candidates.length") &&
+      candidateIngress.includes('policy: "dream_candidate_policy"') &&
+      candidateIngress.includes("applyDreamDeleteTargetPolicy") &&
+      candidateIngress.includes("accepted: accepted.length") &&
       candidateIngress.includes("stored: accepted.length"),
   ],
   [
@@ -348,10 +346,10 @@ const checks = [
       queueConsumer.includes('case "diary_split"') &&
       queueConsumer.includes("hasSuccessfulDiarySplit") &&
       queueConsumer.includes('eventType: "diary_split_queue_complete"') &&
-      diarySplitState.includes("split.type = 'timeline_day'") &&
+      diarySplitState.includes("split.type != 'timeline_day'") &&
       diarySplitState.includes("value = 'split_version:v2'") &&
       diarySplitState.includes("value = 'has_timeline_split'") &&
-      diarySplitState.includes("COALESCE(CAST(json_extract(event.payload_json, '$.item_count') AS INTEGER), 0) > 0") &&
+      diarySplitState.includes('successfulCompletionSql("event")') &&
       mcpApi.includes("enqueueDiarySplitIfNeeded(env, memory)") &&
       memoriesApi.includes("enqueueDiarySplitIfNeeded(env, memory)"),
   ],
@@ -378,7 +376,7 @@ const checks = [
       diarySplit.includes("rescreened_by:v2:") &&
       diarySplit.includes('reason: "already_rescreened"') &&
       diarySplit.includes("old_review") &&
-      diarySplit.includes("createdIds: []") &&
+      diarySplit.includes("const createdIds: string[] = []") &&
       diarySplit.includes("env.DB.batch") &&
       diarySplit.includes("removeMemoryVector") &&
       diarySplit.includes("vector_sync_status = 'pending'"),

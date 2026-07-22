@@ -1,12 +1,28 @@
 import type { MemoryApiRecord } from "../types";
 
-export const RECALL_EXCLUDED_TYPES = new Set(["diary", "layla_diary", "auto_diary", "timeline_day"]);
+export const RECALL_EXCLUDED_TYPES = new Set(["diary", "layla_diary", "auto_diary"]);
+export const TIMELINE_DAY_CONTENT_TAG = "timeline_day_content:v1";
+
+function hasTag(tags: string[] | string | null | undefined, expected: string): boolean {
+  if (Array.isArray(tags)) return tags.includes(expected);
+  if (typeof tags !== "string") return false;
+  try {
+    const parsed = JSON.parse(tags) as unknown;
+    return Array.isArray(parsed) && parsed.includes(expected);
+  } catch {
+    return false;
+  }
+}
+
 export function isRecallEligible<T extends {
   type: string;
   status?: string;
   active_fact?: number | boolean;
+  tags?: string[] | string | null;
 }>(record: T): boolean {
-  if (RECALL_EXCLUDED_TYPES.has(record.type.toLowerCase())) return false;
+  const type = record.type.toLowerCase();
+  if (RECALL_EXCLUDED_TYPES.has(type)) return false;
+  if (type === "timeline_day" && !hasTag(record.tags, TIMELINE_DAY_CONTENT_TAG)) return false;
   if (record.status !== undefined && record.status !== "active") return false;
   return record.active_fact !== 0 && record.active_fact !== false;
 }

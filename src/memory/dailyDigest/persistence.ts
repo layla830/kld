@@ -2,6 +2,7 @@ import { getMemoryById, listMemories } from "../../db/memories";
 import { createMemoryEvent } from "../../db/memoryEvents";
 import { createSyncedMemory, deleteSyncedMemory } from "../state";
 import { queueRelationReviewCandidate } from "../relationReview";
+import { isMemoryDreamDeleteProtected } from "../dreamCandidatePolicy";
 import type { Env, MemoryRecord, MessageRecord } from "../../types";
 import { readString, truncate, uniqueStrings } from "./parser";
 import type {
@@ -103,7 +104,7 @@ export async function queueMemoryMutationReviews(
   }
   for (const item of input.deletes) {
     const existing = await getMemoryById(env.DB, { namespace: input.namespace, id: item.target_id });
-    if (existing?.status === "active" && !existing.pinned) deletes.push(item);
+    if (existing?.status === "active" && !isMemoryDreamDeleteProtected(existing)) deletes.push(item);
   }
 
   if (updates.length || deletes.length) {

@@ -94,6 +94,8 @@ describe("admin board view", () => {
     expect(renderToastScriptContent(null)).toContain("const n=null");
     expect(renderToastScriptContent(undefined)).toContain("const n=undefined");
     expect(renderToastScriptContent("")).toContain("if(n&&m[n])");
+    expect(renderToastScriptContent("")).not.toContain("tl-timeline_day");
+    expect(renderToastScriptContent("")).not.toContain("remove()");
   });
 
   it("renders each batch bar only for matching candidates", () => {
@@ -171,6 +173,6 @@ describe("admin board view", () => {
     );
     expect(mReview.indexOf("Z 事实状态 · Y 关系审核 · M 安全代谢")).toBeLessThan(mReview.indexOf('id="m-batch-form"'));
     expect(mReview.indexOf('id="m-batch-form"')).toBeLessThan(mReview.indexOf("<article"));
-    expect(mReview).toContain(`<script>${M_BATCH_SCRIPT}const n="m-scanned"`);
+    expect(mReview).toContain(`<script>${M_BATCH_SCRIPT}${renderToastScriptContent("m-scanned")}</script>`);
   });
 });

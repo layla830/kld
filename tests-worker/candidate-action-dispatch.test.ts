@@ -294,4 +294,128 @@ describe("generic candidate action dispatch", () => {
       "SELECT COUNT(*) AS count FROM memories WHERE namespace = 'default' AND content = ?"
     ).bind(content).first()).resolves.toMatchObject({ count: 1 });
   });
+
+  it("refuses candidate deletion of protected durable memories", async () => {
+    const target = await createMemory(env.DB, {
+      namespace: "default",
+      type: "rule",
+      content: `protected rule ${crypto.randomUUID()}`,
+      importance: 1
+    });
+    const candidate = await queueCandidate({
+      key: "protected-delete",
+      action: "delete",
+      targetId: target.id
+    });
+
+    await expect(candidate.approve()).resolves.toBeNull();
+    await expect(getMemoryById(env.DB, { namespace: "default", id: target.id }))
+      .resolves.toMatchObject({ status: "active" });
+    await expect(env.DB.prepare(
+      "SELECT status FROM memory_candidates WHERE namespace = 'default' AND id = ?"
+    ).bind(candidate.id).first()).resolves.toMatchObject({ status: "rejected" });
+    await expect(env.DB.prepare(
+      "SELECT event_type FROM memory_events WHERE namespace = 'default' AND memory_id = ? ORDER BY created_at DESC LIMIT 1"
+    ).bind(target.id).first()).resolves.toMatchObject({
+      event_type: "memory_candidate_refused_protected_target"
+    });
+  });
+
+  it("refuses deletion when the target becomes protected after approval reads it", async () => {
+    const target = await createMemory(env.DB, {
+      namespace: "default",
+      type: "note",
+      content: `concurrently protected delete target ${crypto.randomUUID()}`,
+      importance: 0.2
+    });
+    const candidate = await queueCandidate({
+      key: "delete-target-protected-during-commit",
+      action: "delete",
+      targetId: target.id
+    });
+    const triggerName = `test_delete_protection_${crypto.randomUUID().replaceAll("-", "")}`;
+    await env.DB.prepare(
+      `CREATE TRIGGER ${triggerName}
+       AFTER INSERT ON memory_events
+       WHEN NEW.event_type = 'memory_candidate_delete_claimed' AND NEW.memory_id = '${target.id}'
+       BEGIN
+         UPDATE memories
+         SET type = 'rule', importance = 1, fact_key = 'protected.concurrent', active_fact = 1
+         WHERE namespace = 'default' AND id = '${target.id}';
+       END`
+    ).run();
+    try {
+      await expect(candidate.approve()).resolves.toBeNull();
+    } finally {
+      await env.DB.prepare(`DROP TRIGGER IF EXISTS ${triggerName}`).run();
+    }
+
+    await expect(getMemoryById(env.DB, { namespace: "default", id: target.id }))
+      .resolves.toMatchObject({
+        status: "active",
+        type: "rule",
+        importance: 1,
+        fact_key: "protected.concurrent",
+        active_fact: 1
+      });
+    await expect(env.DB.prepare(
+      "SELECT status FROM memory_candidates WHERE namespace = 'default' AND id = ?"
+    ).bind(candidate.id).first()).resolves.toMatchObject({ status: "rejected" });
+    await expect(env.DB.prepare(
+      "SELECT event_type, payload_json FROM memory_events WHERE namespace = 'default' AND memory_id = ? ORDER BY created_at DESC LIMIT 1"
+    ).bind(target.id).first<{ event_type: string; payload_json: string }>()).resolves.toMatchObject({
+      event_type: "memory_candidate_refused_protected_target",
+      payload_json: expect.stringContaining("target_became_protected_before_delete")
+    });
+  });
+
+  it("refuses a stale delete candidate after its target is already deleted", async () => {
+    const target = await createMemory(env.DB, {
+      namespace: "default",
+      type: "note",
+      content: `already deleted target ${crypto.randomUUID()}`,
+      importance: 0.2
+    });
+    const candidate = await queueCandidate({
+      key: "stale-delete",
+      action: "delete",
+      targetId: target.id
+    });
+    await env.DB.prepare(
+      "UPDATE memories SET status = 'deleted', active_fact = 0 WHERE namespace = 'default' AND id = ?"
+    ).bind(target.id).run();
+
+    await expect(candidate.approve()).resolves.toBeNull();
+    await expect(env.DB.prepare(
+      "SELECT status FROM memory_candidates WHERE namespace = 'default' AND id = ?"
+    ).bind(candidate.id).first()).resolves.toMatchObject({ status: "rejected" });
+  });
+
+  it("lets only one of two duplicate delete candidates own the mutation", async () => {
+    const target = await createMemory(env.DB, {
+      namespace: "default",
+      type: "note",
+      content: `duplicate delete target ${crypto.randomUUID()}`,
+      importance: 0.2
+    });
+    const first = await queueCandidate({
+      key: "duplicate-delete-a",
+      action: "delete",
+      targetId: target.id
+    });
+    const second = await queueCandidate({
+      key: "duplicate-delete-b",
+      action: "delete",
+      targetId: target.id
+    });
+
+    const results = await Promise.all([first.approve(), second.approve()]);
+    expect(results.filter(Boolean)).toHaveLength(1);
+    const statuses = await env.DB.prepare(
+      "SELECT status FROM memory_candidates WHERE namespace = 'default' AND id IN (?, ?) ORDER BY status"
+    ).bind(first.id, second.id).all<{ status: string }>();
+    expect(statuses.results?.map((row) => row.status).sort()).toEqual(["approved", "rejected"]);
+    await expect(getMemoryById(env.DB, { namespace: "default", id: target.id }))
+      .resolves.toMatchObject({ status: "deleted" });
+  });
 });

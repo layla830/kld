@@ -2,7 +2,12 @@ import { authenticate } from "../auth/apiKey";
 import { requireScope } from "../auth/scopes";
 import { upsertMemoryCandidate, type CandidateInput } from "../db/memoryCandidates";
 import { createMemoryEvent } from "../db/memoryEvents";
-import { applyDreamCandidatePolicy } from "../memory/dreamCandidatePolicy";
+import { fetchMemoriesByIds } from "../db/memories";
+import {
+  applyDreamCandidatePolicy,
+  applyDreamDeleteTargetPolicy,
+  type DreamCandidatePolicyDecision
+} from "../memory/dreamCandidatePolicy";
 import { isDreamIngressCandidateAction } from "../memory/candidateActionContract";
 import type { Env } from "../types";
 import { json, openAiError } from "../utils/json";
@@ -51,8 +56,23 @@ export async function handleMemoryCandidates(request: Request, env: Env): Promis
   if (candidates.some((item) => !item)) return openAiError("invalid candidate payload", 400);
   const namespace = resolveNamespace(auth.profile, body?.namespace);
   const decisions = (candidates as CandidateInput[]).map(applyDreamCandidatePolicy);
-  const accepted = decisions.filter((decision) => decision.outcome === "accept");
-  const suppressed = decisions.filter((decision) => decision.outcome === "suppress");
+  const deleteTargetIds = [...new Set(decisions.flatMap((decision) =>
+    decision.outcome === "accept" && decision.candidate.action === "delete" && decision.candidate.targetId
+      ? [decision.candidate.targetId]
+      : []
+  ))];
+  const deleteTargets = await fetchMemoriesByIds(env.DB, { namespace, ids: deleteTargetIds });
+  const deleteTargetsById = new Map(deleteTargets.map((memory) => [memory.id, memory]));
+  const targetChecked = decisions.map((decision): DreamCandidatePolicyDecision =>
+    decision.outcome === "accept"
+      ? applyDreamDeleteTargetPolicy(
+        decision.candidate,
+        decision.candidate.targetId ? deleteTargetsById.get(decision.candidate.targetId) : null
+      )
+      : decision
+  );
+  const accepted = targetChecked.filter((decision) => decision.outcome === "accept");
+  const suppressed = targetChecked.filter((decision) => decision.outcome === "suppress");
 
   for (const decision of accepted) await upsertMemoryCandidate(env.DB, namespace, decision.candidate);
   if (suppressed.length > 0) {
@@ -60,12 +80,13 @@ export async function handleMemoryCandidates(request: Request, env: Env): Promis
       namespace,
       eventType: "dream_candidates_suppressed",
       payload: {
-        policy: "chunk_summary_first",
+        policy: "dream_candidate_policy",
         count: suppressed.length,
         candidates: suppressed.slice(0, 100).map((decision) => ({
           external_key: decision.candidate.externalKey,
           dream_date: decision.candidate.dreamDate,
           action: decision.candidate.action,
+          target_id: decision.candidate.targetId ?? null,
           reason: decision.reason,
           source_chunk_ids: decision.candidate.sourceChunkIds
         }))
@@ -76,7 +97,7 @@ export async function handleMemoryCandidates(request: Request, env: Env): Promis
   return json({
     data: {
       received: candidates.length,
-      accepted: candidates.length,
+      accepted: accepted.length,
       stored: accepted.length,
       suppressed: suppressed.length,
       namespace

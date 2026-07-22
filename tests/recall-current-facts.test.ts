@@ -5,7 +5,7 @@ import {
   searchMemoriesByText
 } from "../src/db/memories";
 import { searchEmotionMemories } from "../src/recall/sources/emotion";
-import { isRecallEligible } from "../src/recall/outputPolicy";
+import { isRecallEligible, TIMELINE_DAY_CONTENT_TAG } from "../src/recall/outputPolicy";
 import type { Env } from "../src/types";
 
 function sqlCapture() {
@@ -54,5 +54,11 @@ describe("current-fact recall contract", () => {
     expect(isRecallEligible({ type: "project_state", status: "active", active_fact: 0 })).toBe(false);
     expect(isRecallEligible({ type: "project_state", status: "superseded", active_fact: 1 })).toBe(false);
     expect(isRecallEligible({ type: "diary", status: "active", active_fact: 1 })).toBe(false);
+    expect(isRecallEligible({
+      type: "timeline_day", status: "active", active_fact: 1, tags: [TIMELINE_DAY_CONTENT_TAG]
+    })).toBe(true);
+    expect(isRecallEligible({
+      type: "timeline_day", status: "active", active_fact: 1, tags: ["timeline_day_fallback:verbatim"]
+    })).toBe(false);
   });
 });

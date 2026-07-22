@@ -1,6 +1,7 @@
 import type { Env, MemoryApiRecord, MemoryRecord } from "../types";
 import { toMemoryApiRecord } from "../memory/search";
 import { BROAD_TIME_QUERY_RE } from "./intent";
+import { isRecallEligible } from "./outputPolicy";
 import { dateNeedles, likeNeedle, matchesAnyNeedle, supportNeedles, topicNeedles } from "./vocabulary";
 
 const BROAD_EVENT_QUESTION_RE = /说了什么|聊了什么|在聊什么|弄什么|做什么|干什么|怎么样|发生了什么|发生什么|怎么聊/;
@@ -49,6 +50,7 @@ async function fetchDatedTimelineCandidates(
     `SELECT * FROM memories
      WHERE namespace = ?
        AND status = 'active'
+       AND active_fact != 0
        AND type NOT IN ('diary', 'layla_diary', 'auto_diary')
        AND (type = 'timeline_day' OR tags LIKE '%day_summary%' OR tags LIKE '%timeline%')
        AND (${clauses.join(" OR ")})
@@ -59,6 +61,7 @@ async function fetchDatedTimelineCandidates(
 
   return (result.results ?? [])
     .map((record) => toMemoryApiRecord(record, 1))
+    .filter(isRecallEligible)
     .filter((memory) => isTimeSummaryCandidate(memory) && matchesAnyNeedle(memory, needles));
 }
 
