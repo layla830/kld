@@ -4,6 +4,7 @@ import { handleCacheHealth, handleDreamDryRun, handleZAuditApprove, handleZAudit
 import { handleChatCompletions } from "./api/chatCompletions";
 import { handleGuideDogChatCompletions } from "./api/guideDog";
 import { handleAdminBoard } from "./api/adminBoard";
+import { isAdminBoardRoute } from "./api/adminBoard/routes";
 import { handleAdminStartupContext, handleAdminStartupContextLite } from "./api/adminStartup";
 import { handleBooks } from "./api/books";
 import { handleBooksReaderPage } from "./api/booksReader";
@@ -47,29 +48,7 @@ export default {
       return handleHealth(env);
     }
 
-    if (
-      [
-        "/admin/memories",
-        "/admin/memories/create",
-        "/admin/memories/edit",
-        "/admin/memories/delete",
-        "/admin/memories/review/approve",
-        "/admin/memories/review/reject",
-        "/admin/memories/candidates/approve",
-        "/admin/memories/candidates/reject",
-        "/admin/memories/candidates/repair-evidence",
-        "/admin/memories/candidates/batch-quality-reject",
-        "/admin/memories/candidates/batch-facts",
-        "/admin/memories/x-timeline/scan",
-        "/admin/memories/x-timeline/approve",
-        "/admin/memories/x-timeline/reject",
-        "/admin/memories/m-review/scan",
-        "/admin/memories/m-review/approve",
-        "/admin/memories/m-review/reject",
-        "/admin/memories/m-review/batch",
-        "/admin/memories/m-review/rollback"
-      ].includes(url.pathname)
-    ) {
+    if (isAdminBoardRoute(request.method, url.pathname)) {
       return handleAdminBoard(request, env, ctx);
     }
 

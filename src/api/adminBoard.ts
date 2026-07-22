@@ -17,6 +17,7 @@ import { approveOperationalReviewCandidate, rejectOperationalReviewCandidate, ro
 import type { MemoryCandidateRecord } from "../db/memoryCandidates";
 import { loadDreamConfig } from "../config/runtime";
 import { retryFiveAxisDeadLetter } from "../db/memoryFiveAxisOutbox";
+import { ADMIN_BOARD_ROUTES } from "./adminBoard/routes";
 
 export async function handleAdminBoard(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   if (!isAuthorized(request, env)) return unauthorized();
@@ -27,7 +28,7 @@ export async function handleAdminBoard(request: Request, env: Env, ctx: Executio
     if (memories.length > 0) ctx.waitUntil(enqueueMemoryVectorSync(env, memories));
   };
 
-  if (request.method === "POST" && url.pathname === "/admin/memories/create") {
+  if (request.method === "POST" && url.pathname === ADMIN_BOARD_ROUTES.create.path) {
     const form = await request.formData();
     const created = await createBoardMemory(env, form);
     const kind = readFormText(form, "kind");
@@ -39,7 +40,7 @@ export async function handleAdminBoard(request: Request, env: Env, ctx: Executio
     return Response.redirect(`${url.origin}/admin/memories${qs(inputFromUrl(new URL(`${url.origin}/admin/memories?tab=${tab}`)), { tab, notice: created ? "created" : "empty" })}`, 303);
   }
 
-  if (request.method === "POST" && url.pathname === "/admin/memories/edit") {
+  if (request.method === "POST" && url.pathname === ADMIN_BOARD_ROUTES.edit.path) {
     const ref = request.headers.get("referer") || `${url.origin}/admin/memories`;
     try {
       const updated = await editBoardMemory(env, await request.formData());
@@ -51,14 +52,14 @@ export async function handleAdminBoard(request: Request, env: Env, ctx: Executio
     }
   }
 
-  if (request.method === "POST" && url.pathname === "/admin/memories/delete") {
+  if (request.method === "POST" && url.pathname === ADMIN_BOARD_ROUTES.delete.path) {
     const ref = request.headers.get("referer") || `${url.origin}/admin/memories`;
     const deleted = await deleteBoardMemory(env, await request.formData());
     if (deleted) scheduleVectorSync(deleted);
     return Response.redirect(`${url.origin}${noticeUrl(ref, "deleted")}`, 303);
   }
 
-  if (request.method === "POST" && url.pathname === "/admin/memories/review/approve") {
+  if (request.method === "POST" && url.pathname === ADMIN_BOARD_ROUTES.approveDreamReview.path) {
     const ref = request.headers.get("referer") || `${url.origin}/admin/memories?tab=review`;
     try {
       const result = await approveDreamReview(env, await request.formData());
@@ -72,7 +73,7 @@ export async function handleAdminBoard(request: Request, env: Env, ctx: Executio
     }
   }
 
-  if (request.method === "POST" && url.pathname === "/admin/memories/review/reject") {
+  if (request.method === "POST" && url.pathname === ADMIN_BOARD_ROUTES.rejectDreamReview.path) {
     const ref = request.headers.get("referer") || `${url.origin}/admin/memories?tab=review`;
     try {
       const result = await rejectDreamReview(env, await request.formData());
@@ -84,7 +85,7 @@ export async function handleAdminBoard(request: Request, env: Env, ctx: Executio
     }
   }
 
-  if (request.method === "POST" && url.pathname === "/admin/memories/candidates/approve") {
+  if (request.method === "POST" && url.pathname === ADMIN_BOARD_ROUTES.approveCandidate.path) {
     const ref = request.headers.get("referer") || `${url.origin}/admin/memories?tab=review`;
     try {
       const target = await approveCandidate(env, await request.formData());
@@ -96,7 +97,7 @@ export async function handleAdminBoard(request: Request, env: Env, ctx: Executio
     }
   }
 
-  if (request.method === "POST" && url.pathname === "/admin/memories/candidates/reject") {
+  if (request.method === "POST" && url.pathname === ADMIN_BOARD_ROUTES.rejectCandidate.path) {
     const ref = request.headers.get("referer") || `${url.origin}/admin/memories?tab=review`;
     try {
       const rejected = await rejectCandidate(env, await request.formData());
@@ -107,14 +108,14 @@ export async function handleAdminBoard(request: Request, env: Env, ctx: Executio
     }
   }
 
-  if (request.method === "POST" && url.pathname === "/admin/memories/coordinate-backfill/toggle") {
+  if (request.method === "POST" && url.pathname === ADMIN_BOARD_ROUTES.toggleCoordinateBackfill.path) {
     const form = await request.formData();
     const enabled = readFormText(form, "enabled") === "true";
     await setCoordinateBackfillEnabled(env, namespace, enabled);
     return Response.redirect(`${url.origin}/admin/memories?tab=lmc5&notice=${enabled ? "backfill-resumed" : "backfill-paused"}`, 303);
   }
 
-  if (request.method === "POST" && url.pathname === "/admin/memories/x-timeline/scan") {
+  if (request.method === "POST" && url.pathname === ADMIN_BOARD_ROUTES.scanTimeline.path) {
     try {
       const form = await request.formData();
       const result = await scanTimelineBackfillPage(env, namespace, readFormText(form, "reset") === "true");
@@ -125,7 +126,7 @@ export async function handleAdminBoard(request: Request, env: Env, ctx: Executio
     }
   }
 
-  if (request.method === "POST" && url.pathname === "/admin/memories/x-timeline/approve") {
+  if (request.method === "POST" && url.pathname === ADMIN_BOARD_ROUTES.approveTimeline.path) {
     const ref = request.headers.get("referer") || `${url.origin}/admin/memories?tab=x-review`;
     try {
       const updated = await approveTimelineCandidate(env, await request.formData());
@@ -137,7 +138,7 @@ export async function handleAdminBoard(request: Request, env: Env, ctx: Executio
     }
   }
 
-  if (request.method === "POST" && url.pathname === "/admin/memories/x-timeline/reject") {
+  if (request.method === "POST" && url.pathname === ADMIN_BOARD_ROUTES.rejectTimeline.path) {
     const ref = request.headers.get("referer") || `${url.origin}/admin/memories?tab=x-review`;
     try {
       const rejected = await rejectTimelineCandidate(env, await request.formData());
@@ -148,7 +149,7 @@ export async function handleAdminBoard(request: Request, env: Env, ctx: Executio
     }
   }
 
-  if (request.method === "POST" && url.pathname === "/admin/memories/lmc5/retry-dead-letter") {
+  if (request.method === "POST" && url.pathname === ADMIN_BOARD_ROUTES.retryFiveAxisDeadLetter.path) {
     const form = await request.formData();
     const id = Number(readFormText(form, "id"));
     const retried = Number.isSafeInteger(id) && id > 0
@@ -157,7 +158,7 @@ export async function handleAdminBoard(request: Request, env: Env, ctx: Executio
     return Response.redirect(`${url.origin}/admin/memories?tab=lmc5&notice=${retried ? "five-axis-retried" : "empty"}`, 303);
   }
 
-  if (request.method === "POST" && url.pathname === "/admin/memories/candidates/repair-evidence") {
+  if (request.method === "POST" && url.pathname === ADMIN_BOARD_ROUTES.repairCandidateEvidence.path) {
     const ref = request.headers.get("referer") || `${url.origin}/admin/memories?tab=review`;
     try {
       const result = await repairCandidateEvidence(env, await request.formData());
@@ -168,7 +169,7 @@ export async function handleAdminBoard(request: Request, env: Env, ctx: Executio
     }
   }
 
-  if (request.method === "POST" && url.pathname === "/admin/memories/candidates/batch-quality-reject") {
+  if (request.method === "POST" && url.pathname === ADMIN_BOARD_ROUTES.batchRejectCandidateQuality.path) {
     const ref = request.headers.get("referer") || `${url.origin}/admin/memories?tab=review`;
     try {
       const result = await batchRejectLowQualityCandidates(env, await request.formData());
@@ -180,7 +181,7 @@ export async function handleAdminBoard(request: Request, env: Env, ctx: Executio
     }
   }
 
-  if (request.method === "POST" && url.pathname === "/admin/memories/candidates/batch-facts") {
+  if (request.method === "POST" && url.pathname === ADMIN_BOARD_ROUTES.batchReviewCandidateFacts.path) {
     const ref = request.headers.get("referer") || `${url.origin}/admin/memories?tab=review`;
     try {
       const result = await batchReviewDiaryFactCandidates(env, await request.formData());
@@ -197,7 +198,7 @@ export async function handleAdminBoard(request: Request, env: Env, ctx: Executio
     }
   }
 
-  if (request.method === "POST" && url.pathname === "/admin/memories/m-review/scan") {
+  if (request.method === "POST" && url.pathname === ADMIN_BOARD_ROUTES.scanOperationalReview.path) {
     try {
       await scanOperationalReviewCandidates(env, namespace);
       return Response.redirect(`${url.origin}/admin/memories?tab=m-review&notice=m-scanned`, 303);
@@ -207,7 +208,7 @@ export async function handleAdminBoard(request: Request, env: Env, ctx: Executio
     }
   }
 
-  if (request.method === "POST" && url.pathname === "/admin/memories/m-review/approve") {
+  if (request.method === "POST" && url.pathname === ADMIN_BOARD_ROUTES.approveOperationalReview.path) {
     const ref = request.headers.get("referer") || `${url.origin}/admin/memories?tab=m-review`;
     try {
       const result = await approveOperationalReviewCandidate(env, await request.formData());
@@ -222,7 +223,7 @@ export async function handleAdminBoard(request: Request, env: Env, ctx: Executio
     }
   }
 
-  if (request.method === "POST" && url.pathname === "/admin/memories/m-review/reject") {
+  if (request.method === "POST" && url.pathname === ADMIN_BOARD_ROUTES.rejectOperationalReview.path) {
     const ref = request.headers.get("referer") || `${url.origin}/admin/memories?tab=m-review`;
     try {
       const rejected = await rejectOperationalReviewCandidate(env, await request.formData());
@@ -233,7 +234,7 @@ export async function handleAdminBoard(request: Request, env: Env, ctx: Executio
     }
   }
 
-  if (request.method === "POST" && url.pathname === "/admin/memories/m-review/batch") {
+  if (request.method === "POST" && url.pathname === ADMIN_BOARD_ROUTES.batchOperationalReview.path) {
     const ref = request.headers.get("referer") || `${url.origin}/admin/memories?tab=m-review`;
     try {
       const result = await batchReviewMetabolismCandidates(env, await request.formData());
@@ -249,7 +250,7 @@ export async function handleAdminBoard(request: Request, env: Env, ctx: Executio
     }
   }
 
-  if (request.method === "POST" && url.pathname === "/admin/memories/m-review/rollback") {
+  if (request.method === "POST" && url.pathname === ADMIN_BOARD_ROUTES.rollbackOperationalReview.path) {
     const ref = request.headers.get("referer") || `${url.origin}/admin/memories?tab=m-review`;
     try {
       const result = await rollbackOperationalReviewCandidate(env, await request.formData());
