@@ -59,6 +59,7 @@ const recallFormat = fs.readFileSync("src/recall/formatter.ts", "utf8");
 const queueConsumer = fs.readFileSync("src/queue/consumer.ts", "utf8");
 const queueProducer = fs.readFileSync("src/queue/producer.ts", "utf8");
 const workerIndex = fs.readFileSync("src/index.ts", "utf8");
+const adminBoardRoutes = fs.readFileSync("src/api/adminBoard/routes.ts", "utf8");
 const candidateDb = fs.readFileSync("src/db/memoryCandidates.ts", "utf8");
 const memoryState = fs.readFileSync("src/memory/state.ts", "utf8");
 const legacyRelations = fs.readFileSync("src/memory/legacyRelations.ts", "utf8");
@@ -366,7 +367,7 @@ const checks = [
       candidateActions.includes("quote.includes(evidence)") &&
       candidateDb.includes("updateMemoryCandidateEvidence") &&
       candidateView.includes("修复逐字证据") &&
-      adminBoard.includes("repair-evidence"),
+      adminBoardRoutes.includes("repair-evidence"),
   ],
   [
     "Diary rescreen: replacement is explicit, bounded, staged, and reversible",
@@ -682,12 +683,8 @@ const checks = [
   ],
   [
     "Cron: coordinate backfill has persisted pause control",
-    fs
-      .readFileSync("src/index.ts", "utf8")
-      .includes("getCoordinateBackfillControl") &&
-      fs
-        .readFileSync("src/api/adminBoard.ts", "utf8")
-        .includes("coordinate-backfill/toggle"),
+    workerIndex.includes("getCoordinateBackfillControl") &&
+      adminBoardRoutes.includes("coordinate-backfill/toggle"),
   ],
   [
     "Safety: nightly dry-run reaches the unified candidate projectors without dead audit-event pipes",
@@ -740,9 +737,9 @@ const checks = [
       adminBoard.includes("rejectOperationalReviewCandidate") &&
       adminBoard.includes("rollbackOperationalReviewCandidate") &&
       metabolismView.includes("renderFactTransitionCandidate") &&
-      metabolismView.includes('/admin/memories/m-review/approve') &&
-      metabolismView.includes('/admin/memories/m-review/reject') &&
-      metabolismView.includes('/admin/memories/m-review/rollback') &&
+      metabolismView.includes("ADMIN_BOARD_ROUTES.approveOperationalReview.path") &&
+      metabolismView.includes("ADMIN_BOARD_ROUTES.rejectOperationalReview.path") &&
+      metabolismView.includes("ADMIN_BOARD_ROUTES.rollbackOperationalReview.path") &&
       !adminBoard.includes("/admin/memories/z-review/"),
   ],
   [
@@ -796,10 +793,8 @@ const checks = [
   [
     "M: every review action is reachable through the Worker router",
     ["scan", "approve", "reject", "batch", "rollback"].every((action) =>
-      fs
-        .readFileSync("src/index.ts", "utf8")
-        .includes(`/admin/memories/m-review/${action}`),
-    ),
+      adminBoardRoutes.includes(`/admin/memories/m-review/${action}`),
+    ) && workerIndex.includes("isAdminBoardRoute(request.method, url.pathname)"),
   ],
   [
     "Y/M: batch review is relation-only, bounded, and explicitly selected",
