@@ -2,7 +2,7 @@ import { authenticate } from "../auth/apiKey";
 import { createMemory, listMemories, searchMemoriesByText, softDeleteMemory, updateMemory } from "../db/memories";
 import { recordRecallSignals } from "../db/recallSignals";
 import { deleteMemoryEmbedding, upsertMemoryEmbedding } from "../memory/embedding";
-import { searchMemories, toMemoryApiRecord } from "../memory/search";
+import { recordMemorySearchDegradation, searchMemories, toMemoryApiRecord } from "../memory/search";
 import { recordRecallSearchObservation } from "../memory/eAxisObservability";
 import { recallOperationIdForRequest, recallOperationIdForRpc } from "../memory/recallSignalOperation";
 import { buildStartupContext } from "../memory/startupContext";
@@ -444,13 +444,20 @@ async function callTool(
     if (!query) return toolError("keyword is required");
     const limit = Math.min(Math.max(Math.floor(readNumber(args.top_k, 5)), 1), 20);
     const includeDiary = readBoolean(args.include_diary);
-    const data = await searchMemoriesByText(env.DB, {
+    const search = await searchMemoriesByText(env.DB, {
       namespace: resolveNamespace(profile, args.namespace),
       query,
       excludeTypes: includeDiary ? [] : ["diary", "layla_diary", "auto_diary"],
       limit
     });
-    return textToolResult({ data: data.map((record) => toMemoryApiRecord(record, record.score)) });
+    if (search.status === "degraded") {
+      await recordMemorySearchDegradation(env, {
+        namespace: resolveNamespace(profile, args.namespace),
+        degradations: [{ source: "exact_text", ...search.error }]
+      });
+      return toolError("Memory text search is temporarily degraded");
+    }
+    return textToolResult({ data: search.records.map((record) => toMemoryApiRecord(record, record.score)) });
   }
 
   if (params.name === "retrieve_memory" || params.name === "memory_recall") {
@@ -459,13 +466,14 @@ async function callTool(
     if (!query) return toolError("query is required");
     const namespace = resolveNamespace(profile, args.namespace);
     let eAxisTrace: Parameters<typeof recordRecallSearchObservation>[1]["eAxis"] | undefined;
-    const data = await searchMemories(env, {
+    const search = await searchMemories(env, {
       namespace,
       query,
       topK: readNumber(args.top_k, readNumber(args.n_results, Number(env.MEMORY_TOP_K || 8))),
       types: readStringArray(args.types),
       onEAxisTrace: (trace) => { eAxisTrace = trace; }
     });
+    const data = search.records;
     const feedback: Promise<unknown>[] = [recordRecallSignals(env.DB, {
       namespace,
       operationId,
@@ -483,7 +491,15 @@ async function callTool(
       }).catch((error) => console.error("MCP recall observation write failed", error)));
     }
     ctx.waitUntil(Promise.all(feedback).then(() => undefined));
-    return textToolResult({ data });
+    return textToolResult({
+      data,
+      meta: {
+        search: {
+          status: search.status,
+          degraded_sources: search.degradations.map(({ source, code }) => ({ source, code }))
+        }
+      }
+    });
   }
 
   if (params.name === "search_by_tag") {

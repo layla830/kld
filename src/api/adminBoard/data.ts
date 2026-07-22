@@ -536,13 +536,16 @@ async function fetchSemanticMemories(env: Env, input: PageInput): Promise<{ tota
   if (input.type === AUTO_DIARY_TYPE) return { total: 0, records: [] };
 
   try {
-    const apiRecords = await searchMemories(env, {
+    const search = await searchMemories(env, {
       namespace: "default",
       query: input.q,
       types: input.type ? [input.type] : undefined,
       topK: 24
     });
-    const records = apiRecords.map(apiRecordToMemoryRecord).filter((record) => matchesBrowseFilters(record, input));
+    if (search.status === "degraded" && search.records.length === 0) {
+      throw new Error("admin_semantic_search_degraded");
+    }
+    const records = search.records.map(apiRecordToMemoryRecord).filter((record) => matchesBrowseFilters(record, input));
     const offset = (input.page - 1) * PAGE_SIZE;
     return { total: records.length, records: records.slice(offset, offset + PAGE_SIZE) };
   } catch (error) {

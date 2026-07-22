@@ -1,7 +1,12 @@
 import { listActiveMemoriesByFactKeys, searchMemoriesByText } from "../db/memories";
 import type { Env, MemoryApiRecord } from "../types";
 import { normalizeQueryForMemorySearch } from "../memory/query";
-import { searchMemories, toMemoryApiRecord } from "../memory/search";
+import {
+  recordMemorySearchDegradation,
+  searchMemories,
+  toMemoryApiRecord,
+  type MemorySearchDegradation
+} from "../memory/search";
 import { addDatedTimelineCandidates, filterUnsupportedRecallMemories } from "./candidatePolicy";
 import { topicNeedles } from "./vocabulary";
 import { formatRecallBlock } from "./formatter";
@@ -53,17 +58,26 @@ async function fetchHintedFactKeyCandidates(
 async function fetchDurableLexicalCandidates(
   env: Env,
   input: { namespace: string; rawQuery: string; limit: number }
-): Promise<MemoryApiRecord[]> {
+): Promise<{ records: MemoryApiRecord[]; degradations: MemorySearchDegradation[] }> {
   const terms = topicNeedles(input.rawQuery).slice(0, 8);
-  if (terms.length === 0) return [];
+  if (terms.length === 0) return { records: [], degradations: [] };
 
-  const records = await searchMemoriesByText(env.DB, {
+  const result = await searchMemoriesByText(env.DB, {
     namespace: input.namespace,
     query: terms.join(" "),
     excludeTypes: ["diary", "layla_diary", "auto_diary"],
     limit: Math.max(input.limit * 3, 8)
   });
-  return records.map((record) => toMemoryApiRecord(record, record.score));
+  return {
+    records: result.records.map((record) => toMemoryApiRecord(record, record.score)),
+    degradations: result.status === "degraded"
+      ? [{ source: "keyword", ...result.error }]
+      : []
+  };
+}
+
+function uniqueDegradations(items: MemorySearchDegradation[]): MemorySearchDegradation[] {
+  return [...new Map(items.map((item) => [`${item.source}:${item.code}`, item])).values()];
 }
 
 export async function buildRecallContext(
@@ -89,9 +103,10 @@ export async function buildRecallContext(
     memories: [],
     topK
   });
-  const directLexicalCandidates = analysis.reasons.includes("explicit_recall_signal")
+  const directLexicalSearch = analysis.reasons.includes("explicit_recall_signal")
     ? await fetchDurableLexicalCandidates(env, { namespace: input.namespace, rawQuery: analysis.query, limit: topK })
-    : [];
+    : { records: [], degradations: [] };
+  const directLexicalCandidates = directLexicalSearch.records;
   const directCandidates = directDatedCandidates.length > 0
     ? mergeUniqueMemories(directDatedCandidates, mergeUniqueMemories(directHintedCandidates, directLexicalCandidates))
     : mergeUniqueMemories(directHintedCandidates, directLexicalCandidates);
@@ -99,6 +114,10 @@ export async function buildRecallContext(
     const supportedDirect = filterUnsupportedRecallMemories(directCandidates, searchQuery, analysis.query).slice(0, topK);
     const directRecall = formatRecallBlock(supportedDirect, searchQuery);
     if (supportedDirect.length > 0 && directRecall) {
+      await recordMemorySearchDegradation(env, {
+        namespace: input.namespace,
+        degradations: directLexicalSearch.degradations
+      });
       return {
         should_recall: true,
         score: analysis.score,
@@ -106,13 +125,18 @@ export async function buildRecallContext(
         query: searchQuery,
         memories: supportedDirect,
         recall: directRecall,
-        trace: buildRecallTrace(supportedDirect, "deterministic_fast_path")
+        trace: buildRecallTrace(
+          supportedDirect,
+          "deterministic_fast_path",
+          undefined,
+          directLexicalSearch.degradations
+        )
       };
     }
   }
 
   let eAxisTrace: EAxisFusionTrace | undefined;
-  const memories = await searchMemories(env, {
+  const memorySearch = await searchMemories(env, {
     namespace: input.namespace,
     query: searchQuery,
     rawQuery: analysis.query,
@@ -120,6 +144,7 @@ export async function buildRecallContext(
     includeMessages: true,
     onEAxisTrace: (trace) => { eAxisTrace = trace; }
   });
+  const memories = memorySearch.records;
   const withDatedCandidates = await addDatedTimelineCandidates(env, {
     namespace: input.namespace,
     rawQuery: analysis.query,
@@ -145,6 +170,11 @@ export async function buildRecallContext(
     query: searchQuery,
     memories: supportedMemories,
     recall,
-    trace: buildRecallTrace(supportedMemories, "hybrid_search", eAxisTrace)
+    trace: buildRecallTrace(
+      supportedMemories,
+      "hybrid_search",
+      eAxisTrace,
+      uniqueDegradations([...directLexicalSearch.degradations, ...memorySearch.degradations])
+    )
   };
 }

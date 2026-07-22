@@ -538,10 +538,27 @@ function scoreKeywordRecord(record: MemoryRecord, query: string, tokens: string[
   return 0.28 + exact + presenceBoost + tagBoost + tokenScore * 0.35 + canonicalBoost + record.importance * 0.05 + (record.pinned ? 0.05 : 0);
 }
 
+export interface MemoryTextSearchFailure {
+  code: "d1_text_search_failed";
+  message: string;
+}
+
+export type MemoryTextSearchResult =
+  | { status: "ok"; records: Array<MemoryRecord & { score: number }> }
+  | { status: "degraded"; records: []; error: MemoryTextSearchFailure };
+
+function memoryTextSearchFailure(error: unknown): MemoryTextSearchFailure {
+  const message = error instanceof Error ? error.message : String(error);
+  return {
+    code: "d1_text_search_failed",
+    message: message.slice(0, 500)
+  };
+}
+
 export async function searchMemoriesByText(
   db: D1Database,
   input: { namespace: string; query: string; types?: string[]; excludeTypes?: string[]; limit: number }
-): Promise<Array<MemoryRecord & { score: number }>> {
+): Promise<MemoryTextSearchResult> {
   const query = input.query.trim().replace(/\s+/g, " ").slice(0, 500);
   const tokens = tokenizeQuery(query);
   let sql = "SELECT * FROM memories WHERE namespace = ? AND status = 'active' AND active_fact != 0";
@@ -597,14 +614,16 @@ export async function searchMemoriesByText(
   try {
     result = await db.prepare(sql).bind(...binds).all<MemoryRecord>();
   } catch (error) {
-    console.error("text memory search failed", error);
-    return [];
+    const failure = memoryTextSearchFailure(error);
+    console.error("text memory search failed", failure);
+    return { status: "degraded", records: [], error: failure };
   }
 
-  return (result.results ?? [])
+  const records = (result.results ?? [])
     .map((record) => ({ ...record, score: scoreKeywordRecord(record, query, tokens) }))
     .sort((a, b) => b.score - a.score)
     .slice(0, input.limit);
+  return { status: "ok", records };
 }
 
 export async function listFactKeyConflicts(

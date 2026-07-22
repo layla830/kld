@@ -184,14 +184,15 @@ async function findMergeCandidates(
   env: Env,
   input: { namespace: string; memory: ExtractedMemory }
 ): Promise<MemoryApiRecord[]> {
-  const matches = await searchMemories(env, {
+  const result = await searchMemories(env, {
     namespace: input.namespace,
     query: input.memory.content,
     topK: MERGE_CANDIDATE_TOP_K
   });
+  if (result.status === "degraded") throw new Error("memory_merge_search_degraded");
 
   const incomingText = normalizeText(input.memory.content);
-  return matches.filter((match) => {
+  return result.records.filter((match) => {
     if (match.status !== "active") return false;
     if (normalizeText(match.content) === incomingText) return true;
     return typeof match.score === "number" && match.score >= MERGE_SCORE_THRESHOLD;
@@ -225,13 +226,7 @@ export async function persistMemoryWithMerge(
   env: Env,
   input: PersistMemoryInput
 ): Promise<MemoryRecord | null> {
-  let candidates: MemoryApiRecord[];
-  try {
-    candidates = await findMergeCandidates(env, { namespace: input.namespace, memory: input.memory });
-  } catch (error) {
-    console.error("memory merge candidate search failed", error);
-    return createNewMemory(env, input);
-  }
+  const candidates = await findMergeCandidates(env, { namespace: input.namespace, memory: input.memory });
 
   if (candidates.length === 0) return createNewMemory(env, input);
 

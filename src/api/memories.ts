@@ -184,18 +184,23 @@ async function handleSearchMemories(request: Request, env: Env, profile: KeyProf
   const query = readString(body.query) || "";
   const topK = readNumber(body.top_k, Number(env.MEMORY_TOP_K || 8));
   const requestedTypes = readStringArray(body.types);
+  const search = await searchMemories(env, {
+    namespace: resolveNamespace(profile, body.namespace),
+    query,
+    topK,
+    types: requestedTypes
+  });
   const raw = excludeAutoDiaryUnlessRequested(
-    await searchMemories(env, {
-      namespace: resolveNamespace(profile, body.namespace),
-      query,
-      topK,
-      types: requestedTypes
-    }),
+    search.records,
     requestedTypes
   );
+  const searchMeta = {
+    status: search.status,
+    degraded_sources: search.degradations.map(({ source, code }) => ({ source, code }))
+  };
 
   if (body.filter !== true && body.compress !== true) {
-    return json({ data: cleanMemoriesForResponse(raw) });
+    return json({ data: cleanMemoriesForResponse(raw), meta: { search: searchMeta } });
   }
 
   const filtered = await filterAndCompressMemoriesWithMeta(env, { query, memories: raw });
@@ -203,6 +208,7 @@ async function handleSearchMemories(request: Request, env: Env, profile: KeyProf
     data: cleanMemoriesForResponse(filtered.data),
     meta: {
       raw_count: raw.length,
+      search: searchMeta,
       filter: filtered.meta
     }
   });
