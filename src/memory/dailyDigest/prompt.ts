@@ -65,6 +65,8 @@ export function buildDigestPrompt(input: {
     "- 当新信息只是旧记忆的更准确版本，优先 memories_to_update，不要 memories_to_add。",
     "- 当多条旧记忆重复，保留更完整的一条并删除重复项；必要时先 update 保留项。",
     "- pinned=true 的旧记忆不能删除，只能在 memories_to_update 中提出更保守的补充。",
+    "- 受保护记忆一律不进 memories_to_delete：pinned 记忆，rule / core / identity / milestone / preference / fact 类型，importance>=0.90 的记忆，以及带 fact_key 且 active_fact=1 的当前事实。即使它与当天聊天无关，也不能据此删除。",
+    "- memories_to_delete 只用于空内容、逐字重复，或被新证据明确取代的低价值旧记忆；不确定时不要删除，改在 sections 中说明。",
     "- 使用明确的第三人称主体：用户事实写‘用户（Layla）’，助手承诺写‘KLD需要……’。",
     "- 不使用含混的‘我、你、她’，不要把助手建议、猜测或复述升级成用户事实。",
     "- 不要提到 D1、Vectorize、RAG、数据库、记忆系统、代理层等实现细节。",

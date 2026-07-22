@@ -26,6 +26,8 @@ import { syncMemoryVector } from "../../memory/state";
 import { assessCandidateQuality } from "../../memory/candidateQuality";
 import { canOverrideCandidateValidation } from "../../memory/candidateOverride";
 import { createMemoryEvent } from "../../db/memoryEvents";
+import { isMemoryDreamDeleteProtected } from "../../memory/dreamCandidatePolicy";
+import { nowIso } from "../../utils/time";
 
 function text(value: unknown): string | undefined { return typeof value === "string" && value.trim() ? value.trim() : undefined; }
 function number(value: unknown): number | undefined {
@@ -187,6 +189,75 @@ function memoryExistsGuard(namespace: string, memoryId: string): MemoryMutationG
   };
 }
 
+function memoryStatusGuard(namespace: string, memoryId: string, status: string): MemoryMutationGuard {
+  return {
+    sql: "EXISTS (SELECT 1 FROM memories WHERE namespace = ? AND id = ? AND status = ?)",
+    binds: [namespace, memoryId, status]
+  };
+}
+
+function memoryEventExistsGuard(namespace: string, eventId: string): MemoryMutationGuard {
+  return {
+    sql: "EXISTS (SELECT 1 FROM memory_events WHERE namespace = ? AND id = ?)",
+    binds: [namespace, eventId]
+  };
+}
+
+function prepareDeleteOwnershipEvent(
+  env: Env,
+  candidate: MemoryCandidateRecord,
+  targetId: string,
+  eventId: string,
+  createdAt: string
+): D1PreparedStatement {
+  return env.DB.prepare(
+    `INSERT OR IGNORE INTO memory_events
+      (id, namespace, event_type, memory_id, payload_json, created_at)
+     SELECT ?, ?, 'memory_candidate_delete_claimed', ?, ?, ?
+     WHERE EXISTS (
+       SELECT 1 FROM memories
+       WHERE namespace = ? AND id = ? AND status = 'active' AND pinned = 0
+     )
+       AND EXISTS (
+         SELECT 1 FROM memory_candidates
+         WHERE namespace = ? AND id = ? AND status = ?
+       )`
+  ).bind(
+    eventId,
+    candidate.namespace,
+    targetId,
+    JSON.stringify({ candidate_id: candidate.id, target_id: targetId }),
+    createdAt,
+    candidate.namespace,
+    targetId,
+    candidate.namespace,
+    candidate.id,
+    candidate.status
+  );
+}
+
+async function rejectUnsafeTargetCandidate(
+  env: Env,
+  candidate: MemoryCandidateRecord,
+  input: { eventType: string; reason: string; targetStatus: string; targetType?: string | null }
+): Promise<null> {
+  const rejected = await resolveMemoryCandidate(env.DB, candidate.namespace, candidate.id, "rejected");
+  if (rejected) {
+    await createMemoryEvent(env.DB, {
+      namespace: candidate.namespace,
+      eventType: input.eventType,
+      memoryId: candidate.target_id,
+      payload: {
+        candidate_id: candidate.id,
+        reason: input.reason,
+        target_status: input.targetStatus,
+        target_type: input.targetType ?? null
+      }
+    });
+  }
+  return null;
+}
+
 async function commitApproval(
   env: Env,
   candidate: MemoryCandidateRecord,
@@ -339,12 +410,21 @@ async function approveUpdateCandidate(
   candidate: MemoryCandidateRecord,
   payload: Record<string, unknown>
 ): Promise<MemoryRecord | null> {
-  if (!candidate.target_id
-    || !(await getMemoryById(env.DB, { namespace: candidate.namespace, id: candidate.target_id }))) return null;
+  if (!candidate.target_id) return null;
+  const existing = await getMemoryById(env.DB, { namespace: candidate.namespace, id: candidate.target_id });
+  if (!existing || existing.status !== "active") {
+    return rejectUnsafeTargetCandidate(env, candidate, {
+      eventType: "memory_candidate_refused_stale_target",
+      reason: existing ? "target_not_active" : "target_missing",
+      targetStatus: existing?.status ?? "missing",
+      targetType: existing?.type
+    });
+  }
   const statement = prepareMemoryUpdate(env.DB, {
     namespace: candidate.namespace,
     id: candidate.target_id,
     patch: candidateUpdatePatch(payload),
+    expectedStatus: "active",
     guard: candidateApprovalGuard(candidate),
     markVectorUnsynced: true
   });
@@ -353,7 +433,7 @@ async function approveUpdateCandidate(
     candidate,
     candidate.target_id,
     statement ? [statement] : [],
-    memoryExistsGuard(candidate.namespace, candidate.target_id)
+    memoryStatusGuard(candidate.namespace, candidate.target_id, "active")
   );
 }
 
@@ -361,22 +441,63 @@ async function approveDeleteCandidate(
   env: Env,
   candidate: MemoryCandidateRecord
 ): Promise<MemoryRecord | null> {
-  if (!candidate.target_id
-    || !(await getMemoryById(env.DB, { namespace: candidate.namespace, id: candidate.target_id }))) return null;
+  if (!candidate.target_id) return null;
+  const existing = await getMemoryById(env.DB, { namespace: candidate.namespace, id: candidate.target_id });
+  if (!existing || existing.status !== "active") {
+    return rejectUnsafeTargetCandidate(env, candidate, {
+      eventType: "memory_candidate_refused_stale_target",
+      reason: existing ? "target_not_active" : "target_missing",
+      targetStatus: existing?.status ?? "missing",
+      targetType: existing?.type
+    });
+  }
+  if (isMemoryDreamDeleteProtected(existing)) {
+    return rejectUnsafeTargetCandidate(env, candidate, {
+      eventType: "memory_candidate_refused_protected_target",
+      reason: "target_is_protected",
+      targetStatus: existing.status,
+      targetType: existing.type
+    });
+  }
+  const mutationAt = nowIso();
+  const ownershipEventId = `ev_delete_${candidate.id}`;
+  const ownershipEvent = prepareDeleteOwnershipEvent(
+    env,
+    candidate,
+    candidate.target_id,
+    ownershipEventId,
+    mutationAt
+  );
   const statement = prepareMemoryUpdate(env.DB, {
     namespace: candidate.namespace,
     id: candidate.target_id,
     patch: { status: "deleted" },
+    expectedStatus: "active",
+    requireUnpinned: true,
     guard: candidateApprovalGuard(candidate),
-    markVectorUnsynced: true
+    markVectorUnsynced: true,
+    now: mutationAt
   });
-  return commitApproval(
+  const deleted = await commitApproval(
     env,
     candidate,
     candidate.target_id,
-    statement ? [statement] : [],
-    memoryExistsGuard(candidate.namespace, candidate.target_id)
+    statement ? [ownershipEvent, statement] : [],
+    combineGuards(
+      memoryStatusGuard(candidate.namespace, candidate.target_id, "deleted"),
+      memoryEventExistsGuard(candidate.namespace, ownershipEventId)
+    )
   );
+  if (deleted) return deleted;
+  return rejectUnsafeTargetCandidate(env, candidate, {
+    eventType: "memory_candidate_refused_stale_target",
+    reason: "target_changed_before_delete",
+    targetStatus: (await getMemoryById(env.DB, {
+      namespace: candidate.namespace,
+      id: candidate.target_id
+    }))?.status ?? "missing",
+    targetType: existing.type
+  });
 }
 
 async function approveFactGroup(

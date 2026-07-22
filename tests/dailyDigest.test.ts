@@ -486,7 +486,14 @@ describe("digest writes, candidates, and events", () => {
       memories_to_delete: [{ target_id: "mem_stale", reason: "重复" }]
     }));
     vi.mocked(getMemoryById).mockImplementation(async (_db, input) => ({
-      id: input.id, status: "active", pinned: 0, namespace: NAMESPACE
+      id: input.id,
+      status: "active",
+      pinned: 0,
+      namespace: NAMESPACE,
+      type: "note",
+      importance: 0.2,
+      fact_key: null,
+      active_fact: 1
     } as MemoryRecord) as never);
 
     await runDailyMemoryDigest(env(), NAMESPACE, { dateLabel: "2026-07-19" });
@@ -500,6 +507,34 @@ describe("digest writes, candidates, and events", () => {
     expect(reviewEvent.payload.updates).toHaveLength(1);
     expect(reviewEvent.payload.deletes).toHaveLength(1);
     expect(vi.mocked(deleteSyncedMemory)).not.toHaveBeenCalled();
+  });
+
+  it("filters protected memories out of Dream delete reviews", async () => {
+    vi.mocked(listMessagesByNamespaceInRange).mockResolvedValue(windowMessages());
+    vi.mocked(callOpenAICompat).mockResolvedValue(llmResponse({
+      ...defaultDigestJson(),
+      memories_to_delete: [
+        { target_id: "mem_rule", reason: "not mentioned today" },
+        { target_id: "mem_note", reason: "exact duplicate" }
+      ]
+    }));
+    vi.mocked(getMemoryById).mockImplementation(async (_db, input) => ({
+      id: input.id,
+      status: "active",
+      pinned: 0,
+      namespace: NAMESPACE,
+      type: input.id === "mem_rule" ? "rule" : "note",
+      importance: input.id === "mem_rule" ? 1 : 0.2,
+      fact_key: null,
+      active_fact: 1
+    } as MemoryRecord) as never);
+
+    await runDailyMemoryDigest(env(), NAMESPACE, { dateLabel: "2026-07-19" });
+
+    const reviewCall = vi.mocked(createMemoryEvent).mock.calls.find((call) => call[1].eventType === "dream_mutation_review");
+    expect(reviewCall?.[1].payload.deletes).toEqual([
+      expect.objectContaining({ target_id: "mem_note" })
+    ]);
   });
 
   it("records a dry-run plan event without writing any memory or summary", async () => {

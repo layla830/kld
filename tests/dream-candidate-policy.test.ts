@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { CandidateInput } from "../src/db/memoryCandidates";
 import type { MemoryCandidateRecord } from "../src/db/memoryCandidates";
-import { applyDreamCandidatePolicy, hasUsableChunkSummary } from "../src/memory/dreamCandidatePolicy";
+import {
+  applyDreamCandidatePolicy,
+  applyDreamDeleteTargetPolicy,
+  hasUsableChunkSummary,
+  isMemoryDreamDeleteProtected
+} from "../src/memory/dreamCandidatePolicy";
 import { canOverrideCandidateValidation } from "../src/memory/candidateOverride";
 import { renderMemoryCandidate } from "../src/api/adminBoard/candidateView";
 
@@ -40,6 +45,32 @@ describe("Dream candidate ingress policy", () => {
       expect(result.candidate.status).toBe("needs_subject_review");
       expect(result.candidate.validationError).toContain("missing_chunk_summary");
     }
+  });
+
+  it("suppresses protected delete targets at ingress", () => {
+    const input = candidate({ action: "delete", targetId: "mem_rule" });
+    const target = { pinned: 0, type: "rule", importance: 0.6, fact_key: null, active_fact: 1 };
+
+    expect(isMemoryDreamDeleteProtected(target)).toBe(true);
+    expect(applyDreamDeleteTargetPolicy(input, target)).toMatchObject({
+      outcome: "suppress",
+      reason: "protected_delete_target"
+    });
+  });
+
+  it("allows only low-signal, non-current delete targets through the target policy", () => {
+    const input = candidate({ action: "delete", targetId: "mem_note" });
+    const target = { pinned: 0, type: "note", importance: 0.89, fact_key: null, active_fact: 1 };
+
+    expect(isMemoryDreamDeleteProtected(target)).toBe(false);
+    expect(applyDreamDeleteTargetPolicy(input, target)).toEqual({ outcome: "accept", candidate: input });
+  });
+
+  it("protects pinned, critical, and current fact-keyed memories", () => {
+    expect(isMemoryDreamDeleteProtected({ pinned: 1, type: "note", importance: 0.1, fact_key: null, active_fact: 1 })).toBe(true);
+    expect(isMemoryDreamDeleteProtected({ pinned: 0, type: "note", importance: 0.9, fact_key: null, active_fact: 1 })).toBe(true);
+    expect(isMemoryDreamDeleteProtected({ pinned: 0, type: "lesson", importance: 0.5, fact_key: "relationship.rule.x", active_fact: 1 })).toBe(true);
+    expect(isMemoryDreamDeleteProtected({ pinned: 0, type: "lesson", importance: 0.5, fact_key: "relationship.rule.x", active_fact: 0 })).toBe(false);
   });
 });
 
