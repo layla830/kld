@@ -1,3 +1,7 @@
+import {
+  fiveAxisMemoryEligibilityPredicate,
+  isFiveAxisMemoryEligible
+} from "../memory/fiveAxis/eligibility";
 import type { MemoryRecord } from "../types";
 import { newId } from "../utils/ids";
 import { nowIso } from "../utils/time";
@@ -250,17 +254,36 @@ async function listRelationsForFrontier(
   input: { namespace: string; frontier: string[] }
 ): Promise<MemoryRelationRecord[]> {
   const rows: MemoryRelationRecord[] = [];
-  const idsPerQuery = Math.floor((D1_BIND_LIMIT - 1) / 2);
+  const sourceEligibility = fiveAxisMemoryEligibilityPredicate("source_memory");
+  const targetEligibility = fiveAxisMemoryEligibilityPredicate("target_memory");
+  const fixedBindCount = 1 + sourceEligibility.binds.length + targetEligibility.binds.length;
+  const idsPerQuery = Math.floor((D1_BIND_LIMIT - fixedBindCount) / 2);
   for (const ids of chunk(input.frontier, idsPerQuery)) {
     const placeholders = ids.map(() => "?").join(", ");
     const result = await db
       .prepare(
-        `SELECT id, namespace, source_memory_id, target_memory_id, relation_type, strength, reason, created_at
-         FROM memory_relations
-         WHERE namespace = ?
-           AND (source_memory_id IN (${placeholders}) OR target_memory_id IN (${placeholders}))`
+        `SELECT relation.id, relation.namespace, relation.source_memory_id, relation.target_memory_id,
+                relation.relation_type, relation.strength, relation.reason, relation.created_at
+         FROM memory_relations AS relation
+         JOIN memories AS source_memory
+           ON source_memory.namespace = relation.namespace
+          AND source_memory.id = relation.source_memory_id
+         JOIN memories AS target_memory
+           ON target_memory.namespace = relation.namespace
+          AND target_memory.id = relation.target_memory_id
+         WHERE relation.namespace = ?
+           AND ${sourceEligibility.sql}
+           AND ${targetEligibility.sql}
+           AND (relation.source_memory_id IN (${placeholders})
+             OR relation.target_memory_id IN (${placeholders}))`
       )
-      .bind(input.namespace, ...ids, ...ids)
+      .bind(
+        input.namespace,
+        ...sourceEligibility.binds,
+        ...targetEligibility.binds,
+        ...ids,
+        ...ids
+      )
       .all<MemoryRelationRecord>();
     rows.push(...(result.results ?? []));
   }
@@ -307,7 +330,7 @@ export async function listRelationExpandedMemories(
   if (ids.length === 0) return [];
 
   return (await fetchMemoriesByIds(db, { namespace: input.namespace, ids }))
-    .filter((record) => record.status === "active" && record.active_fact !== 0)
+    .filter(isFiveAxisMemoryEligible)
     .map((record) => {
       const relationScore = scores.get(record.id) ?? 0;
       return { ...record, score: relationScore, relationScore };

@@ -51,6 +51,45 @@ function createYMemory(content: string) {
 }
 
 describe("Y-axis Worker circuit", () => {
+  it("does not traverse historical diary edges as a two-hop bridge", async () => {
+    const [a, diary, b] = await Promise.all([
+      createYMemory("Y historical bridge A"),
+      createMemory(env.DB, {
+        namespace: "default",
+        type: "diary",
+        content: "Historical original diary bridge",
+        source: "cc-connect-vps",
+        importance: 0.8
+      }),
+      createYMemory("Y historical bridge B")
+    ]);
+    await createMemoryRelation(env.DB, {
+      namespace: "default",
+      sourceMemoryId: a.id,
+      targetMemoryId: diary.id,
+      relationType: "same_topic",
+      strength: 0.95,
+      reason: "legacy edge before diary eligibility guard"
+    });
+    await createMemoryRelation(env.DB, {
+      namespace: "default",
+      sourceMemoryId: diary.id,
+      targetMemoryId: b.id,
+      relationType: "same_topic",
+      strength: 0.95,
+      reason: "legacy edge before diary eligibility guard"
+    });
+
+    const expanded = await listRelationExpandedMemories(env.DB, {
+      namespace: "default",
+      baseIds: [a.id],
+      limit: 10
+    });
+
+    expect(expanded.map((memory) => memory.id)).not.toContain(diary.id);
+    expect(expanded.map((memory) => memory.id)).not.toContain(b.id);
+  });
+
   it("keeps original diaries out of Y edges while allowing their split memories", async () => {
     const [diary, splitMemory, target] = await Promise.all([
       createMemory(env.DB, {
