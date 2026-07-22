@@ -246,7 +246,8 @@ const checks = [
   ],
   [
     "Recall: long diary records are excluded from every route",
-    recallOutputPolicy.includes('new Set(["diary", "layla_diary", "auto_diary", "timeline_day"])') &&
+    recallOutputPolicy.includes('new Set(["diary", "layla_diary", "auto_diary"])') &&
+      recallOutputPolicy.includes('TIMELINE_DAY_CONTENT_TAG = "timeline_day_content:v1"') &&
       files.search.includes("filter(isRecallEligible)"),
   ],
   [

@@ -94,6 +94,8 @@ describe("admin board view", () => {
     expect(renderToastScriptContent(null)).toContain("const n=null");
     expect(renderToastScriptContent(undefined)).toContain("const n=undefined");
     expect(renderToastScriptContent("")).toContain("if(n&&m[n])");
+    expect(renderToastScriptContent("")).not.toContain("tl-timeline_day");
+    expect(renderToastScriptContent("")).not.toContain("remove()");
   });
 
   it("renders each batch bar only for matching candidates", () => {

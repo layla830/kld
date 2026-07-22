@@ -41,13 +41,19 @@ WHERE status = 'deleted'
     'mem_5cd7586d7b7c4959bb53bceee3f86f72'
   );
 
--- Keep recovered legacy day summaries in the same preservation-only state as
--- the first 40: present and vectorized, but not current facts. PR #88's recall
--- and admin output policy still excludes timeline_day records.
+-- Restore the two missed event-bearing day summaries as recallable timeline
+-- summaries. The semantic tag keeps them distinct from date-only shells.
 UPDATE memories
 SET status = 'active',
-    active_fact = 0,
+    active_fact = 1,
     pinned = 0,
+    tags = CASE
+      WHEN NOT json_valid(tags) THEN json_array('timeline_day_content:v1')
+      WHEN NOT EXISTS (
+        SELECT 1 FROM json_each(tags) WHERE value = 'timeline_day_content:v1'
+      ) THEN json_insert(tags, '$[#]', 'timeline_day_content:v1')
+      ELSE tags
+    END,
     vector_synced = 0,
     vector_sync_status = 'pending',
     updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
