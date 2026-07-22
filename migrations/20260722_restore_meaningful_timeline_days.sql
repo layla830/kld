@@ -73,3 +73,71 @@ WHERE source = 'timeline_split'
     'mem_c0fa942d17b24645842b55c7b9b941cf',
     'mem_b8e54463628d4fbcb77d3f2f2575ae3e'
   );
+
+-- Record the revision that each restored summary had before this explicit
+-- reprojection request. The marker makes the revision bump retry-safe if this
+-- SQL was already run manually before Wrangler records the migration.
+INSERT OR IGNORE INTO memory_events (
+  id, namespace, event_type, memory_id, payload_json, created_at
+)
+SELECT
+  'ev_reproject_20260722_' || substr(id, 5),
+  namespace,
+  'memory_five_axis_reprojection_requested',
+  id,
+  json_object(
+    'operation', 'restore_meaningful_timeline_days_20260722',
+    'before_five_axis_revision', five_axis_revision
+  ),
+  strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+FROM memories
+WHERE source = 'timeline_split'
+  AND type = 'timeline_day'
+  AND status = 'active'
+  AND active_fact = 1
+  AND EXISTS (
+    SELECT 1 FROM json_each(CASE WHEN json_valid(tags) THEN tags ELSE '[]' END)
+    WHERE value = 'timeline_day_content:v1'
+  );
+
+-- A direct revision write does not invoke the material-update trigger. Bump
+-- once per marker, then enqueue the current revision explicitly so replicas,
+-- staging databases and disaster restores reproduce the production result.
+UPDATE memories AS memory
+SET five_axis_revision = five_axis_revision + 1,
+    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+WHERE memory.source = 'timeline_split'
+  AND memory.type = 'timeline_day'
+  AND memory.status = 'active'
+  AND memory.active_fact = 1
+  AND EXISTS (
+    SELECT 1 FROM memory_events AS event
+    WHERE event.namespace = memory.namespace
+      AND event.id = 'ev_reproject_20260722_' || substr(memory.id, 5)
+      AND CAST(json_extract(event.payload_json, '$.before_five_axis_revision') AS INTEGER)
+        = memory.five_axis_revision
+  );
+
+INSERT OR IGNORE INTO memory_five_axis_outbox (
+  namespace, memory_id, memory_updated_at, memory_revision, status, attempts,
+  created_at, updated_at
+)
+SELECT
+  memory.namespace,
+  memory.id,
+  memory.updated_at,
+  memory.five_axis_revision,
+  'pending',
+  0,
+  memory.updated_at,
+  memory.updated_at
+FROM memories AS memory
+WHERE memory.source = 'timeline_split'
+  AND memory.type = 'timeline_day'
+  AND memory.status = 'active'
+  AND memory.active_fact = 1
+  AND EXISTS (
+    SELECT 1 FROM memory_events AS event
+    WHERE event.namespace = memory.namespace
+      AND event.id = 'ev_reproject_20260722_' || substr(memory.id, 5)
+  );

@@ -321,6 +321,54 @@ describe("generic candidate action dispatch", () => {
     });
   });
 
+  it("refuses deletion when the target becomes protected after approval reads it", async () => {
+    const target = await createMemory(env.DB, {
+      namespace: "default",
+      type: "note",
+      content: `concurrently protected delete target ${crypto.randomUUID()}`,
+      importance: 0.2
+    });
+    const candidate = await queueCandidate({
+      key: "delete-target-protected-during-commit",
+      action: "delete",
+      targetId: target.id
+    });
+    const triggerName = `test_delete_protection_${crypto.randomUUID().replaceAll("-", "")}`;
+    await env.DB.prepare(
+      `CREATE TRIGGER ${triggerName}
+       AFTER INSERT ON memory_events
+       WHEN NEW.event_type = 'memory_candidate_delete_claimed' AND NEW.memory_id = '${target.id}'
+       BEGIN
+         UPDATE memories
+         SET type = 'rule', importance = 1, fact_key = 'protected.concurrent', active_fact = 1
+         WHERE namespace = 'default' AND id = '${target.id}';
+       END`
+    ).run();
+    try {
+      await expect(candidate.approve()).resolves.toBeNull();
+    } finally {
+      await env.DB.prepare(`DROP TRIGGER IF EXISTS ${triggerName}`).run();
+    }
+
+    await expect(getMemoryById(env.DB, { namespace: "default", id: target.id }))
+      .resolves.toMatchObject({
+        status: "active",
+        type: "rule",
+        importance: 1,
+        fact_key: "protected.concurrent",
+        active_fact: 1
+      });
+    await expect(env.DB.prepare(
+      "SELECT status FROM memory_candidates WHERE namespace = 'default' AND id = ?"
+    ).bind(candidate.id).first()).resolves.toMatchObject({ status: "rejected" });
+    await expect(env.DB.prepare(
+      "SELECT event_type, payload_json FROM memory_events WHERE namespace = 'default' AND memory_id = ? ORDER BY created_at DESC LIMIT 1"
+    ).bind(target.id).first<{ event_type: string; payload_json: string }>()).resolves.toMatchObject({
+      event_type: "memory_candidate_refused_protected_target",
+      payload_json: expect.stringContaining("target_became_protected_before_delete")
+    });
+  });
+
   it("refuses a stale delete candidate after its target is already deleted", async () => {
     const target = await createMemory(env.DB, {
       namespace: "default",

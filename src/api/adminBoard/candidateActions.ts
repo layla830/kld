@@ -26,7 +26,11 @@ import { syncMemoryVector } from "../../memory/state";
 import { assessCandidateQuality } from "../../memory/candidateQuality";
 import { canOverrideCandidateValidation } from "../../memory/candidateOverride";
 import { createMemoryEvent } from "../../db/memoryEvents";
-import { isMemoryDreamDeleteProtected } from "../../memory/dreamCandidatePolicy";
+import {
+  DREAM_DELETE_CRITICAL_IMPORTANCE,
+  DREAM_DELETE_PROTECTED_TYPES,
+  isMemoryDreamDeleteProtected
+} from "../../memory/dreamCandidatePolicy";
 import { nowIso } from "../../utils/time";
 
 function text(value: unknown): string | undefined { return typeof value === "string" && value.trim() ? value.trim() : undefined; }
@@ -203,21 +207,36 @@ function memoryEventExistsGuard(namespace: string, eventId: string): MemoryMutat
   };
 }
 
+function dreamDeleteTargetAllowedGuard(namespace: string, memoryId: string): MemoryMutationGuard {
+  const protectedTypes = [...DREAM_DELETE_PROTECTED_TYPES];
+  const placeholders = protectedTypes.map(() => "?").join(", ");
+  return {
+    sql: `EXISTS (
+      SELECT 1 FROM memories
+      WHERE namespace = ? AND id = ?
+        AND status = 'active'
+        AND pinned = 0
+        AND lower(type) NOT IN (${placeholders})
+        AND COALESCE(importance, 0) < ?
+        AND NOT (fact_key IS NOT NULL AND fact_key != '' AND active_fact != 0)
+    )`,
+    binds: [namespace, memoryId, ...protectedTypes, DREAM_DELETE_CRITICAL_IMPORTANCE]
+  };
+}
+
 function prepareDeleteOwnershipEvent(
   env: Env,
   candidate: MemoryCandidateRecord,
   targetId: string,
   eventId: string,
-  createdAt: string
+  createdAt: string,
+  targetGuard: MemoryMutationGuard
 ): D1PreparedStatement {
   return env.DB.prepare(
     `INSERT OR IGNORE INTO memory_events
       (id, namespace, event_type, memory_id, payload_json, created_at)
      SELECT ?, ?, 'memory_candidate_delete_claimed', ?, ?, ?
-     WHERE EXISTS (
-       SELECT 1 FROM memories
-       WHERE namespace = ? AND id = ? AND status = 'active' AND pinned = 0
-     )
+     WHERE (${targetGuard.sql})
        AND EXISTS (
          SELECT 1 FROM memory_candidates
          WHERE namespace = ? AND id = ? AND status = ?
@@ -228,8 +247,7 @@ function prepareDeleteOwnershipEvent(
     targetId,
     JSON.stringify({ candidate_id: candidate.id, target_id: targetId }),
     createdAt,
-    candidate.namespace,
-    targetId,
+    ...targetGuard.binds,
     candidate.namespace,
     candidate.id,
     candidate.status
@@ -461,12 +479,14 @@ async function approveDeleteCandidate(
   }
   const mutationAt = nowIso();
   const ownershipEventId = `ev_delete_${candidate.id}`;
+  const targetGuard = dreamDeleteTargetAllowedGuard(candidate.namespace, candidate.target_id);
   const ownershipEvent = prepareDeleteOwnershipEvent(
     env,
     candidate,
     candidate.target_id,
     ownershipEventId,
-    mutationAt
+    mutationAt,
+    targetGuard
   );
   const statement = prepareMemoryUpdate(env.DB, {
     namespace: candidate.namespace,
@@ -474,7 +494,7 @@ async function approveDeleteCandidate(
     patch: { status: "deleted" },
     expectedStatus: "active",
     requireUnpinned: true,
-    guard: candidateApprovalGuard(candidate),
+    guard: combineGuards(candidateApprovalGuard(candidate), targetGuard),
     markVectorUnsynced: true,
     now: mutationAt
   });
@@ -489,14 +509,18 @@ async function approveDeleteCandidate(
     )
   );
   if (deleted) return deleted;
+  const changedTarget = await getMemoryById(env.DB, {
+    namespace: candidate.namespace,
+    id: candidate.target_id
+  });
+  const protectedNow = Boolean(changedTarget && isMemoryDreamDeleteProtected(changedTarget));
   return rejectUnsafeTargetCandidate(env, candidate, {
-    eventType: "memory_candidate_refused_stale_target",
-    reason: "target_changed_before_delete",
-    targetStatus: (await getMemoryById(env.DB, {
-      namespace: candidate.namespace,
-      id: candidate.target_id
-    }))?.status ?? "missing",
-    targetType: existing.type
+    eventType: protectedNow
+      ? "memory_candidate_refused_protected_target"
+      : "memory_candidate_refused_stale_target",
+    reason: protectedNow ? "target_became_protected_before_delete" : "target_changed_before_delete",
+    targetStatus: changedTarget?.status ?? "missing",
+    targetType: changedTarget?.type
   });
 }
 

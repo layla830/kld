@@ -326,7 +326,7 @@ const checks = [
       candidateIngress.includes('eventType: "dream_candidates_suppressed"') &&
       candidateIngress.includes('policy: "dream_candidate_policy"') &&
       candidateIngress.includes("applyDreamDeleteTargetPolicy") &&
-      candidateIngress.includes("accepted: candidates.length") &&
+      candidateIngress.includes("accepted: accepted.length") &&
       candidateIngress.includes("stored: accepted.length"),
   ],
   [

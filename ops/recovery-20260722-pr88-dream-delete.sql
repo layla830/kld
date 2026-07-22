@@ -79,3 +79,74 @@ WHERE status = 'deleted'
     'mem_0d6dd4a8f1504003a55f62642113156a',
     'mem_5cd7586d7b7c4959bb53bceee3f86f72'
   );
+
+-- Reprojection is part of recovery, not an out-of-band follow-up. Persist the
+-- pre-bump revision so rerunning this file can safely finish an interrupted
+-- request without incrementing the same memory twice.
+INSERT OR IGNORE INTO memory_events (
+  id, namespace, event_type, memory_id, payload_json, created_at
+)
+SELECT
+  'ev_reproject_20260722_' || substr(id, 5),
+  namespace,
+  'memory_five_axis_reprojection_requested',
+  id,
+  json_object(
+    'operation', 'pr88_dream_delete_recovery_20260722',
+    'before_five_axis_revision', five_axis_revision
+  ),
+  strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+FROM memories
+WHERE status = 'active'
+  AND id IN (
+    'mem_c0fa942d17b24645842b55c7b9b941cf',
+    'mem_b8e54463628d4fbcb77d3f2f2575ae3e',
+    'mem_0f734f50a7954cb9900773655efb0af1',
+    'mem_0d6dd4a8f1504003a55f62642113156a',
+    'mem_5cd7586d7b7c4959bb53bceee3f86f72'
+  );
+
+UPDATE memories AS memory
+SET five_axis_revision = five_axis_revision + 1,
+    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+WHERE status = 'active'
+  AND id IN (
+    'mem_c0fa942d17b24645842b55c7b9b941cf',
+    'mem_b8e54463628d4fbcb77d3f2f2575ae3e',
+    'mem_0f734f50a7954cb9900773655efb0af1',
+    'mem_0d6dd4a8f1504003a55f62642113156a',
+    'mem_5cd7586d7b7c4959bb53bceee3f86f72'
+  )
+  AND EXISTS (
+    SELECT 1 FROM memory_events AS event
+    WHERE event.namespace = memory.namespace
+      AND event.id = 'ev_reproject_20260722_' || substr(memory.id, 5)
+      AND CAST(json_extract(event.payload_json, '$.before_five_axis_revision') AS INTEGER)
+        = memory.five_axis_revision
+  );
+
+-- Select every named active recovery target at its current revision. This is
+-- intentionally not limited to rows changed by the UPDATE statements above:
+-- records restored by an earlier partial/manual run still get their outbox row.
+INSERT OR IGNORE INTO memory_five_axis_outbox (
+  namespace, memory_id, memory_updated_at, memory_revision, status, attempts,
+  created_at, updated_at
+)
+SELECT
+  namespace,
+  id,
+  updated_at,
+  five_axis_revision,
+  'pending',
+  0,
+  updated_at,
+  updated_at
+FROM memories
+WHERE status = 'active'
+  AND id IN (
+    'mem_c0fa942d17b24645842b55c7b9b941cf',
+    'mem_b8e54463628d4fbcb77d3f2f2575ae3e',
+    'mem_0f734f50a7954cb9900773655efb0af1',
+    'mem_0d6dd4a8f1504003a55f62642113156a',
+    'mem_5cd7586d7b7c4959bb53bceee3f86f72'
+  );

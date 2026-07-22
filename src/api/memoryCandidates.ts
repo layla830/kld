@@ -97,7 +97,7 @@ export async function handleMemoryCandidates(request: Request, env: Env): Promis
   return json({
     data: {
       received: candidates.length,
-      accepted: candidates.length,
+      accepted: accepted.length,
       stored: accepted.length,
       suppressed: suppressed.length,
       namespace

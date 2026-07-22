@@ -9,7 +9,7 @@ function executionContext(): ExecutionContext {
   return {
     waitUntil() {},
     passThroughOnException() {}
-  } as ExecutionContext;
+  } as unknown as ExecutionContext;
 }
 
 async function recall(namespace: string, prompt: string): Promise<MemoryApiRecord[]> {
