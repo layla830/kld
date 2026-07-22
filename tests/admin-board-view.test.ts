@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { MemoryCandidateRecord } from "../src/db/memoryCandidates";
+import type { MemoryRecord } from "../src/types";
 import {
   M_BATCH_SCRIPT,
   renderFactBatchBar,
@@ -11,11 +12,16 @@ import {
   renderMetabolismReviewGuide,
   renderTimelineReviewGuide
 } from "../src/api/adminBoard/reviewGuides";
+import { ADMIN_BOARD_POST_ROUTES } from "../src/api/adminBoard/routes";
 import { renderPage } from "../src/api/adminBoard/view";
 import { renderToastScriptContent, TOAST_TEXT } from "../src/api/adminBoard/viewToast";
 import type { PageInput } from "../src/api/adminBoard/utils";
 
-function candidate(action: string, status = "pending"): MemoryCandidateRecord {
+function candidate(
+  action: string,
+  status = "pending",
+  overrides: Partial<MemoryCandidateRecord> = {}
+): MemoryCandidateRecord {
   return {
     id: `cand_${action}`,
     namespace: "default",
@@ -32,8 +38,52 @@ function candidate(action: string, status = "pending"): MemoryCandidateRecord {
     created_at: "2026-07-19T00:00:00.000Z",
     updated_at: "2026-07-19T00:00:00.000Z",
     resolved_at: null,
-    result_memory_id: null
+    result_memory_id: null,
+    ...overrides
   };
+}
+
+function memoryRecord(overrides: Partial<MemoryRecord> = {}): MemoryRecord {
+  return {
+    id: "mem_test",
+    namespace: "default",
+    type: "note",
+    content: "test memory",
+    summary: null,
+    fact_key: null,
+    active_fact: 1,
+    thread: null,
+    risk_level: null,
+    urgency_level: null,
+    tension_score: null,
+    response_posture: null,
+    audit_state: null,
+    valence: null,
+    arousal: null,
+    importance: 0.5,
+    confidence: 0.8,
+    status: "active",
+    pinned: 0,
+    tags: null,
+    source: null,
+    source_message_ids: null,
+    vector_id: null,
+    vector_synced: 0,
+    last_recalled_at: null,
+    recall_count: 0,
+    created_at: "2026-07-19T00:00:00.000Z",
+    updated_at: "2026-07-19T00:00:00.000Z",
+    expires_at: null,
+    ...overrides
+  };
+}
+
+function postFormActions(html: string): string[] {
+  return [...html.matchAll(/<form\b[^>]*>/gi)]
+    .map((match) => match[0])
+    .filter((form) => /\bmethod="POST"/i.test(form))
+    .map((form) => form.match(/\baction="([^"]+)"/i)?.[1])
+    .filter((action): action is string => Boolean(action));
 }
 
 function pageInput(tab: string, notice = ""): PageInput {
@@ -174,5 +224,131 @@ describe("admin board view", () => {
     expect(mReview.indexOf("Z 事实状态 · Y 关系审核 · M 安全代谢")).toBeLessThan(mReview.indexOf('id="m-batch-form"'));
     expect(mReview.indexOf('id="m-batch-form"')).toBeLessThan(mReview.indexOf("<article"));
     expect(mReview).toContain(`<script>${M_BATCH_SCRIPT}${renderToastScriptContent("m-scanned")}</script>`);
+  });
+
+  it("keeps rendered POST form actions bidirectionally aligned with the route registry", () => {
+    const reviewCandidates = [
+      candidate("add", "pending", { payload_json: JSON.stringify({ content: "A durable memory" }) }),
+      candidate("diary_split_fact", "pending", {
+        payload_json: JSON.stringify({ content: "A dated fact", evidence: "verbatim evidence" })
+      }),
+      candidate("diary_split_fact", "pending", {
+        id: "cand_evidence_repair",
+        validation_error: "missing_evidence",
+        source_chunks_json: JSON.stringify([{ important_quotes: ["verbatim evidence"] }])
+      })
+    ];
+    const dreamReview = memoryRecord({
+      id: "review_test",
+      type: "dream_review",
+      content: "Update proposal",
+      summary: JSON.stringify({
+        kind: "dream_review",
+        action: "update",
+        target_id: "mem_target",
+        patch: { content: "updated memory" },
+        target: { id: "mem_target", type: "note", status: "active", content: "old memory" }
+      })
+    });
+    const timelineCandidate = candidate("timeline_date", "pending", {
+      id: "cand_timeline",
+      target_status: "active",
+      target_content: "timeline memory",
+      payload_json: JSON.stringify({
+        date: "2026-07-19",
+        before_tags: [],
+        tags: ["date:2026-07-19", "timeline"]
+      })
+    });
+    const relationCandidate = candidate("m_relation_cleanup", "pending", {
+      id: "cand_relation_cleanup",
+      payload_json: JSON.stringify({
+        before: {
+          id: "rel_test",
+          source_memory_id: "mem_source",
+          target_memory_id: "mem_target",
+          relation_type: "same_issue",
+          strength: 0.7
+        },
+        reason: "duplicate relation"
+      })
+    });
+    const resolvedArchiveCandidate = candidate("m_archive", "approved", {
+      id: "cand_archive_approved",
+      target_content: "archived memory",
+      payload_json: JSON.stringify({ before: { content: "archived memory" } })
+    });
+    const lmc5Data: NonNullable<Parameters<typeof renderPage>[1]["lmc5"]> = {
+      stats: { active: 1, eAxis: 0, factKeyed: 0, relations: 0, reviewCandidates: 0 },
+      eAxisObservability: {
+        state: {
+          configured: false,
+          startedAt: null,
+          shadowDays: 7,
+          rankingEnabled: false,
+          readyForPromotion: false,
+          inShadow: true,
+          daysElapsed: 0,
+          daysRemaining: 7
+        },
+        windowDays: 7,
+        samples: 0,
+        changedQueries: 0,
+        changedRate: 0,
+        averageBoosted: 0,
+        recent: []
+      },
+      relationTypes: [],
+      clusters: [],
+      highValueNodes: [],
+      reviewQueue: [],
+      duplicateFactKeys: [],
+      deadLetters: [{
+        id: 1,
+        namespace: "default",
+        memory_id: "mem_dead_letter",
+        memory_updated_at: "2026-07-19T00:00:00.000Z",
+        memory_revision: 1,
+        status: "dead_letter",
+        attempts: 5,
+        queued_at: null,
+        completed_at: "2026-07-19T00:00:00.000Z",
+        last_error: "test failure",
+        result_json: null,
+        created_at: "2026-07-19T00:00:00.000Z",
+        updated_at: "2026-07-19T00:00:00.000Z"
+      }]
+    };
+
+    const renderedPages = [
+      renderPage(pageInput("message"), pageData({ records: [memoryRecord()] })),
+      renderPage(pageInput("review"), pageData({ records: [dreamReview], candidates: reviewCandidates })),
+      renderPage(pageInput("x-review"), pageData({ candidates: [timelineCandidate] })),
+      renderPage(pageInput("m-review"), pageData({
+        candidates: [relationCandidate],
+        resolvedCandidates: [resolvedArchiveCandidate],
+        operationalPending: 1
+      })),
+      renderPage(pageInput("lmc5"), pageData({
+        lmc5: lmc5Data,
+        coordinateBackfill: {
+          enabled: true,
+          lastRunAt: null,
+          lastResult: null,
+          cursor: null,
+          totalActive: 1,
+          completed: 0,
+          remaining: 1,
+          progressPercent: 0,
+          estimatedMinutes: 1,
+          pendingReview: 0
+        }
+      }))
+    ];
+    const renderedActions = new Set<string>(renderedPages.flatMap(postFormActions));
+    const registeredActions = new Set<string>(ADMIN_BOARD_POST_ROUTES.map((route) => route.path));
+
+    expect([...renderedActions].filter((action) => !registeredActions.has(action))).toEqual([]);
+    expect([...registeredActions].filter((action) => !renderedActions.has(action))).toEqual([]);
   });
 });

@@ -1,4 +1,5 @@
 import type { MemoryRecord } from "../../types";
+import { ADMIN_BOARD_ROUTES } from "./routes";
 import { attr, formatTime, htmlEscape, parseTags } from "./utils";
 
 interface DreamReviewPayload {
@@ -73,7 +74,7 @@ export function renderDreamReviewMemory(record: MemoryRecord, liveTarget?: Memor
   const approveText = review?.action === "delete" ? "允许删除" : review?.action === "supersede" ? "批准替换" : "允许更新";
   const confirmation = review?.action === "delete" ? `确认软删除 ${targetId}？请先核对上方原文和删除理由。` : review?.action === "supersede" ? `确认创建替代记忆并停用旧记忆 ${targetId}？` : `确认把上方“修改后”内容写入 ${targetId}？`;
   const actions = record.status === "active"
-    ? `<div class="actions review-actions"><form method="POST" action="/admin/memories/review/approve" onsubmit="return confirm('${attr(confirmation)}')"><input type="hidden" name="id" value="${attr(record.id)}"><button class="action-btn approve-review" type="submit"${disabled}>${approveText}</button></form><form method="POST" action="/admin/memories/review/reject" onsubmit="return confirm('确认拒绝这条提案？原记忆不会改变。')"><input type="hidden" name="id" value="${attr(record.id)}"><button class="action-btn delete" type="submit"${disabled}>拒绝并保留原记录</button></form></div>`
+    ? `<div class="actions review-actions"><form method="POST" action="${ADMIN_BOARD_ROUTES.approveDreamReview.path}" onsubmit="return confirm('${attr(confirmation)}')"><input type="hidden" name="id" value="${attr(record.id)}"><button class="action-btn approve-review" type="submit"${disabled}>${approveText}</button></form><form method="POST" action="${ADMIN_BOARD_ROUTES.rejectDreamReview.path}" onsubmit="return confirm('确认拒绝这条提案？原记忆不会改变。')"><input type="hidden" name="id" value="${attr(record.id)}"><button class="action-btn delete" type="submit"${disabled}>拒绝并保留原记录</button></form></div>`
     : "";
 
   return `<article class="memory-card review-card ${review?.action === "delete" ? "review-delete" : "review-update"} ${record.status !== "active" ? "muted" : ""}"><div class="message-header"><span class="message-time">${htmlEscape(formatTime(record.created_at || record.updated_at))}</span><span class="review-action-label">${htmlEscape(actionLabel)}提案</span></div><div class="memory-meta"><span class="score-pill">${htmlEscape(sourceLabel)} ${actionLabel}</span><span class="tag-pill">目标 ${htmlEscape(targetId)}</span>${review?.date ? `<span class="tag-pill">来源 ${htmlEscape(review.date)}</span>` : ""}${tags}</div><div class="review-proposal-summary">${htmlEscape(record.content)}</div>${reason}${target}${fields}<div class="char-count">proposal: ${htmlEscape(record.id)}</div>${actions}</article>`;

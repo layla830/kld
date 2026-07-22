@@ -737,9 +737,9 @@ const checks = [
       adminBoard.includes("rejectOperationalReviewCandidate") &&
       adminBoard.includes("rollbackOperationalReviewCandidate") &&
       metabolismView.includes("renderFactTransitionCandidate") &&
-      metabolismView.includes('/admin/memories/m-review/approve') &&
-      metabolismView.includes('/admin/memories/m-review/reject') &&
-      metabolismView.includes('/admin/memories/m-review/rollback') &&
+      metabolismView.includes("ADMIN_BOARD_ROUTES.approveOperationalReview.path") &&
+      metabolismView.includes("ADMIN_BOARD_ROUTES.rejectOperationalReview.path") &&
+      metabolismView.includes("ADMIN_BOARD_ROUTES.rollbackOperationalReview.path") &&
       !adminBoard.includes("/admin/memories/z-review/"),
   ],
   [

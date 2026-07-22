@@ -1,3 +1,8 @@
+export type AdminBoardRouteDefinition = {
+  method: "GET" | "POST";
+  path: `/admin/memories${string}`;
+};
+
 export const ADMIN_BOARD_ROUTES = {
   home: { method: "GET", path: "/admin/memories" },
   create: { method: "POST", path: "/admin/memories/create" },
@@ -20,7 +25,7 @@ export const ADMIN_BOARD_ROUTES = {
   rejectOperationalReview: { method: "POST", path: "/admin/memories/m-review/reject" },
   batchOperationalReview: { method: "POST", path: "/admin/memories/m-review/batch" },
   rollbackOperationalReview: { method: "POST", path: "/admin/memories/m-review/rollback" }
-} as const;
+} as const satisfies Record<string, AdminBoardRouteDefinition>;
 
 export type AdminBoardRoute = typeof ADMIN_BOARD_ROUTES[keyof typeof ADMIN_BOARD_ROUTES];
 
