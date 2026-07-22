@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { MemoryCandidateRecord } from "../src/db/memoryCandidates";
-import { renderOperationalReviewCandidate } from "../src/api/adminBoard/metabolismView";
+import {
+  relationEndpointState,
+  renderOperationalReviewCandidate
+} from "../src/api/adminBoard/metabolismView";
 
 function candidate(status: "pending" | "approved"): MemoryCandidateRecord {
   const snapshot = (id: string, content: string, importance: number) => ({
@@ -43,6 +46,12 @@ function relationCandidate(status: "pending" | "approved"): MemoryCandidateRecor
 }
 
 describe("unified operational review card", () => {
+  it("does not describe original diaries as normal recall or Y-edge participants", () => {
+    expect(relationEndpointState("diary", "active", 1))
+      .toBe("active，但 diary 原文不参与正常召回或 Y 建边");
+    expect(relationEndpointState("lesson", "active", 1)).toBe("active，正常参与召回");
+  });
+
   it("uses the existing M-review endpoints without exposing batch supersede", () => {
     const html = renderOperationalReviewCandidate(candidate("pending"));
     expect(html).toContain("Z 事实状态 · 取代候选");

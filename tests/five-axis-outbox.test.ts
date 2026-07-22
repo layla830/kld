@@ -149,7 +149,11 @@ describe("five-axis outbox policy", () => {
               return { first: async () => outbox };
             }
             if (sql === "SELECT * FROM memories WHERE namespace = ? AND id = ?") {
-              return { first: async () => ({ id: "mem_1", status: "active", five_axis_revision: 2 }) };
+              return {
+                first: async () => ({
+                  id: "mem_1", status: "active", type: "lesson", active_fact: 1, five_axis_revision: 2
+                })
+              };
             }
             if (sql.includes("SET queued_at = ?, updated_at = ?")) {
               return { run: async () => ({ meta: { changes: 1 } }) };
@@ -203,7 +207,9 @@ describe("five-axis outbox policy", () => {
               return { first: async () => outbox };
             }
             if (sql === "SELECT * FROM memories WHERE namespace = ? AND id = ?") {
-              return { first: async () => ({ id: "mem_1", status: "active" }) };
+              return {
+                first: async () => ({ id: "mem_1", status: "active", type: "lesson", active_fact: 1 })
+              };
             }
             if (sql.includes("id > ?")) {
               return { first: async () => ({ id: 12 }) };

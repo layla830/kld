@@ -8,14 +8,20 @@ describe("Y relation candidate boundary", () => {
     vi.restoreAllMocks();
   });
 
-  it("keeps only active memories that still exist in D1", () => {
-    const active = { id: "mem_active", status: "active" } as MemoryRecord;
-    const inactive = { id: "mem_inactive", status: "superseded" } as MemoryRecord;
+  it("keeps only five-axis eligible memories that still exist in D1", () => {
+    const active = { id: "mem_active", status: "active", type: "lesson", active_fact: 1 } as MemoryRecord;
+    const inactive = {
+      id: "mem_inactive", status: "superseded", type: "lesson", active_fact: 1
+    } as MemoryRecord;
+    const diary = { id: "mem_diary", status: "active", type: "diary", active_fact: 1 } as MemoryRecord;
+    const oldFact = { id: "mem_old_fact", status: "active", type: "fact", active_fact: 0 } as MemoryRecord;
     const selected = selectActiveD1RelationNeighbors([
       { id: active.id, score: 0.8 },
       { id: inactive.id, score: 0.9 },
+      { id: diary.id, score: 0.99 },
+      { id: oldFact.id, score: 0.98 },
       { id: "mem_missing", score: 0.95 }
-    ], [active, inactive]);
+    ], [active, inactive, diary, oldFact]);
 
     expect(selected).toEqual([{ memory: active, vectorScore: 0.8 }]);
   });
@@ -68,6 +74,43 @@ describe("Y relation candidate boundary", () => {
     });
   });
 
+  it("does not scan original diaries as Y-axis sources", async () => {
+    const diary = {
+      id: "mem_diary", status: "active", type: "diary", active_fact: 1
+    } as MemoryRecord;
+    const splitMemory = {
+      id: "mem_split", status: "active", type: "lesson", active_fact: 1
+    } as MemoryRecord;
+    const db = {
+      prepare() {
+        return {
+          bind() {
+            return { all: async () => ({ results: [diary, splitMemory] }) };
+          }
+        };
+      }
+    } as unknown as D1Database;
+    let scanned: MemoryRecord[] = [];
+
+    const result = await runRelationBuild(
+      { DB: db } as Env,
+      "default",
+      { dryRun: true, memoryIds: [diary.id, splitMemory.id] },
+      {
+        findCandidates: async (_env, _namespace, memories) => {
+          scanned = memories;
+          return [];
+        },
+        proposeRelations: async () => ({ hints: [] }),
+        createRelation: async () => true,
+        queueReviewCandidate: async () => "unused"
+      }
+    );
+
+    expect(scanned).toEqual([splitMemory]);
+    expect(result.scanned).toBe(1);
+  });
+
   it("retries invalid JSON and accepts array-form assistant content", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(new Response(JSON.stringify({
@@ -111,7 +154,7 @@ describe("Y relation candidate boundary", () => {
   });
 
   it("surfaces candidate-search infrastructure failures instead of reporting a true empty result", async () => {
-    const memory = { id: "mem_a", status: "active" } as MemoryRecord;
+    const memory = { id: "mem_a", status: "active", type: "lesson", active_fact: 1 } as MemoryRecord;
     const db = {
       prepare() {
         return {
