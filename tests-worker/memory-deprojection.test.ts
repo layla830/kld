@@ -301,6 +301,7 @@ describe("memory deprojection Workers contract", () => {
     });
 
     expect(result.invalidatedCandidates).toBe(1);
+    expect(result.reconciledAxisRuns).toBe(1);
     expect(await env.DB.prepare(
       "SELECT status, validation_error FROM memory_candidates WHERE namespace = ? AND external_key = ?"
     ).bind(NAMESPACE, candidateKey).first<{ status: string; validation_error: string }>())
@@ -310,6 +311,76 @@ describe("memory deprojection Workers contract", () => {
        WHERE namespace = ? AND memory_id = ? AND memory_revision = 1 AND axis = 'Y'`
     ).bind(NAMESPACE, target.id).first<{ status: string }>())
       .toEqual({ status: "skipped" });
+    const operation = await getMemoryDeprojectionByOperationId(env.DB, "deproj_y_source");
+    expect(operation?.reconciled_axis_runs).toBe(1);
+    expect(JSON.parse(operation?.reconciled_run_snapshot_json ?? "[]")).toEqual([
+      expect.objectContaining({
+        namespace: NAMESPACE,
+        memory_id: target.id,
+        memory_revision: 1,
+        axis: "Y",
+        status: "pending_review"
+      })
+    ]);
+  });
+
+  it("preserves axis-run ownership when a pending candidate is re-upserted", async () => {
+    const target = await createEligibleMemory("mem_deprojection_reupsert_owner");
+    const candidateKey = "deprojection:reupsert-owner";
+    const candidateInput = {
+      externalKey: candidateKey,
+      dreamDate: "2026-07-23",
+      action: "update" as const,
+      subject: "system",
+      targetId: target.id,
+      payload: { version: 1 },
+      sourceChunkIds: [],
+      status: "pending" as const
+    };
+    await upsertMemoryCandidate(env.DB, NAMESPACE, candidateInput);
+    const now = "2026-07-23T02:45:00.000Z";
+    await env.DB.prepare(
+      `INSERT INTO memory_five_axis_runs (
+         namespace, memory_id, memory_revision, axis, status, attempts,
+         claim_token, started_at, updated_at
+       ) VALUES (?, ?, ?, 'Y', 'running', 1, 'claim_reupsert_owner', ?, ?)`
+    ).bind(NAMESPACE, target.id, target.five_axis_revision ?? 1, now, now).run();
+    await expect(completeFiveAxisRun(
+      env.DB,
+      {
+        namespace: NAMESPACE,
+        memoryId: target.id,
+        memoryRevision: target.five_axis_revision ?? 1,
+        axis: "Y"
+      },
+      "claim_reupsert_owner",
+      "pending_review",
+      { candidates: 1 },
+      [candidateKey]
+    )).resolves.toBe(true);
+
+    await upsertMemoryCandidate(env.DB, NAMESPACE, {
+      ...candidateInput,
+      payload: { version: 2 }
+    });
+
+    expect(await env.DB.prepare(
+      `SELECT role, memory_id FROM memory_candidate_dependencies
+       WHERE namespace = ? AND candidate_external_key = ?
+       ORDER BY role`
+    ).bind(NAMESPACE, candidateKey).all<{ role: string; memory_id: string }>())
+      .toMatchObject({
+        results: [
+          { role: "axis_run", memory_id: target.id },
+          { role: "target", memory_id: target.id }
+        ]
+      });
+    expect(await count(
+      `SELECT COUNT(*) AS count FROM memory_candidate_axis_runs
+       WHERE namespace = ? AND candidate_external_key = ?`,
+      NAMESPACE,
+      candidateKey
+    )).toBe(1);
   });
 
   it("invalidates M through normalized target dependency when only source owns the run", async () => {
@@ -474,6 +545,53 @@ describe("memory deprojection Workers contract", () => {
     )).toBe(1);
   });
 
+  it("rejects reuse of an operation id with a different patch", async () => {
+    const memory = await createEligibleMemory("mem_deprojection_intent_mismatch");
+    const operationId = "deproj_intent_mismatch";
+    await deprojectMemoryFromFiveAxes(env as Env, {
+      namespace: NAMESPACE,
+      memoryId: memory.id,
+      patch: { status: "archived" },
+      source: "system",
+      reason: "intent mismatch contract",
+      operationId
+    });
+
+    await expect(deprojectMemoryFromFiveAxes(env as Env, {
+      namespace: NAMESPACE,
+      memoryId: memory.id,
+      patch: { status: "deleted" },
+      source: "system",
+      reason: "intent mismatch contract",
+      operationId
+    })).rejects.toThrow("memory_deprojection_operation_intent_mismatch");
+    expect(await getMemoryById(env.DB, { namespace: NAMESPACE, id: memory.id }))
+      .toMatchObject({ status: "archived", active_fact: 0, five_axis_revision: 2 });
+  });
+
+  it("rejects stale reuse after the memory is reactivated", async () => {
+    const memory = await createEligibleMemory("mem_deprojection_stale_reuse");
+    const input = {
+      namespace: NAMESPACE,
+      memoryId: memory.id,
+      patch: { status: "archived" },
+      source: "system" as const,
+      reason: "stale reuse contract",
+      operationId: "deproj_stale_reuse"
+    };
+    await deprojectMemoryFromFiveAxes(env as Env, input);
+    await env.DB.prepare(
+      `UPDATE memories
+       SET status = 'active', active_fact = 1, updated_at = ?
+       WHERE namespace = ? AND id = ?`
+    ).bind("2026-07-23T03:10:00.000Z", NAMESPACE, memory.id).run();
+
+    await expect(deprojectMemoryFromFiveAxes(env as Env, input))
+      .rejects.toThrow("memory_deprojection_operation_stale");
+    expect(await getMemoryById(env.DB, { namespace: NAMESPACE, id: memory.id }))
+      .toMatchObject({ status: "active", active_fact: 1, five_axis_revision: 3 });
+  });
+
   it("does not let a completed operation for another memory satisfy a prepared plan", async () => {
     const first = await createEligibleMemory("mem_deprojection_scope_first");
     await deprojectMemoryFromFiveAxes(env as Env, {
@@ -500,7 +618,7 @@ describe("memory deprojection Workers contract", () => {
       `SELECT id FROM memory_candidates
        WHERE namespace = ? AND external_key = 'deprojection:scope-owner'`
     ).bind(NAMESPACE).first<{ id: string }>();
-    const plan = prepareMemoryDeprojection(env.DB, {
+    const plan = await prepareMemoryDeprojection(env.DB, {
       namespace: NAMESPACE,
       memoryId: target.id,
       memory: target,
@@ -647,7 +765,7 @@ describe("memory deprojection Workers contract", () => {
          'delete', 'system', ?, '{}', '[]', '[]', 'pending', ?, ?)`
     ).bind(NAMESPACE, memory.id, now, now).run();
 
-    const plan = prepareMemoryDeprojection(env.DB, {
+    const plan = await prepareMemoryDeprojection(env.DB, {
       namespace: NAMESPACE,
       memoryId: memory.id,
       memory,

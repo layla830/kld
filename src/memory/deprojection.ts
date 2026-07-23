@@ -15,6 +15,7 @@ import {
   classifyMemoryEligibilityTransition,
   isFiveAxisMemoryEligible,
 } from "./fiveAxis/eligibility";
+import { memoryDeprojectionIntentFingerprint } from "./deprojectionIntent";
 
 export type { MemoryEligibilityState, MemoryEligibilityTransition } from "./fiveAxis/eligibility";
 export {
@@ -55,6 +56,7 @@ export interface PreparedMemoryDeprojection {
   statements: D1PreparedStatement[];
   successGuard: MemoryMutationGuard;
   operationId: string;
+  intentFingerprint: string;
   transition: "eligible_to_ineligible";
   previousRevision: number;
   currentRevision: number;
@@ -70,6 +72,7 @@ export interface MemoryDeprojectionResult {
   invalidatedCandidates: number;
   terminalizedOutboxes: number;
   terminalizedAxisRuns: number;
+  reconciledAxisRuns: number;
   vectorSyncRequired: boolean;
   reused: boolean;
   operationId: string;
@@ -90,6 +93,7 @@ function resultFromRecord(
     invalidatedCandidates: operation.invalidated_candidates,
     terminalizedOutboxes: operation.terminalized_outboxes,
     terminalizedAxisRuns: operation.terminalized_axis_runs,
+    reconciledAxisRuns: operation.reconciled_axis_runs,
     vectorSyncRequired: operation.vector_sync_required !== 0,
     reused,
     operationId: operation.operation_id
@@ -109,6 +113,14 @@ async function completedResult(
     id: operation.memory_id
   });
   if (!memory) throw new Error("memory_deprojection_target_missing");
+  if (
+    memory.five_axis_revision !== operation.current_revision
+    || memory.status !== operation.next_status
+    || memory.type !== operation.next_type
+    || memory.active_fact !== operation.next_active_fact
+  ) {
+    throw new Error("memory_deprojection_operation_stale");
+  }
   return resultFromRecord(operation, memory, reused);
 }
 
@@ -125,6 +137,10 @@ export async function deprojectMemoryFromFiveAxes(
     if (existing) {
       if (existing.namespace !== input.namespace || existing.memory_id !== input.memoryId) {
         throw new Error("memory_deprojection_operation_scope_mismatch");
+      }
+      const intentFingerprint = await memoryDeprojectionIntentFingerprint(input);
+      if (existing.intent_fingerprint !== intentFingerprint) {
+        throw new Error("memory_deprojection_operation_intent_mismatch");
       }
       return completedResult(env, existing, true);
     }
@@ -146,14 +162,15 @@ export async function deprojectMemoryFromFiveAxes(
         currentRevision: memory.five_axis_revision ?? 1,
         status: next.status,
         type: next.type,
-        activeFact: next.active_fact
+        activeFact: next.active_fact,
+        intentFingerprint: await memoryDeprojectionIntentFingerprint(input)
       });
       if (existing) return completedResult(env, existing, true);
     }
     throw new Error(`memory_deprojection_requires_eligible_to_ineligible:${transition}`);
   }
 
-  const prepared = prepareMemoryDeprojection(env.DB, { ...input, memory });
+  const prepared = await prepareMemoryDeprojection(env.DB, { ...input, memory });
   const results = await env.DB.batch(prepared.statements);
   const operation = await getMemoryDeprojectionByOperationId(env.DB, prepared.operationId)
     ?? await findCompletedMemoryDeprojection(env.DB, {
@@ -162,7 +179,8 @@ export async function deprojectMemoryFromFiveAxes(
       currentRevision: prepared.currentRevision,
       status: next.status,
       type: next.type,
-      activeFact: next.active_fact
+      activeFact: next.active_fact,
+      intentFingerprint: prepared.intentFingerprint
     });
   if (!operation) throw new Error("memory_deprojection_precondition_failed");
   return completedResult(env, operation, (results[0]?.meta.changes ?? 0) === 0);

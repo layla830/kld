@@ -7,14 +7,19 @@ export const PENDING_MEMORY_CANDIDATE_STATUSES = [
 ] as const;
 
 export type MemoryCandidateDependencyRole = "source" | "target" | "axis_run";
+export type MemoryCandidateDeclaredDependencyRole = Exclude<
+  MemoryCandidateDependencyRole,
+  "axis_run"
+>;
 
 export interface MemoryCandidateDependency {
   memoryId: string;
   role: MemoryCandidateDependencyRole;
 }
 
-function placeholders(values: readonly unknown[]): string {
-  return values.map(() => "?").join(", ");
+export interface MemoryCandidateDeclaredDependency {
+  memoryId: string;
+  role: MemoryCandidateDeclaredDependencyRole;
 }
 
 export function candidateDependsOnMemorySql(
@@ -27,6 +32,49 @@ export function candidateDependsOnMemorySql(
     WHERE dependency.namespace = ${candidateAlias}.namespace
       AND dependency.candidate_external_key = ${candidateAlias}.external_key
       AND dependency.memory_id = ${memoryIdExpression}
+  )`;
+}
+
+function sqlStringList(values: readonly string[]): string {
+  return values.map((value) => `'${value.replaceAll("'", "''")}'`).join(", ");
+}
+
+export function pendingDependentCandidateSql(
+  candidateAlias: string,
+  memoryIdExpression: string,
+  excludedCandidateIdExpression: string
+): string {
+  return `${candidateDependsOnMemorySql(candidateAlias, memoryIdExpression)}
+    AND ${candidateAlias}.status IN (${sqlStringList(PENDING_MEMORY_CANDIDATE_STATUSES)})
+    AND ${candidateAlias}.id <> COALESCE(${excludedCandidateIdExpression}, '')`;
+}
+
+export const RECONCILABLE_CANDIDATE_RUN_STATUSES = [
+  "pending_review",
+  "applied",
+  "skipped"
+] as const;
+
+export function dependentCandidateLinkedRunSql(
+  runAlias: string,
+  memoryIdExpression: string,
+  excludedCandidateIdExpression: string
+): string {
+  return `EXISTS (
+    SELECT 1
+    FROM memory_candidate_axis_runs AS selected_link
+    JOIN memory_candidates AS selected_candidate
+      ON selected_candidate.namespace = selected_link.namespace
+     AND selected_candidate.external_key = selected_link.candidate_external_key
+    WHERE ${pendingDependentCandidateSql(
+      "selected_candidate",
+      memoryIdExpression,
+      excludedCandidateIdExpression
+    )}
+      AND selected_link.namespace = ${runAlias}.namespace
+      AND selected_link.memory_id = ${runAlias}.memory_id
+      AND selected_link.memory_revision = ${runAlias}.memory_revision
+      AND selected_link.axis = ${runAlias}.axis
   )`;
 }
 
@@ -92,24 +140,23 @@ export function prepareMemoryCandidateDependencyReplacement(
   db: D1Database,
   namespace: string,
   candidateExternalKey: string,
-  dependencies: readonly MemoryCandidateDependency[]
+  dependencies: readonly MemoryCandidateDeclaredDependency[]
 ): D1PreparedStatement[] {
-  const pendingStatuses = placeholders(PENDING_MEMORY_CANDIDATE_STATUSES);
   const candidateIsPending: MemoryMutationGuard = {
     sql: `EXISTS (
       SELECT 1 FROM memory_candidates
       WHERE namespace = ? AND external_key = ?
-        AND status IN (${pendingStatuses})
+        AND status IN (${sqlStringList(PENDING_MEMORY_CANDIDATE_STATUSES)})
     )`,
     binds: [
       namespace,
-      candidateExternalKey,
-      ...PENDING_MEMORY_CANDIDATE_STATUSES
+      candidateExternalKey
     ]
   };
   const remove = db.prepare(
     `DELETE FROM memory_candidate_dependencies
      WHERE namespace = ? AND candidate_external_key = ?
+       AND role IN ('source', 'target')
        AND (${candidateIsPending.sql})`
   ).bind(
     namespace,
@@ -129,13 +176,11 @@ export function prepareMemoryCandidateDependencyReplacement(
 }
 
 export interface PrepareRejectDependentCandidatesInput {
-  namespace: string;
-  memoryId: string;
-  excludeCandidateId?: string;
   reason: string;
   now: string;
   guard: MemoryMutationGuard;
-  excludeRunMemoryId?: string;
+  candidateSelection: MemoryMutationGuard;
+  runSelection: MemoryMutationGuard;
 }
 
 export interface PreparedDependentCandidateRejection {
@@ -147,55 +192,23 @@ export function prepareRejectDependentCandidates(
   db: D1Database,
   input: PrepareRejectDependentCandidatesInput
 ): PreparedDependentCandidateRejection {
-  const pendingStatuses = placeholders(PENDING_MEMORY_CANDIDATE_STATUSES);
-  const dependency = candidateDependsOnMemorySql("candidate", "?");
   const rejection = db.prepare(
     `UPDATE memory_candidates AS candidate
      SET status = 'rejected',
          validation_error = ?,
          resolved_at = ?,
          updated_at = ?
-     WHERE candidate.namespace = ?
-       AND ${dependency}
-       AND candidate.status IN (${pendingStatuses})
-       AND candidate.id <> COALESCE(?, '')
+     WHERE candidate.status IN (${sqlStringList(PENDING_MEMORY_CANDIDATE_STATUSES)})
+       AND (${input.candidateSelection.sql})
        AND (${input.guard.sql})`
   ).bind(
     input.reason,
     input.now,
     input.now,
-    input.namespace,
-    input.memoryId,
-    ...PENDING_MEMORY_CANDIDATE_STATUSES,
-    input.excludeCandidateId ?? null,
+    ...input.candidateSelection.binds,
     ...input.guard.binds
   );
 
-  const affectedRun = `EXISTS (
-    SELECT 1
-    FROM memory_candidate_axis_runs AS changed_link
-    JOIN memory_candidates AS changed_candidate
-      ON changed_candidate.namespace = changed_link.namespace
-     AND changed_candidate.external_key = changed_link.candidate_external_key
-    JOIN memory_candidate_dependencies AS changed_dependency
-      ON changed_dependency.namespace = changed_candidate.namespace
-     AND changed_dependency.candidate_external_key = changed_candidate.external_key
-    WHERE changed_dependency.namespace = ?
-      AND changed_dependency.memory_id = ?
-      AND changed_candidate.id <> COALESCE(?, '')
-      AND changed_candidate.status = 'rejected'
-      AND changed_candidate.validation_error = ?
-      AND changed_link.namespace = runs.namespace
-      AND changed_link.memory_id = runs.memory_id
-      AND changed_link.memory_revision = runs.memory_revision
-      AND changed_link.axis = runs.axis
-  )`;
-  const affectedRunBinds = [
-    input.namespace,
-    input.memoryId,
-    input.excludeCandidateId ?? null,
-    input.reason
-  ];
   const reconcile = db.prepare(
     `UPDATE memory_five_axis_runs AS runs
      SET status = ${candidateReviewStatusSql("runs")},
@@ -203,15 +216,13 @@ export function prepareRejectDependentCandidates(
          lease_expires_at = NULL,
          completed_at = ?,
          updated_at = ?
-     WHERE runs.status IN ('pending_review', 'applied', 'skipped')
-       AND runs.memory_id <> COALESCE(?, '')
-       AND ${affectedRun}
+     WHERE runs.status IN (${sqlStringList(RECONCILABLE_CANDIDATE_RUN_STATUSES)})
+       AND (${input.runSelection.sql})
        AND (${input.guard.sql})`
   ).bind(
     input.now,
     input.now,
-    input.excludeRunMemoryId ?? null,
-    ...affectedRunBinds,
+    ...input.runSelection.binds,
     ...input.guard.binds
   );
 
@@ -221,25 +232,18 @@ export function prepareRejectDependentCandidates(
       sql: `NOT EXISTS (
           SELECT 1
           FROM memory_candidates AS candidate
-          WHERE candidate.namespace = ?
-            AND ${dependency}
-            AND candidate.status IN (${pendingStatuses})
-            AND candidate.id <> COALESCE(?, '')
+          WHERE candidate.status IN (${sqlStringList(PENDING_MEMORY_CANDIDATE_STATUSES)})
+            AND (${input.candidateSelection.sql})
         )
         AND NOT EXISTS (
           SELECT 1
           FROM memory_five_axis_runs AS runs
-          WHERE runs.memory_id <> COALESCE(?, '')
-            AND ${affectedRun}
+          WHERE (${input.runSelection.sql})
             AND runs.status <> ${candidateReviewStatusSql("runs")}
         )`,
       binds: [
-        input.namespace,
-        input.memoryId,
-        ...PENDING_MEMORY_CANDIDATE_STATUSES,
-        input.excludeCandidateId ?? null,
-        input.excludeRunMemoryId ?? null,
-        ...affectedRunBinds
+        ...input.candidateSelection.binds,
+        ...input.runSelection.binds
       ]
     }
   };

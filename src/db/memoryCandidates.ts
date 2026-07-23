@@ -7,7 +7,7 @@ import {
 } from "./memoryFiveAxisRuns";
 import {
   prepareMemoryCandidateDependencyReplacement,
-  type MemoryCandidateDependency
+  type MemoryCandidateDeclaredDependency
 } from "./memoryCandidateDependencies";
 
 export interface MemoryCandidateRecord {
@@ -51,7 +51,7 @@ export interface CandidateInput {
   sourceChunks?: Array<Record<string, unknown>>;
   status: "pending" | "needs_subject_review" | "deferred_relation";
   validationError?: string | null;
-  dependencies?: readonly MemoryCandidateDependency[];
+  dependencies?: readonly MemoryCandidateDeclaredDependency[];
 }
 
 export async function upsertMemoryCandidate(db: D1Database, namespace: string, input: CandidateInput): Promise<void> {

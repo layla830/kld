@@ -7,14 +7,16 @@ import {
 } from "../memory/fiveAxis/eligibility";
 import { newId } from "../utils/ids";
 import { nowIso } from "../utils/time";
+import { memoryDeprojectionIntentFingerprint } from "../memory/deprojectionIntent";
 import {
   FIVE_AXIS_OUTBOX_TRANSITIONS,
   FIVE_AXIS_RUN_STATUS,
   statusPlaceholders
 } from "./fiveAxisStatuses";
 import {
-  PENDING_MEMORY_CANDIDATE_STATUSES,
-  candidateDependsOnMemorySql,
+  RECONCILABLE_CANDIDATE_RUN_STATUSES,
+  dependentCandidateLinkedRunSql,
+  pendingDependentCandidateSql,
   prepareRejectDependentCandidates
 } from "./memoryCandidateDependencies";
 import { prepareMemoryUpdate, type MemoryMutationGuard } from "./memories";
@@ -35,6 +37,7 @@ export interface MemoryDeprojectionRecord {
   source: string;
   reason: string;
   candidate_id: string | null;
+  intent_fingerprint: string;
   transition: "eligible_to_ineligible";
   previous_status: string;
   next_status: string;
@@ -48,12 +51,14 @@ export interface MemoryDeprojectionRecord {
   timeline_snapshot_json: string;
   outbox_snapshot_json: string;
   axis_run_snapshot_json: string;
+  reconciled_run_snapshot_json: string;
   candidate_snapshot_json: string;
   removed_relations: number;
   removed_timeline_memberships: number;
   invalidated_candidates: number;
   terminalized_outboxes: number;
   terminalized_axis_runs: number;
+  reconciled_axis_runs: number;
   vector_sync_required: number;
   invariants_verified: number;
   created_at: string;
@@ -71,34 +76,94 @@ interface MemoryDeprojectionOperationScope {
   previousRevision: number;
   currentRevision: number;
   transition: "eligible_to_ineligible";
+  nextStatus: string;
+  nextType: string;
+  nextActiveFact: number;
+  intentFingerprint: string;
 }
 
-function operationScopeGuard(
+function operationScopePredicate(
   scope: MemoryDeprojectionOperationScope,
-  state: "pending" | "completed"
+  state: "pending" | "completed",
+  alias = "operation"
 ): MemoryMutationGuard {
   const completion = state === "pending"
-    ? "completed_at IS NULL"
-    : "completed_at IS NOT NULL AND invariants_verified = 1";
+    ? `${alias}.completed_at IS NULL`
+    : `${alias}.completed_at IS NOT NULL AND ${alias}.invariants_verified = 1`;
   return {
-    sql: `EXISTS (
-      SELECT 1 FROM memory_deprojections
-      WHERE operation_id = ?
-        AND namespace = ?
-        AND memory_id = ?
-        AND previous_revision = ?
-        AND current_revision = ?
-        AND transition = ?
-        AND ${completion}
-    )`,
+    sql: `${alias}.operation_id = ?
+      AND ${alias}.namespace = ?
+      AND ${alias}.memory_id = ?
+      AND ${alias}.previous_revision = ?
+      AND ${alias}.current_revision = ?
+      AND ${alias}.transition = ?
+      AND ${alias}.next_status = ?
+      AND ${alias}.next_type = ?
+      AND ${alias}.next_active_fact = ?
+      AND ${alias}.intent_fingerprint = ?
+      AND ${completion}`,
     binds: [
       scope.operationId,
       scope.namespace,
       scope.memoryId,
       scope.previousRevision,
       scope.currentRevision,
-      scope.transition
+      scope.transition,
+      scope.nextStatus,
+      scope.nextType,
+      scope.nextActiveFact,
+      scope.intentFingerprint
     ]
+  };
+}
+
+function operationScopeGuard(
+  scope: MemoryDeprojectionOperationScope,
+  state: "pending" | "completed"
+): MemoryMutationGuard {
+  const predicate = operationScopePredicate(scope, state);
+  return {
+    sql: `EXISTS (
+      SELECT 1 FROM memory_deprojections AS operation
+      WHERE ${predicate.sql}
+    )`,
+    binds: predicate.binds
+  };
+}
+
+function candidateSnapshotSelectionGuard(
+  scope: MemoryDeprojectionOperationScope
+): MemoryMutationGuard {
+  const operation = operationScopePredicate(scope, "pending");
+  return {
+    sql: `EXISTS (
+      SELECT 1
+      FROM memory_deprojections AS operation,
+           json_each(operation.candidate_snapshot_json) AS snapshot
+      WHERE ${operation.sql}
+        AND json_extract(snapshot.value, '$.id') = candidate.id
+        AND json_extract(snapshot.value, '$.external_key') = candidate.external_key
+    )`,
+    binds: operation.binds
+  };
+}
+
+function reconciledRunSnapshotSelectionGuard(
+  scope: MemoryDeprojectionOperationScope
+): MemoryMutationGuard {
+  const operation = operationScopePredicate(scope, "pending");
+  return {
+    sql: `EXISTS (
+      SELECT 1
+      FROM memory_deprojections AS operation,
+           json_each(operation.reconciled_run_snapshot_json) AS snapshot
+      WHERE ${operation.sql}
+        AND json_extract(snapshot.value, '$.namespace') = runs.namespace
+        AND json_extract(snapshot.value, '$.memory_id') = runs.memory_id
+        AND json_extract(snapshot.value, '$.memory_revision') = runs.memory_revision
+        AND json_extract(snapshot.value, '$.axis') = runs.axis
+    )`,
+    binds: operation.binds
   };
 }
 
@@ -125,15 +190,16 @@ function transitionSnapshotInsert(
 
   return db.prepare(
     `INSERT OR IGNORE INTO memory_deprojections (
-       operation_id, namespace, memory_id, source, reason, candidate_id, transition,
+       operation_id, namespace, memory_id, source, reason, candidate_id,
+       intent_fingerprint, transition,
        previous_status, next_status, previous_type, next_type,
        previous_active_fact, next_active_fact, previous_revision, current_revision,
        relation_snapshot_json, timeline_snapshot_json, outbox_snapshot_json,
-       axis_run_snapshot_json, candidate_snapshot_json,
+       axis_run_snapshot_json, reconciled_run_snapshot_json, candidate_snapshot_json,
        vector_sync_required, created_at
      )
      SELECT
-       ?, memory.namespace, memory.id, ?, ?, ?, ?,
+       ?, memory.namespace, memory.id, ?, ?, ?, ?, ?,
        memory.status, ?, memory.type, ?,
        memory.active_fact, ?, memory.five_axis_revision, ?,
        COALESCE((
@@ -205,6 +271,8 @@ function transitionSnapshotInsert(
        ), '[]'),
        COALESCE((
          SELECT json_group_array(json_object(
+           'namespace', run.namespace,
+           'memory_id', run.memory_id,
            'memory_revision', run.memory_revision,
            'axis', run.axis,
            'status', run.status,
@@ -225,6 +293,28 @@ function transitionSnapshotInsert(
        ), '[]'),
        COALESCE((
          SELECT json_group_array(json_object(
+           'namespace', run.namespace,
+           'memory_id', run.memory_id,
+           'memory_revision', run.memory_revision,
+           'axis', run.axis,
+           'status', run.status,
+           'attempts', run.attempts,
+           'result_json', run.result_json,
+           'last_error', run.last_error,
+           'claim_token', run.claim_token,
+           'lease_expires_at', run.lease_expires_at,
+           'started_at', run.started_at,
+           'completed_at', run.completed_at,
+           'updated_at', run.updated_at
+         ))
+         FROM memory_five_axis_runs AS run
+         WHERE run.namespace = memory.namespace
+           AND run.memory_id <> memory.id
+           AND run.status IN (${placeholders(RECONCILABLE_CANDIDATE_RUN_STATUSES)})
+           AND ${dependentCandidateLinkedRunSql("run", "memory.id", "?")}
+       ), '[]'),
+       COALESCE((
+         SELECT json_group_array(json_object(
            'id', candidate.id,
            'external_key', candidate.external_key,
            'action', candidate.action,
@@ -236,9 +326,7 @@ function transitionSnapshotInsert(
          ))
          FROM memory_candidates AS candidate
          WHERE candidate.namespace = memory.namespace
-           AND ${candidateDependsOnMemorySql("candidate", "memory.id")}
-           AND candidate.status IN (${placeholders(PENDING_MEMORY_CANDIDATE_STATUSES)})
-           AND candidate.id <> COALESCE(?, '')
+           AND ${pendingDependentCandidateSql("candidate", "memory.id", "?")}
        ), '[]'),
        1, ?
      FROM memories AS memory
@@ -253,6 +341,7 @@ function transitionSnapshotInsert(
     input.source,
     input.reason.trim().slice(0, 500),
     input.candidateId ?? null,
+    scope.intentFingerprint,
     scope.transition,
     next.status,
     next.type,
@@ -260,7 +349,8 @@ function transitionSnapshotInsert(
     scope.currentRevision,
     ...DEPROJECTABLE_OUTBOX_STATUSES,
     ...NON_TERMINAL_AXIS_RUN_STATUSES,
-    ...PENDING_MEMORY_CANDIDATE_STATUSES,
+    ...RECONCILABLE_CANDIDATE_RUN_STATUSES,
+    input.candidateId ?? null,
     input.candidateId ?? null,
     now,
     input.namespace,
@@ -429,10 +519,10 @@ function invariantGuard(
   };
 }
 
-export function prepareMemoryDeprojection(
+export async function prepareMemoryDeprojection(
   db: D1Database,
   input: PrepareMemoryDeprojectionInput
-): PreparedMemoryDeprojection {
+): Promise<PreparedMemoryDeprojection> {
   const next = applyMemoryEligibilityPatch(input.memory, input.patch);
   const transition: MemoryEligibilityTransition = classifyMemoryEligibilityTransition(input.memory, next);
   if (transition !== "eligible_to_ineligible") {
@@ -444,13 +534,18 @@ export function prepareMemoryDeprojection(
   const currentRevision = previousRevision + 1;
   const operationId = input.operationId ?? newId("deproj");
   const now = input.now ?? nowIso();
+  const intentFingerprint = await memoryDeprojectionIntentFingerprint(input);
   const scope: MemoryDeprojectionOperationScope = {
     operationId,
     namespace: input.namespace,
     memoryId: input.memoryId,
     previousRevision,
     currentRevision,
-    transition
+    transition,
+    nextStatus: next.status,
+    nextType: next.type,
+    nextActiveFact: next.active_fact,
+    intentFingerprint
   };
   const pendingOperation = operationScopeGuard(scope, "pending");
   const operationGuard = combineGuards(
@@ -477,13 +572,11 @@ export function prepareMemoryDeprojection(
   if (!memoryUpdate) throw new Error("memory_deprojection_update_statement_missing");
 
   const candidateRejection = prepareRejectDependentCandidates(db, {
-    namespace: input.namespace,
-    memoryId: input.memoryId,
-    excludeCandidateId: input.candidateId,
     reason: "memory_deprojected",
     now,
     guard: pendingOperation,
-    excludeRunMemoryId: input.memoryId
+    candidateSelection: candidateSnapshotSelectionGuard(scope),
+    runSelection: reconciledRunSnapshotSelectionGuard(scope)
   });
   const invariant = invariantGuard(
     input,
@@ -501,6 +594,7 @@ export function prepareMemoryDeprojection(
          invalidated_candidates = json_array_length(candidate_snapshot_json),
          terminalized_outboxes = json_array_length(outbox_snapshot_json),
          terminalized_axis_runs = json_array_length(axis_run_snapshot_json),
+         reconciled_axis_runs = json_array_length(reconciled_run_snapshot_json),
          invariants_verified = CASE WHEN (${invariant.sql}) THEN 1 ELSE 0 END,
          completed_at = ?
      WHERE operation_id = ?
@@ -517,6 +611,7 @@ export function prepareMemoryDeprojection(
     ],
     successGuard: operationScopeGuard(scope, "completed"),
     operationId,
+    intentFingerprint,
     transition,
     previousRevision,
     currentRevision
@@ -541,12 +636,14 @@ export async function findCompletedMemoryDeprojection(
     status: string;
     type: string;
     activeFact: number;
+    intentFingerprint: string;
   }
 ): Promise<MemoryDeprojectionRecord | null> {
   return (await db.prepare(
     `SELECT * FROM memory_deprojections
      WHERE namespace = ? AND memory_id = ? AND current_revision = ?
        AND next_status = ? AND next_type = ? AND next_active_fact = ?
+       AND intent_fingerprint = ?
        AND completed_at IS NOT NULL AND invariants_verified = 1
      ORDER BY completed_at DESC
      LIMIT 1`
@@ -556,6 +653,7 @@ export async function findCompletedMemoryDeprojection(
     input.currentRevision,
     input.status,
     input.type,
-    input.activeFact
+    input.activeFact,
+    input.intentFingerprint
   ).first<MemoryDeprojectionRecord>()) ?? null;
 }
