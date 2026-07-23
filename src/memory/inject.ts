@@ -48,13 +48,13 @@ async function searchMemoriesForInjection(
   input: { namespace: string; query: string; topK: number }
 ): Promise<MemoryApiRecord[]> {
   try {
-    const memories = await searchMemories(env, {
+    const result = await searchMemories(env, {
       namespace: input.namespace,
       query: input.query,
       topK: input.topK,
       includeMessages: true
     });
-    return excludeAutoDiary(memories);
+    return excludeAutoDiary(result.records);
   } catch (error) {
     console.error("memory injection search failed", error);
     return [];

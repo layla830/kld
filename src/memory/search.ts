@@ -1,4 +1,5 @@
 import { loadRecallConfig } from "../config/runtime";
+import { createMemoryEvent } from "../db/memoryEvents";
 import { listActiveMemoriesByFactKeys, listGuidanceSeedMemories, searchMemoriesByText } from "../db/memories";
 import { listRelationExpandedMemories } from "../db/memoryRelations";
 import { searchMessagesForRecall } from "../db/messages";
@@ -26,6 +27,17 @@ export interface SearchMemoriesInput {
   onEAxisTrace?: (trace: EAxisFusionTrace) => void;
 }
 
+export interface MemorySearchDegradation {
+  source: "keyword" | "literal" | "exact_text";
+  code: "d1_text_search_failed";
+}
+
+export interface MemorySearchResult {
+  status: "ok" | "degraded";
+  records: MemoryApiRecord[];
+  degradations: MemorySearchDegradation[];
+}
+
 const QUERY_HINT_SCORE = 1.35;
 const GUIDANCE_SEED_SCORE = 0.72;
 const RAW_EVENTS_FLOOR = 0.30;
@@ -33,6 +45,27 @@ const STRONG_KEYWORD_SCORE = 0.54;
 const GUIDANCE_QUERY_RE = /应该怎么做|怎么办|怎么接|怎么哄|怎么回应|怎么处理|要怎么做|该怎么办/;
 
 function candidateLimit(topK: number): number { return Math.min(Math.max(topK * 5, topK), 80); }
+
+export async function recordMemorySearchDegradation(
+  env: Env,
+  input: { namespace: string; degradations: MemorySearchDegradation[] }
+): Promise<void> {
+  if (input.degradations.length === 0) return;
+  try {
+    await createMemoryEvent(env.DB, {
+      namespace: input.namespace,
+      eventType: "memory_search_degraded",
+      payload: {
+        sources: input.degradations.map((item) => ({
+          source: item.source,
+          code: item.code
+        }))
+      }
+    });
+  } catch (error) {
+    console.error("memory search degradation event failed", error);
+  }
+}
 
 function messageRecord(message: MessageRecord & { score: number }): ScoredMemoryRecord {
   return {
@@ -50,7 +83,7 @@ function messageRecord(message: MessageRecord & { score: number }): ScoredMemory
   };
 }
 
-export async function searchMemories(env: Env, input: SearchMemoriesInput): Promise<MemoryApiRecord[]> {
+export async function searchMemories(env: Env, input: SearchMemoriesInput): Promise<MemorySearchResult> {
   const config = loadRecallConfig(env);
   const topK = Math.min(Math.max(input.topK ?? config.searchTopK, 1), 50);
   const limit = candidateLimit(topK);
@@ -66,10 +99,13 @@ export async function searchMemories(env: Env, input: SearchMemoriesInput): Prom
     .sort((a, b) => (b.vectorScore ?? 0) - (a.vectorScore ?? 0)) : null;
   const vectorTopScore = vectorRecords?.[0]?.vectorScore ?? 0;
 
-  const keywordRecords = (await searchMemoriesByText(env.DB, {
+  const keywordSearch = await searchMemoriesByText(env.DB, {
     namespace: input.namespace, query: plan.expandedQuery, types: input.types,
     excludeTypes: [...RECALL_EXCLUDED_TYPES], limit
-  })).filter(isRecallEligible).map((record) => ({ ...record, keywordScore: record.score }));
+  });
+  const keywordRecords = keywordSearch.records
+    .filter(isRecallEligible)
+    .map((record) => ({ ...record, keywordScore: record.score }));
 
   const messageRecords = vectorTopScore < RAW_EVENTS_FLOOR && input.includeMessages
     ? (await searchMessagesForRecall(env.DB, {
@@ -86,12 +122,23 @@ export async function searchMemories(env: Env, input: SearchMemoriesInput): Prom
   }) : [];
   const guidanceRecords = addGuidance ? await listGuidanceSeedMemories(env.DB, { namespace: input.namespace, limit: 18 }) : [];
 
-  const literalRecords: ScoredMemoryRecord[] = plan.literalTerms.length ? (await searchMemoriesByText(env.DB, {
+  const literalSearch = plan.literalTerms.length ? await searchMemoriesByText(env.DB, {
     namespace: input.namespace, query: plan.literalTerms.join(" "), types: input.types,
     excludeTypes: [...RECALL_EXCLUDED_TYPES], limit: 3
-  })).filter(isRecallEligible)
+  }) : null;
+  const literalRecords: ScoredMemoryRecord[] = (literalSearch?.records ?? [])
+    .filter(isRecallEligible)
     .filter((record) => plan.literalTerms.some((term) => recordHaystack(record).includes(term.toLowerCase())))
-    .map((record) => ({ ...record, score: Math.max(record.score, 0.82), keywordScore: Math.max(record.score, 0.82) })) : [];
+    .map((record) => ({ ...record, score: Math.max(record.score, 0.82), keywordScore: Math.max(record.score, 0.82) }));
+  const degradations: MemorySearchDegradation[] = [
+    ...(keywordSearch.status === "degraded"
+      ? [{ source: "keyword" as const, code: keywordSearch.error.code }]
+      : []),
+    ...(literalSearch?.status === "degraded"
+      ? [{ source: "literal" as const, code: literalSearch.error.code }]
+      : [])
+  ];
+  await recordMemorySearchDegradation(env, { namespace: input.namespace, degradations });
 
   const emotionRecords = (await searchEmotionMemories(env, input.namespace, plan.rawQuery)).filter(isRecallEligible);
   const applyEAxis = await shouldApplyEAxisToRanking(env, input.namespace);
@@ -133,5 +180,9 @@ export async function searchMemories(env: Env, input: SearchMemoriesInput): Prom
     }), plan.rawQuery, plan.searchQuery
   ), plan.rawQuery)).slice(0, topK);
 
-  return output;
+  return {
+    status: degradations.length > 0 ? "degraded" : "ok",
+    records: output,
+    degradations
+  };
 }

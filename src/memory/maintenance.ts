@@ -14,13 +14,14 @@ async function isDuplicateMemory(
   env: Env,
   input: { namespace: string; memory: ExtractedMemory }
 ): Promise<boolean> {
-  const existing = await searchMemoriesByText(env.DB, {
+  const search = await searchMemoriesByText(env.DB, {
     namespace: input.namespace,
     query: input.memory.content,
     limit: 5
   });
+  if (search.status === "degraded") throw new Error("memory_duplicate_search_degraded");
   const content = normalizeText(input.memory.content);
-  return existing.some((record) => normalizeText(record.content) === content);
+  return search.records.some((record) => normalizeText(record.content) === content);
 }
 
 function buildExplicitMemoryFallback(messages: MessageRecord[]): ExtractedMemory[] {

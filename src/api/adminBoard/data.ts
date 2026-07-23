@@ -530,28 +530,46 @@ async function fetchKeywordMemories(env: Env, input: PageInput): Promise<{ total
   return { total: total?.count ?? 0, records: result.results ?? [] };
 }
 
-async function fetchSemanticMemories(env: Env, input: PageInput): Promise<{ total: number; records: MemoryRecord[] }> {
+async function fetchSemanticMemories(
+  env: Env,
+  input: PageInput
+): Promise<{ total: number; records: MemoryRecord[]; searchDegraded?: boolean }> {
   if (!input.q || input.tab !== "browse") return { total: 0, records: [] };
   if (input.status !== "active" && input.status !== "all") return { total: 0, records: [] };
   if (input.type === AUTO_DIARY_TYPE) return { total: 0, records: [] };
 
   try {
-    const apiRecords = await searchMemories(env, {
+    const search = await searchMemories(env, {
       namespace: "default",
       query: input.q,
       types: input.type ? [input.type] : undefined,
       topK: 24
     });
-    const records = apiRecords.map(apiRecordToMemoryRecord).filter((record) => matchesBrowseFilters(record, input));
+    const records = search.records.map(apiRecordToMemoryRecord).filter((record) => matchesBrowseFilters(record, input));
+    if (search.status === "degraded" && records.length === 0) {
+      console.warn("admin semantic search degraded; falling back to keyword", {
+        sources: search.degradations
+      });
+      const fallback = await fetchKeywordMemories(env, { ...input, searchMode: "keyword" });
+      return { ...fallback, searchDegraded: true };
+    }
     const offset = (input.page - 1) * PAGE_SIZE;
-    return { total: records.length, records: records.slice(offset, offset + PAGE_SIZE) };
+    return {
+      total: records.length,
+      records: records.slice(offset, offset + PAGE_SIZE),
+      ...(search.status === "degraded" ? { searchDegraded: true } : {})
+    };
   } catch (error) {
     console.error("admin semantic search failed; falling back to keyword", error);
-    return fetchKeywordMemories(env, { ...input, searchMode: "keyword" });
+    const fallback = await fetchKeywordMemories(env, { ...input, searchMode: "keyword" });
+    return { ...fallback, searchDegraded: true };
   }
 }
 
-export async function fetchMemories(env: Env, input: PageInput): Promise<{ total: number; records: MemoryRecord[] }> {
+export async function fetchMemories(
+  env: Env,
+  input: PageInput
+): Promise<{ total: number; records: MemoryRecord[]; searchDegraded?: boolean }> {
   if (input.tab === "browse" && input.q && input.searchMode === "semantic") {
     return fetchSemanticMemories(env, input);
   }
