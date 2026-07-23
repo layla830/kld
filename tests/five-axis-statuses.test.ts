@@ -21,6 +21,9 @@ describe("five-axis status contracts", () => {
     expect(canTransitionFiveAxisOutbox("queue", "failed", "queued")).toBe(true);
     expect(canTransitionFiveAxisOutbox("fail", "queued", "dead_letter")).toBe(true);
     expect(canTransitionFiveAxisOutbox("retry_dead_letter", "dead_letter", "pending")).toBe(true);
+    for (const active of ["pending", "queued", "failed", "dead_letter"] as const) {
+      expect(canTransitionFiveAxisOutbox("deproject", active, "skipped")).toBe(true);
+    }
 
     for (const terminal of ["completed", "skipped"] as const) {
       for (const transition of Object.keys(FIVE_AXIS_OUTBOX_TRANSITIONS) as Array<keyof typeof FIVE_AXIS_OUTBOX_TRANSITIONS>) {

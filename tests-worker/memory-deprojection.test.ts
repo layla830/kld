@@ -202,6 +202,139 @@ describe("memory deprojection Workers contract", () => {
     expect(operation?.candidate_snapshot_json).not.toContain(memory.content);
   });
 
+  it("rejects standalone candidate ownership instead of leaving its candidate pending", async () => {
+    const memory = await createEligibleMemory("mem_deprojection_standalone_owner");
+    const now = "2026-07-23T02:30:00.000Z";
+    await env.DB.prepare(
+      `INSERT INTO memory_candidates (
+         id, namespace, external_key, dream_date, action, subject, target_id,
+         payload_json, source_chunk_ids_json, source_chunks_json,
+         status, created_at, updated_at
+       ) VALUES ('cand_standalone_owner', ?, 'deprojection:standalone-owner', '2026-07-23',
+         'delete', 'system', ?, '{}', '[]', '[]', 'pending', ?, ?)`
+    ).bind(NAMESPACE, memory.id, now, now).run();
+
+    const unsafeStandaloneInput: Parameters<typeof deprojectMemoryFromFiveAxes>[1] & {
+      candidateId: string;
+    } = {
+      namespace: NAMESPACE,
+      memoryId: memory.id,
+      patch: { status: "deleted" },
+      source: "dream_candidate",
+      reason: "standalone candidate misuse",
+      candidateId: "cand_standalone_owner"
+    };
+
+    await expect(deprojectMemoryFromFiveAxes(
+      env as Env,
+      unsafeStandaloneInput
+    )).rejects.toThrow("memory_deprojection_candidate_requires_prepared_plan");
+
+    expect(await getMemoryById(env.DB, { namespace: NAMESPACE, id: memory.id }))
+      .toMatchObject({ status: "active", active_fact: 1, five_axis_revision: 1 });
+    expect(await env.DB.prepare(
+      "SELECT status FROM memory_candidates WHERE namespace = ? AND id = 'cand_standalone_owner'"
+    ).bind(NAMESPACE).first<{ status: string }>()).toEqual({ status: "pending" });
+    expect(await count(
+      "SELECT COUNT(*) AS count FROM memory_deprojections WHERE namespace = ? AND memory_id = ?",
+      NAMESPACE,
+      memory.id
+    )).toBe(0);
+  });
+
+  it("invalidates a Y review candidate when deprojecting its linked source endpoint", async () => {
+    const source = await createEligibleMemory("mem_deprojection_y_source");
+    const target = await createEligibleMemory("mem_deprojection_y_target");
+    const now = "2026-07-23T02:40:00.000Z";
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO memory_candidates (
+           id, namespace, external_key, dream_date, action, subject, target_id,
+           payload_json, source_chunk_ids_json, source_chunks_json,
+           status, created_at, updated_at
+         ) VALUES ('cand_y_source', ?, 'deprojection:y-source', '2026-07-23',
+           'y_relation_review', 'system', ?, ?, '[]', '[]', 'pending', ?, ?)`
+      ).bind(
+        NAMESPACE,
+        target.id,
+        JSON.stringify({
+          _kind: "y_relation_review",
+          source_id: source.id,
+          target_id: target.id
+        }),
+        now,
+        now
+      ),
+      env.DB.prepare(
+        `INSERT INTO memory_five_axis_runs (
+           namespace, memory_id, memory_revision, axis, status, attempts,
+           result_json, completed_at, updated_at
+         ) VALUES (?, ?, ?, 'Y', 'pending_review', 1, '{}', ?, ?)`
+      ).bind(NAMESPACE, source.id, source.five_axis_revision ?? 1, now, now),
+      env.DB.prepare(
+        `INSERT INTO memory_candidate_axis_runs (
+           namespace, candidate_external_key, memory_id, memory_revision, axis, created_at
+         ) VALUES (?, 'deprojection:y-source', ?, ?, 'Y', ?)`
+      ).bind(NAMESPACE, source.id, source.five_axis_revision ?? 1, now)
+    ]);
+
+    const result = await deprojectMemoryFromFiveAxes(env as Env, {
+      namespace: NAMESPACE,
+      memoryId: source.id,
+      patch: { status: "deleted" },
+      source: "system",
+      reason: "Y source endpoint deprojection",
+      operationId: "deproj_y_source"
+    });
+
+    expect(result.invalidatedCandidates).toBe(1);
+    expect(await env.DB.prepare(
+      "SELECT status, validation_error FROM memory_candidates WHERE namespace = ? AND id = 'cand_y_source'"
+    ).bind(NAMESPACE).first<{ status: string; validation_error: string }>())
+      .toEqual({ status: "rejected", validation_error: "memory_deprojected" });
+  });
+
+  it("invalidates a legacy M cleanup candidate through either payload endpoint", async () => {
+    const source = await createEligibleMemory("mem_deprojection_m_source");
+    const target = await createEligibleMemory("mem_deprojection_m_target");
+    const now = "2026-07-23T02:50:00.000Z";
+    await env.DB.prepare(
+      `INSERT INTO memory_candidates (
+         id, namespace, external_key, dream_date, action, subject, target_id,
+         payload_json, source_chunk_ids_json, source_chunks_json,
+         status, created_at, updated_at
+       ) VALUES ('cand_m_endpoint', ?, 'deprojection:m-endpoint', '2026-07-23',
+         'm_relation_cleanup', 'system', NULL, ?, '[]', '[]', 'pending', ?, ?)`
+    ).bind(
+      NAMESPACE,
+      JSON.stringify({
+        _kind: "metabolism_relation_cleanup",
+        before: {
+          source_memory_id: source.id,
+          target_memory_id: target.id,
+          relation_type: "supports"
+        }
+      }),
+      now,
+      now
+    ).run();
+
+    const result = await deprojectMemoryFromFiveAxes(env as Env, {
+      namespace: NAMESPACE,
+      memoryId: target.id,
+      patch: { activeFact: false },
+      source: "system",
+      reason: "M relation endpoint deprojection",
+      operationId: "deproj_m_endpoint"
+    });
+
+    expect(result.invalidatedCandidates).toBe(1);
+    expect(await env.DB.prepare(
+      "SELECT status, validation_error FROM memory_candidates WHERE namespace = ? AND id = 'cand_m_endpoint'"
+    ).bind(NAMESPACE).first<{ status: string; validation_error: string }>())
+      .toEqual({ status: "rejected", validation_error: "memory_deprojected" });
+  });
+
   it("reuses a completed operation without incrementing revision twice", async () => {
     const memory = await createEligibleMemory("mem_deprojection_idempotent");
     await seedProjectionState(memory, "idempotent");

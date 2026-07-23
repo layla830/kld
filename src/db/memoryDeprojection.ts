@@ -7,11 +7,22 @@ import {
 } from "../memory/fiveAxis/eligibility";
 import { newId } from "../utils/ids";
 import { nowIso } from "../utils/time";
+import {
+  FIVE_AXIS_OUTBOX_TRANSITIONS,
+  FIVE_AXIS_RUN_STATUS,
+  statusPlaceholders
+} from "./fiveAxisStatuses";
 import { prepareMemoryUpdate, type MemoryMutationGuard } from "./memories";
 
 const PENDING_CANDIDATE_STATUSES = ["pending", "needs_subject_review", "deferred_relation"] as const;
-const NON_TERMINAL_OUTBOX_STATUSES = ["pending", "queued", "failed", "dead_letter"] as const;
-const NON_TERMINAL_AXIS_RUN_STATUSES = ["running", "failed", "pending_review"] as const;
+const DEPROJECT_OUTBOX_TRANSITION = FIVE_AXIS_OUTBOX_TRANSITIONS.deproject;
+const DEPROJECTABLE_OUTBOX_STATUSES = DEPROJECT_OUTBOX_TRANSITION.from;
+const DEPROJECTED_OUTBOX_STATUS = DEPROJECT_OUTBOX_TRANSITION.to[0];
+const NON_TERMINAL_AXIS_RUN_STATUSES = [
+  FIVE_AXIS_RUN_STATUS.RUNNING,
+  FIVE_AXIS_RUN_STATUS.FAILED,
+  FIVE_AXIS_RUN_STATUS.PENDING_REVIEW
+] as const;
 
 export interface MemoryDeprojectionRecord {
   operation_id: string;
@@ -49,6 +60,64 @@ function placeholders(values: readonly unknown[]): string {
   return values.map(() => "?").join(", ");
 }
 
+interface SqlFragment {
+  sql: string;
+  binds: unknown[];
+}
+
+function candidateDependencyPredicate(
+  candidateAlias: string,
+  memoryId: SqlFragment
+): SqlFragment {
+  const binds: unknown[] = [];
+  const memoryIdExpression = (): string => {
+    binds.push(...memoryId.binds);
+    return memoryId.sql;
+  };
+  const linkExists = `EXISTS (
+    SELECT 1
+    FROM memory_candidate_axis_runs AS dependency_link
+    WHERE dependency_link.namespace = ${candidateAlias}.namespace
+      AND dependency_link.candidate_external_key = ${candidateAlias}.external_key
+      AND dependency_link.memory_id = ${memoryIdExpression()}
+  )`;
+  const anyLinkExists = `EXISTS (
+    SELECT 1
+    FROM memory_candidate_axis_runs AS dependency_link
+    WHERE dependency_link.namespace = ${candidateAlias}.namespace
+      AND dependency_link.candidate_external_key = ${candidateAlias}.external_key
+  )`;
+  const safePayload = `(CASE
+    WHEN json_valid(${candidateAlias}.payload_json) THEN ${candidateAlias}.payload_json
+    ELSE '{}'
+  END)`;
+
+  const sql = `(
+    ${candidateAlias}.target_id = ${memoryIdExpression()}
+    OR ${linkExists}
+    OR (
+      NOT (${anyLinkExists})
+      AND (
+        (
+          ${candidateAlias}.action = 'y_relation_review'
+          AND (
+            json_extract(${safePayload}, '$.source_id') = ${memoryIdExpression()}
+            OR json_extract(${safePayload}, '$.target_id') = ${memoryIdExpression()}
+          )
+        )
+        OR (
+          ${candidateAlias}.action = 'm_relation_cleanup'
+          AND (
+            json_extract(${safePayload}, '$.before.source_memory_id') = ${memoryIdExpression()}
+            OR json_extract(${safePayload}, '$.before.target_memory_id') = ${memoryIdExpression()}
+          )
+        )
+      )
+    )
+  )`;
+  return { sql, binds };
+}
+
 function operationPendingGuard(operationId: string): MemoryMutationGuard {
   return {
     sql: `EXISTS (
@@ -82,6 +151,10 @@ function transitionSnapshotInsert(
   const expectedRevision = input.expectedRevision ?? previousRevision;
   const externalGuard = input.guard ? ` AND (${input.guard.sql})` : "";
   const unpinnedGuard = input.requireUnpinned ? " AND memory.pinned = 0" : "";
+  const candidateDependency = candidateDependencyPredicate("candidate", {
+    sql: "memory.id",
+    binds: []
+  });
 
   return db.prepare(
     `INSERT OR IGNORE INTO memory_deprojections (
@@ -161,7 +234,7 @@ function transitionSnapshotInsert(
          WHERE outbox.namespace = memory.namespace
            AND outbox.memory_id = memory.id
            AND outbox.memory_revision <= memory.five_axis_revision
-           AND outbox.status IN (${placeholders(NON_TERMINAL_OUTBOX_STATUSES)})
+           AND outbox.status IN (${statusPlaceholders(DEPROJECTABLE_OUTBOX_STATUSES)})
        ), '[]'),
        COALESCE((
          SELECT json_group_array(json_object(
@@ -196,7 +269,7 @@ function transitionSnapshotInsert(
          ))
          FROM memory_candidates AS candidate
          WHERE candidate.namespace = memory.namespace
-           AND candidate.target_id = memory.id
+           AND ${candidateDependency.sql}
            AND candidate.status IN (${placeholders(PENDING_CANDIDATE_STATUSES)})
            AND candidate.id <> COALESCE(?, '')
        ), '[]'),
@@ -218,8 +291,9 @@ function transitionSnapshotInsert(
     next.type,
     next.active_fact,
     currentRevision,
-    ...NON_TERMINAL_OUTBOX_STATUSES,
+    ...DEPROJECTABLE_OUTBOX_STATUSES,
     ...NON_TERMINAL_AXIS_RUN_STATUSES,
+    ...candidateDependency.binds,
     ...PENDING_CANDIDATE_STATUSES,
     input.candidateId ?? null,
     now,
@@ -243,9 +317,13 @@ function cleanupStatements(
     SELECT 1 FROM memory_deprojections
     WHERE operation_id = ? AND completed_at IS NULL
   )`;
-  const outboxStatuses = placeholders(NON_TERMINAL_OUTBOX_STATUSES);
+  const outboxStatuses = statusPlaceholders(DEPROJECTABLE_OUTBOX_STATUSES);
   const runStatuses = placeholders(NON_TERMINAL_AXIS_RUN_STATUSES);
   const candidateStatuses = placeholders(PENDING_CANDIDATE_STATUSES);
+  const candidateDependency = candidateDependencyPredicate("candidate", {
+    sql: "?",
+    binds: [input.memoryId]
+  });
 
   return [
     db.prepare(
@@ -267,7 +345,7 @@ function cleanupStatements(
     ).bind(input.namespace, input.memoryId, input.memoryId, input.memoryId, operationId),
     db.prepare(
       `UPDATE memory_five_axis_outbox
-       SET status = 'skipped',
+       SET status = ?,
            last_error = NULL,
            result_json = json_object('reason', 'memory_deprojected', 'operation_id', ?),
            completed_at = ?,
@@ -277,18 +355,19 @@ function cleanupStatements(
          AND status IN (${outboxStatuses})
          AND ${pendingOperationSql}`
     ).bind(
+      DEPROJECTED_OUTBOX_STATUS,
       operationId,
       now,
       now,
       input.namespace,
       input.memoryId,
       currentRevision,
-      ...NON_TERMINAL_OUTBOX_STATUSES,
+      ...DEPROJECTABLE_OUTBOX_STATUSES,
       operationId
     ),
     db.prepare(
       `UPDATE memory_five_axis_runs
-       SET status = 'skipped',
+       SET status = ?,
            result_json = json_object('reason', 'memory_deprojected', 'operation_id', ?),
            last_error = NULL,
            claim_token = NULL,
@@ -300,6 +379,7 @@ function cleanupStatements(
          AND status IN (${runStatuses})
          AND ${pendingOperationSql}`
     ).bind(
+      FIVE_AXIS_RUN_STATUS.SKIPPED,
       operationId,
       now,
       now,
@@ -310,20 +390,21 @@ function cleanupStatements(
       operationId
     ),
     db.prepare(
-      `UPDATE memory_candidates
+      `UPDATE memory_candidates AS candidate
        SET status = 'rejected',
            validation_error = 'memory_deprojected',
            resolved_at = ?,
            updated_at = ?
-       WHERE namespace = ? AND target_id = ?
-         AND status IN (${candidateStatuses})
-         AND id <> COALESCE(?, '')
+       WHERE candidate.namespace = ?
+         AND ${candidateDependency.sql}
+         AND candidate.status IN (${candidateStatuses})
+         AND candidate.id <> COALESCE(?, '')
          AND ${pendingOperationSql}`
     ).bind(
       now,
       now,
       input.namespace,
-      input.memoryId,
+      ...candidateDependency.binds,
       ...PENDING_CANDIDATE_STATUSES,
       input.candidateId ?? null,
       operationId
@@ -338,6 +419,10 @@ function invariantGuard(
   next: ReturnType<typeof applyMemoryEligibilityPatch>
 ): MemoryMutationGuard {
   const eligibility = fiveAxisMemoryEligibilityPredicate("memory");
+  const candidateDependency = candidateDependencyPredicate("candidate", {
+    sql: "?",
+    binds: [input.memoryId]
+  });
   return {
     sql: `EXISTS (
         SELECT 1 FROM memories AS memory
@@ -364,7 +449,7 @@ function invariantGuard(
       AND NOT EXISTS (
         SELECT 1 FROM memory_five_axis_outbox
         WHERE namespace = ? AND memory_id = ? AND memory_revision <= ?
-          AND status IN (${placeholders(NON_TERMINAL_OUTBOX_STATUSES)})
+          AND status IN (${statusPlaceholders(DEPROJECTABLE_OUTBOX_STATUSES)})
       )
       AND NOT EXISTS (
         SELECT 1 FROM memory_five_axis_runs
@@ -372,10 +457,11 @@ function invariantGuard(
           AND status IN (${placeholders(NON_TERMINAL_AXIS_RUN_STATUSES)})
       )
       AND NOT EXISTS (
-        SELECT 1 FROM memory_candidates
-        WHERE namespace = ? AND target_id = ?
-          AND status IN (${placeholders(PENDING_CANDIDATE_STATUSES)})
-          AND id <> COALESCE(?, '')
+        SELECT 1 FROM memory_candidates AS candidate
+        WHERE candidate.namespace = ?
+          AND ${candidateDependency.sql}
+          AND candidate.status IN (${placeholders(PENDING_CANDIDATE_STATUSES)})
+          AND candidate.id <> COALESCE(?, '')
       )
       AND EXISTS (
         SELECT 1 FROM memory_deprojections
@@ -401,13 +487,13 @@ function invariantGuard(
       input.namespace,
       input.memoryId,
       currentRevision,
-      ...NON_TERMINAL_OUTBOX_STATUSES,
+      ...DEPROJECTABLE_OUTBOX_STATUSES,
       input.namespace,
       input.memoryId,
       currentRevision,
       ...NON_TERMINAL_AXIS_RUN_STATUSES,
       input.namespace,
-      input.memoryId,
+      ...candidateDependency.binds,
       ...PENDING_CANDIDATE_STATUSES,
       input.candidateId ?? null,
       operationId

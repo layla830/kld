@@ -48,6 +48,15 @@ export const FIVE_AXIS_OUTBOX_TRANSITIONS = {
   retry_dead_letter: {
     from: [FIVE_AXIS_OUTBOX_STATUS.DEAD_LETTER],
     to: [FIVE_AXIS_OUTBOX_STATUS.PENDING]
+  },
+  deproject: {
+    from: [
+      FIVE_AXIS_OUTBOX_STATUS.PENDING,
+      FIVE_AXIS_OUTBOX_STATUS.QUEUED,
+      FIVE_AXIS_OUTBOX_STATUS.FAILED,
+      FIVE_AXIS_OUTBOX_STATUS.DEAD_LETTER
+    ],
+    to: [FIVE_AXIS_OUTBOX_STATUS.SKIPPED]
   }
 } as const satisfies Record<string, OutboxTransitionDefinition>;
 

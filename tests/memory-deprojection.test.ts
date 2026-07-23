@@ -112,7 +112,9 @@ describe("memory deprojection contract", () => {
     expect(snapshot?.sql).toContain("relation_snapshot_json");
     expect(snapshot?.sql).not.toContain("memory.content");
     expect(snapshot?.binds).not.toContain(memory().content);
-    expect(prepared.some((statement) => statement.sql.includes("memory_candidate_axis_runs"))).toBe(false);
+    expect(prepared.some((statement) => statement.sql.includes("memory_candidate_axis_runs"))).toBe(true);
+    expect(prepared.some((statement) => statement.sql.includes("y_relation_review"))).toBe(true);
+    expect(prepared.some((statement) => statement.sql.includes("m_relation_cleanup"))).toBe(true);
     expect(prepared.some((statement) => statement.sql.includes("invariants_verified"))).toBe(true);
   });
 

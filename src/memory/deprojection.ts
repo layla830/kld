@@ -41,12 +41,12 @@ export interface MemoryDeprojectionInput {
   requireUnpinned?: boolean;
   source: MemoryDeprojectionSource;
   reason: string;
-  candidateId?: string;
   operationId?: string;
 }
 
 export interface PrepareMemoryDeprojectionInput extends MemoryDeprojectionInput {
   memory: MemoryRecord;
+  candidateId?: string;
   guard?: MemoryMutationGuard;
   now?: string;
 }
@@ -116,6 +116,10 @@ export async function deprojectMemoryFromFiveAxes(
   env: Env,
   input: MemoryDeprojectionInput
 ): Promise<MemoryDeprojectionResult> {
+  if (Object.prototype.hasOwnProperty.call(input, "candidateId")) {
+    throw new Error("memory_deprojection_candidate_requires_prepared_plan");
+  }
+
   if (input.operationId) {
     const existing = await getMemoryDeprojectionByOperationId(env.DB, input.operationId);
     if (existing) {
