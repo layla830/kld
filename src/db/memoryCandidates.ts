@@ -5,6 +5,10 @@ import {
   prepareCandidateAxisRunReconciliation,
   prepareCandidateAxisRunReconciliationByExternalKey
 } from "./memoryFiveAxisRuns";
+import {
+  prepareMemoryCandidateDependencyReplacement,
+  type MemoryCandidateDeclaredDependency
+} from "./memoryCandidateDependencies";
 
 export interface MemoryCandidateRecord {
   id: string;
@@ -47,11 +51,12 @@ export interface CandidateInput {
   sourceChunks?: Array<Record<string, unknown>>;
   status: "pending" | "needs_subject_review" | "deferred_relation";
   validationError?: string | null;
+  dependencies?: readonly MemoryCandidateDeclaredDependency[];
 }
 
 export async function upsertMemoryCandidate(db: D1Database, namespace: string, input: CandidateInput): Promise<void> {
   const now = nowIso();
-  await db.prepare(
+  const candidateWrite = db.prepare(
     `INSERT INTO memory_candidates
       (id, namespace, external_key, dream_date, action, subject, target_id, payload_json,
        source_chunk_ids_json, source_chunks_json, status, validation_error, created_at, updated_at)
@@ -66,7 +71,25 @@ export async function upsertMemoryCandidate(db: D1Database, namespace: string, i
     input.subject ?? null, input.targetId ?? null, JSON.stringify(input.payload),
     JSON.stringify(input.sourceChunkIds), JSON.stringify(input.sourceChunks ?? []),
     input.status, input.validationError ?? null, now, now
-  ).run();
+  );
+  const dependencies = [
+    ...(input.targetId ? [{ memoryId: input.targetId, role: "target" as const }] : []),
+    ...(input.dependencies ?? [])
+  ].filter(
+    (dependency, index, all) => dependency.memoryId
+      && all.findIndex((candidate) =>
+        candidate.memoryId === dependency.memoryId && candidate.role === dependency.role
+      ) === index
+  );
+  await db.batch([
+    candidateWrite,
+    ...prepareMemoryCandidateDependencyReplacement(
+      db,
+      namespace,
+      input.externalKey,
+      dependencies
+    )
+  ]);
 }
 
 export async function listMemoryCandidates(db: D1Database, namespace: string, limit = 100): Promise<MemoryCandidateRecord[]> {
@@ -141,58 +164,50 @@ export async function listRecentApprovedOperationalReviewCandidates(db: D1Databa
   return enrichMetabolismRelationEndpoints(db, namespace, result.results ?? []);
 }
 
-function readRelationEndpointIds(candidate: MemoryCandidateRecord): { sourceId: string | null; targetId: string | null } {
-  try {
-    const payload = JSON.parse(candidate.payload_json) as unknown;
-    if (!payload || typeof payload !== "object") return { sourceId: null, targetId: null };
-    if (candidate.action === "y_relation_review") {
-      const sourceId = (payload as { source_id?: unknown }).source_id;
-      const targetId = (payload as { target_id?: unknown }).target_id;
-      return {
-        sourceId: typeof sourceId === "string" ? sourceId : null,
-        targetId: typeof targetId === "string" ? targetId : null
-      };
-    }
-    const before = (payload as { before?: unknown }).before;
-    if (!before || typeof before !== "object") return { sourceId: null, targetId: null };
-    const sourceId = (before as { source_memory_id?: unknown }).source_memory_id;
-    const targetId = (before as { target_memory_id?: unknown }).target_memory_id;
-    return {
-      sourceId: typeof sourceId === "string" ? sourceId : null,
-      targetId: typeof targetId === "string" ? targetId : null
-    };
-  } catch {
-    return { sourceId: null, targetId: null };
-  }
-}
-
 async function enrichMetabolismRelationEndpoints(db: D1Database, namespace: string, rows: MemoryCandidateRecord[]): Promise<MemoryCandidateRecord[]> {
-  const endpointByCandidate = new Map<string, { sourceId: string | null; targetId: string | null }>();
-  const ids = new Set<string>();
-
-  for (const row of rows) {
-    if (row.action !== "m_relation_cleanup" && row.action !== "y_relation_review") continue;
-    const endpoints = readRelationEndpointIds(row);
-    endpointByCandidate.set(row.id, endpoints);
-    if (endpoints.sourceId) ids.add(endpoints.sourceId);
-    if (endpoints.targetId) ids.add(endpoints.targetId);
-  }
-
-  if (ids.size === 0) return rows;
-
-  const placeholders = [...ids].map(() => "?").join(", ");
+  const relationKeys = [...new Set(rows
+    .filter((row) => row.action === "m_relation_cleanup" || row.action === "y_relation_review")
+    .map((row) => row.external_key))];
+  if (relationKeys.length === 0) return rows;
+  const placeholders = relationKeys.map(() => "?").join(", ");
   const result = await db.prepare(
-    `SELECT id, content, type, status, active_fact
-     FROM memories
-     WHERE namespace = ? AND id IN (${placeholders})`
-  ).bind(namespace, ...ids).all<{ id: string; content: string; type: string; status: string; active_fact: number }>();
-  const memories = new Map((result.results ?? []).map((memory) => [memory.id, memory]));
+    `SELECT
+       dependency.candidate_external_key,
+       dependency.role,
+       memory.content,
+       memory.type,
+       memory.status,
+       memory.active_fact
+     FROM memory_candidate_dependencies AS dependency
+     LEFT JOIN memories AS memory
+       ON memory.namespace = dependency.namespace
+      AND memory.id = dependency.memory_id
+     WHERE dependency.namespace = ?
+       AND dependency.candidate_external_key IN (${placeholders})
+       AND dependency.role IN ('source', 'target')`
+  ).bind(namespace, ...relationKeys).all<{
+    candidate_external_key: string;
+    role: "source" | "target";
+    content: string | null;
+    type: string | null;
+    status: string | null;
+    active_fact: number | null;
+  }>();
+  const endpointByCandidate = new Map<string, {
+    source?: { content: string | null; type: string | null; status: string | null; active_fact: number | null };
+    target?: { content: string | null; type: string | null; status: string | null; active_fact: number | null };
+  }>();
+  for (const endpoint of result.results ?? []) {
+    const candidate = endpointByCandidate.get(endpoint.candidate_external_key) ?? {};
+    candidate[endpoint.role] = endpoint;
+    endpointByCandidate.set(endpoint.candidate_external_key, candidate);
+  }
 
   return rows.map((row) => {
-    const endpoints = endpointByCandidate.get(row.id);
+    const endpoints = endpointByCandidate.get(row.external_key);
     if (!endpoints) return row;
-    const source = endpoints.sourceId ? memories.get(endpoints.sourceId) : null;
-    const target = endpoints.targetId ? memories.get(endpoints.targetId) : null;
+    const source = endpoints.source;
+    const target = endpoints.target;
     return {
       ...row,
       source_memory_content: source?.content ?? null,
