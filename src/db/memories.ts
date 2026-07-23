@@ -89,6 +89,7 @@ export interface PrepareMemoryUpdateInput {
   requireUnpinned?: boolean;
   guard?: MemoryMutationGuard;
   markVectorUnsynced?: boolean;
+  nextFiveAxisRevision?: number;
   now?: string;
 }
 
@@ -437,10 +438,11 @@ export function prepareMemoryUpdate(
   if (input.patch.sourceMessageIds !== undefined) set("source_message_ids", JSON.stringify(input.patch.sourceMessageIds));
   if (input.patch.expiresAt !== undefined) set("expires_at", input.patch.expiresAt);
   if (input.patch.vectorSyncStatus !== undefined) set("vector_sync_status", input.patch.vectorSyncStatus);
+  if (input.nextFiveAxisRevision !== undefined) set("five_axis_revision", input.nextFiveAxisRevision);
 
   if (assignments.length === 0) return null;
 
-  if (input.markVectorUnsynced && input.patch.vectorSyncStatus === undefined) {
+  if (input.markVectorUnsynced) {
     set("vector_synced", 0);
   }
 
