@@ -1,6 +1,10 @@
 import { newId } from "../utils/ids";
 import { nowIso } from "../utils/time";
 import type { FiveAxisName, FiveAxisRunStatus } from "./fiveAxisStatuses";
+import {
+  candidateReviewStatusSql,
+  prepareMemoryCandidateDependencyInsert
+} from "./memoryCandidateDependencies";
 
 export type { FiveAxisName, FiveAxisRunStatus } from "./fiveAxisStatuses";
 
@@ -25,36 +29,6 @@ export interface FiveAxisRunKey {
   memoryId: string;
   memoryRevision: number;
   axis: FiveAxisName;
-}
-
-function candidateReviewStatusSql(runAlias: string): string {
-  return `CASE
-    WHEN EXISTS (
-      SELECT 1
-      FROM memory_candidate_axis_runs links
-      JOIN memory_candidates candidates
-        ON candidates.namespace = links.namespace
-       AND candidates.external_key = links.candidate_external_key
-      WHERE links.namespace = ${runAlias}.namespace
-        AND links.memory_id = ${runAlias}.memory_id
-        AND links.memory_revision = ${runAlias}.memory_revision
-        AND links.axis = ${runAlias}.axis
-        AND candidates.status IN ('pending', 'needs_subject_review', 'deferred_relation')
-    ) THEN 'pending_review'
-    WHEN EXISTS (
-      SELECT 1
-      FROM memory_candidate_axis_runs links
-      JOIN memory_candidates candidates
-        ON candidates.namespace = links.namespace
-       AND candidates.external_key = links.candidate_external_key
-      WHERE links.namespace = ${runAlias}.namespace
-        AND links.memory_id = ${runAlias}.memory_id
-        AND links.memory_revision = ${runAlias}.memory_revision
-        AND links.axis = ${runAlias}.axis
-        AND candidates.status = 'approved'
-    ) THEN 'applied'
-    ELSE 'skipped'
-  END`;
 }
 
 export function prepareCandidateAxisRunReconciliation(
@@ -236,9 +210,29 @@ export async function completeFiveAxisRun(
     key.namespace,
     candidateExternalKey
   ));
-  const updateIndex = linkStatements.length;
+  const dependencyStatements = uniqueCandidateKeys.map((candidateExternalKey) =>
+    prepareMemoryCandidateDependencyInsert(db, key.namespace, candidateExternalKey, {
+      memoryId: key.memoryId,
+      role: "axis_run"
+    }, {
+      sql: `EXISTS (
+        SELECT 1 FROM memory_candidate_axis_runs
+        WHERE namespace = ? AND candidate_external_key = ?
+          AND memory_id = ? AND memory_revision = ? AND axis = ?
+      )`,
+      binds: [
+        key.namespace,
+        candidateExternalKey,
+        key.memoryId,
+        key.memoryRevision,
+        key.axis
+      ]
+    })
+  );
+  const updateIndex = linkStatements.length + dependencyStatements.length;
   const writes = await db.batch([
     ...linkStatements,
+    ...dependencyStatements,
     writeStatement,
     prepareAxisRunReconciliation(db, key, now)
   ]);

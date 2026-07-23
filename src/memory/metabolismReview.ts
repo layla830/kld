@@ -189,7 +189,11 @@ async function queueRelationCandidates(
       subject: "system",
       payload: { _kind: "metabolism_relation_cleanup", reason: row.issue, before: row.relation },
       sourceChunkIds: [],
-      status: "pending"
+      status: "pending",
+      dependencies: [
+        { memoryId: row.relation.source_memory_id, role: "source" },
+        { memoryId: row.relation.target_memory_id, role: "target" }
+      ]
     });
     candidateExternalKeys.push(candidateExternalKey);
   }

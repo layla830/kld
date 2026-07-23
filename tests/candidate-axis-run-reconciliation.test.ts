@@ -121,6 +121,15 @@ describe("candidate and five-axis run reconciliation", () => {
         FOREIGN KEY(namespace, memory_id, memory_revision, axis)
           REFERENCES memory_five_axis_runs(namespace, memory_id, memory_revision, axis) ON DELETE CASCADE
       );
+      CREATE TABLE memory_candidate_dependencies (
+        namespace TEXT NOT NULL,
+        candidate_external_key TEXT NOT NULL,
+        memory_id TEXT NOT NULL,
+        role TEXT NOT NULL CHECK (role IN ('source', 'target', 'axis_run')),
+        PRIMARY KEY(namespace, candidate_external_key, memory_id, role),
+        FOREIGN KEY(namespace, candidate_external_key)
+          REFERENCES memory_candidates(namespace, external_key) ON DELETE CASCADE
+      );
     `);
     db = d1FromSqlite(sqlite);
   });
@@ -165,6 +174,10 @@ describe("candidate and five-axis run reconciliation", () => {
     )).resolves.toBe(true);
     expect((await getFiveAxisRun(db, key(1)))?.status).toBe("pending_review");
     expect((await getFiveAxisRun(db, key(2)))?.status).toBe("pending_review");
+    expect(sqlite.prepare(
+      `SELECT COUNT(*) AS count FROM memory_candidate_dependencies
+       WHERE namespace = 'default' AND role = 'axis_run'`
+    ).get()?.count).toBe(2);
 
     await expect(resolveMemoryCandidate(db, "default", "cand_1", "approved")).resolves.toBe(true);
     expect((await getFiveAxisRun(db, key(1)))?.status).toBe("pending_review");
@@ -298,16 +311,32 @@ describe("candidate and five-axis run reconciliation", () => {
       _kind: "coordinate_backfill"
     });
     insertHistoricalCandidate("legacy_y", "legacy:y", "y_relation_review", "approved", null, {
-      projection_key: "five-axis:mem_1:r13"
+      projection_key: "five-axis:mem_1:r13",
+      source_id: "mem_1",
+      target_id: "mem_y_target"
     });
     insertHistoricalCandidate("legacy_z", "legacy:z", "z_supersede", "pending", null, {
       fact_key: "project:kld"
     });
     insertHistoricalCandidate("legacy_m", "legacy:m", "m_archive", "rolled_back", "mem_1", {});
+    insertHistoricalCandidate(
+      "legacy_m_relation",
+      "legacy:m-relation",
+      "m_relation_cleanup",
+      "pending",
+      null,
+      {
+        before: {
+          source_memory_id: "mem_m_source",
+          target_memory_id: "mem_m_target"
+        }
+      }
+    );
 
     // @ts-expect-error node:fs is available in the test runtime but not in the Worker tsconfig types.
     const { readFileSync } = await import("node:fs");
     sqlite.exec(readFileSync("migrations/20260717_candidate_axis_run_links.sql", "utf8"));
+    sqlite.exec(readFileSync("migrations/20260723_memory_candidate_dependencies.sql", "utf8"));
 
     await expect(getFiveAxisRun(db, key(11, "X"))).resolves.toMatchObject({ status: "applied" });
     await expect(getFiveAxisRun(db, key(12, "E"))).resolves.toMatchObject({ status: "skipped" });
@@ -315,5 +344,13 @@ describe("candidate and five-axis run reconciliation", () => {
     await expect(getFiveAxisRun(db, key(14, "Z"))).resolves.toMatchObject({ status: "pending_review" });
     await expect(getFiveAxisRun(db, key(15, "M"))).resolves.toMatchObject({ status: "skipped" });
     expect(sqlite.prepare("SELECT COUNT(*) AS count FROM memory_candidate_axis_runs").get()?.count).toBe(5);
+    expect(sqlite.prepare(
+      "SELECT COUNT(*) AS count FROM memory_candidate_dependencies WHERE role = 'axis_run'"
+    ).get()?.count).toBe(5);
+    expect(sqlite.prepare(
+      `SELECT COUNT(*) AS count FROM memory_candidate_dependencies
+       WHERE candidate_external_key IN ('legacy:y', 'legacy:m-relation')
+         AND role IN ('source', 'target')`
+    ).get()?.count).toBe(4);
   });
 });

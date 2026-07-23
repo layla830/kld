@@ -201,6 +201,22 @@ describe("Y-axis Worker circuit", () => {
 
     const approvePayload = JSON.parse(approveCandidate!.payload_json) as Record<string, unknown>;
     expect(approvePayload).toMatchObject({ source_revision: 1, target_revision: 1 });
+    await expect(env.DB.prepare(
+      `SELECT dependency.memory_id, dependency.role
+       FROM memory_candidate_dependencies AS dependency
+       JOIN memory_candidates AS candidate
+         ON candidate.namespace = dependency.namespace
+        AND candidate.external_key = dependency.candidate_external_key
+       WHERE candidate.namespace = 'default' AND candidate.id = ?
+         AND dependency.role IN ('source', 'target')
+       ORDER BY dependency.role`
+    ).bind(approveCandidate!.id).all<{ memory_id: string; role: string }>())
+      .resolves.toMatchObject({
+        results: [
+          { memory_id: approvePayload.source_id, role: "source" },
+          { memory_id: approvePayload.target_id, role: "target" }
+        ]
+      });
     await env.DB.prepare(
       `UPDATE memories
        SET vector_id = ?, vector_synced = 1, urgency_level = 'high', updated_at = ?

@@ -58,7 +58,11 @@ export async function queueRelationReviewCandidate(
     },
     sourceChunkIds: [],
     sourceChunks: [],
-    status: "pending"
+    status: "pending",
+    dependencies: [
+      { memoryId: pair.sourceMemoryId, role: "source" },
+      { memoryId: pair.targetMemoryId, role: "target" }
+    ]
   });
   return candidateExternalKey;
 }

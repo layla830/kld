@@ -318,6 +318,18 @@ describe("M-axis Worker circuit", () => {
       `m-review:relation:${relationId}`
     );
     expect(candidate).toMatchObject({ status: "pending", action: "m_relation_cleanup" });
+    await expect(env.DB.prepare(
+      `SELECT memory_id, role FROM memory_candidate_dependencies
+       WHERE namespace = 'default' AND candidate_external_key = ?
+         AND role IN ('source', 'target')
+       ORDER BY role`
+    ).bind(`m-review:relation:${relationId}`).all<{ memory_id: string; role: string }>())
+      .resolves.toMatchObject({
+        results: [
+          { memory_id: memory.id, role: "source" },
+          { memory_id: memory.id, role: "target" }
+        ]
+      });
 
     await expect(approveMetabolismCandidate(env, formFor(candidate!.id)))
       .resolves.toMatchObject({ action: "m_relation_cleanup", memory: null });

@@ -28,15 +28,18 @@ describe("Y relation candidate boundary", () => {
 
   it("queues risky relations with endpoint revisions instead of writing dead review events", async () => {
     let bound: unknown[] = [];
+    const allBinds: unknown[][] = [];
     const db = {
       prepare() {
         return {
           bind(...args: unknown[]) {
-            bound = args;
+            allBinds.push(args);
+            if (args[4] === "y_relation_review") bound = args;
             return { run: async () => ({ meta: { changes: 1 } }) };
           }
         };
-      }
+      },
+      batch: async () => []
     } as unknown as D1Database;
     const source = {
       id: "mem_z",
@@ -72,6 +75,18 @@ describe("Y relation candidate boundary", () => {
       target_updated_at: source.updated_at,
       projection_key: "five-axis:9:v2"
     });
+    expect(allBinds.some((args) =>
+      args[0] === "default"
+      && String(args[1]).includes("y-review:contradicts:mem_a:mem_z")
+      && args[2] === "mem_a"
+      && args[3] === "source"
+    )).toBe(true);
+    expect(allBinds.some((args) =>
+      args[0] === "default"
+      && String(args[1]).includes("y-review:contradicts:mem_a:mem_z")
+      && args[2] === "mem_z"
+      && args[3] === "target"
+    )).toBe(true);
   });
 
   it("does not scan original diaries as Y-axis sources", async () => {

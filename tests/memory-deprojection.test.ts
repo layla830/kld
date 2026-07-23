@@ -104,17 +104,30 @@ describe("memory deprojection contract", () => {
     expect(plan.transition).toBe("eligible_to_ineligible");
     expect(plan.previousRevision).toBe(4);
     expect(plan.currentRevision).toBe(5);
-    expect(plan.statements).toHaveLength(9);
-    expect(plan.successGuard.binds).toEqual(["deproj_unit"]);
+    expect(plan.statements).toHaveLength(10);
+    expect(plan.successGuard.binds).toEqual([
+      "deproj_unit",
+      "default",
+      "mem_deprojection",
+      4,
+      5,
+      "eligible_to_ineligible"
+    ]);
     const snapshot = prepared.find((statement) =>
       statement.sql.includes("INSERT OR IGNORE INTO memory_deprojections")
     );
     expect(snapshot?.sql).toContain("relation_snapshot_json");
     expect(snapshot?.sql).not.toContain("memory.content");
     expect(snapshot?.binds).not.toContain(memory().content);
+    expect(prepared.some((statement) => statement.sql.includes("memory_candidate_dependencies"))).toBe(true);
     expect(prepared.some((statement) => statement.sql.includes("memory_candidate_axis_runs"))).toBe(true);
-    expect(prepared.some((statement) => statement.sql.includes("y_relation_review"))).toBe(true);
-    expect(prepared.some((statement) => statement.sql.includes("m_relation_cleanup"))).toBe(true);
+    expect(prepared.some((statement) => statement.sql.includes("json_extract(candidate.payload_json"))).toBe(false);
+    expect(prepared.some((statement) =>
+      statement.sql.includes("UPDATE memory_candidates AS candidate")
+    )).toBe(true);
+    expect(prepared.some((statement) =>
+      statement.sql.includes("UPDATE memory_five_axis_runs AS runs")
+    )).toBe(true);
     expect(prepared.some((statement) => statement.sql.includes("invariants_verified"))).toBe(true);
   });
 
