@@ -53,6 +53,8 @@ export function buildRecallTrace(
     strategy,
     layers,
     ...(eAxis ? { e_axis: eAxis } : {}),
-    ...(degradations.length > 0 ? { degraded_sources: degradations } : {})
+    ...(degradations.length > 0
+      ? { degraded_sources: degradations.map(({ source, code }) => ({ source, code })) }
+      : {})
   };
 }

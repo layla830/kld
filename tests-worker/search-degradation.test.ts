@@ -67,9 +67,10 @@ describe("search degradation behavior", () => {
     expect(event?.event_type).toBe("memory_search_degraded");
     expect(JSON.parse(event?.payload_json ?? "{}").sources).toEqual([{
       source: "exact_text",
-      code: "d1_text_search_failed",
-      message: "simulated D1 text failure"
+      code: "d1_text_search_failed"
     }]);
+    expect(event?.payload_json).not.toContain("simulated D1 text failure");
+    expect(event?.payload_json).not.toContain('"message"');
   });
 
   it("exposes a degraded keyword source in the API recall trace", async () => {
@@ -99,8 +100,9 @@ describe("search degradation behavior", () => {
     expect(response.status).toBe(200);
     expect(body.trace.degraded_sources).toEqual(expect.arrayContaining([{
       source: "keyword",
-      code: "d1_text_search_failed",
-      message: "simulated D1 text failure"
+      code: "d1_text_search_failed"
     }]));
+    expect(JSON.stringify(body)).not.toContain("simulated D1 text failure");
+    expect(JSON.stringify(body)).not.toContain('"message"');
   });
 });

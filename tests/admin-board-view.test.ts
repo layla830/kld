@@ -117,11 +117,24 @@ function pageData(overrides: Partial<Parameters<typeof renderPage>[1]> = {}): Pa
     coordinateBackfill: null,
     timelineBackfill: null,
     operationalPending: 0,
+    searchDegraded: false,
     ...overrides
   };
 }
 
 describe("admin board view", () => {
+  it("warns when semantic search results are degraded", () => {
+    const input = { ...pageInput("browse"), q: "partial result", searchMode: "semantic" as const };
+    const html = renderPage(input, pageData({
+      records: [memoryRecord()],
+      total: 1,
+      searchDegraded: true
+    }));
+
+    expect(html).toContain("文本搜索降级");
+    expect(html).toContain("当前结果可能不完整");
+  });
+
   it("keeps the page shell structure and insertion order", () => {
     const html = renderPageShell({ bodyChildren: "<X/>", pageScript: "<script>Y</script>" });
     expect(html).toMatch(/^<!DOCTYPE html><html lang="zh-CN">/);

@@ -30,7 +30,6 @@ export interface SearchMemoriesInput {
 export interface MemorySearchDegradation {
   source: "keyword" | "literal" | "exact_text";
   code: "d1_text_search_failed";
-  message: string;
 }
 
 export interface MemorySearchResult {
@@ -59,8 +58,7 @@ export async function recordMemorySearchDegradation(
       payload: {
         sources: input.degradations.map((item) => ({
           source: item.source,
-          code: item.code,
-          message: item.message
+          code: item.code
         }))
       }
     });
@@ -133,8 +131,12 @@ export async function searchMemories(env: Env, input: SearchMemoriesInput): Prom
     .filter((record) => plan.literalTerms.some((term) => recordHaystack(record).includes(term.toLowerCase())))
     .map((record) => ({ ...record, score: Math.max(record.score, 0.82), keywordScore: Math.max(record.score, 0.82) }));
   const degradations: MemorySearchDegradation[] = [
-    ...(keywordSearch.status === "degraded" ? [{ source: "keyword" as const, ...keywordSearch.error }] : []),
-    ...(literalSearch?.status === "degraded" ? [{ source: "literal" as const, ...literalSearch.error }] : [])
+    ...(keywordSearch.status === "degraded"
+      ? [{ source: "keyword" as const, code: keywordSearch.error.code }]
+      : []),
+    ...(literalSearch?.status === "degraded"
+      ? [{ source: "literal" as const, code: literalSearch.error.code }]
+      : [])
   ];
   await recordMemorySearchDegradation(env, { namespace: input.namespace, degradations });
 

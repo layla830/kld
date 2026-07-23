@@ -71,7 +71,7 @@ async function fetchDurableLexicalCandidates(
   return {
     records: result.records.map((record) => toMemoryApiRecord(record, record.score)),
     degradations: result.status === "degraded"
-      ? [{ source: "keyword", ...result.error }]
+      ? [{ source: "keyword", code: result.error.code }]
       : []
   };
 }

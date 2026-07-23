@@ -42,6 +42,7 @@ interface PageData {
   coordinateBackfill: CoordinateBackfillStatus | null;
   timelineBackfill: TimelineBackfillStatus | null;
   operationalPending: number;
+  searchDegraded: boolean;
 }
 
 function renderTabs(input: PageInput): string {
@@ -356,9 +357,12 @@ export function renderPage(input: PageInput, data: PageData): string {
   const metabolismBatchBar = input.tab === "m-review" ? renderMBatchBar(data.candidates) : "";
   const composer = input.tab === "lmc5" || input.tab === "review" || input.tab === "x-review" || input.tab === "m-review" ? "" : renderComposer(input, renderBrowseTypeOptions(data.types, input.type));
   const quoteFilter = renderQuoteFilter(input, data.quoteCategories);
+  const searchDegradationNotice = data.searchDegraded
+    ? '<div class="card review-warning"><strong>文本搜索降级：</strong>当前结果可能不完整。</div>'
+    : "";
   const listBlock = input.tab === "lmc5" ? "" : `<div class="header-row"><span class="section-title">${htmlEscape(listTitle)}</span><div class="divider"></div><a class="small-btn" href="${adminPath(input, { page: 1, q: "", tag: "", date: "", category: "", mood: "", notice: "", searchMode: "keyword" })}">刷新</a></div>${list}${input.tab === "m-review" ? "" : renderPagination(input, data.total)}`;
 
-  const bodyChildren = `${renderTabs(input)}${dashboard}${lmc5Dashboard}${calendar}${timelineReviewGuide}${metabolismReviewGuide}${metabolismBatchBar}${composer}${quoteFilter}${listBlock}`;
+  const bodyChildren = `${renderTabs(input)}${dashboard}${lmc5Dashboard}${calendar}${timelineReviewGuide}${metabolismReviewGuide}${metabolismBatchBar}${composer}${quoteFilter}${searchDegradationNotice}${listBlock}`;
   return renderPageShell({
     bodyChildren,
     pageScript: `<script>${M_BATCH_SCRIPT}${renderToastScriptContent(input.notice)}</script>`

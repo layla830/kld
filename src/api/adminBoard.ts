@@ -296,7 +296,7 @@ export async function handleAdminBoard(request: Request, env: Env, ctx: Executio
   }
   const coordinateBackfill = input.tab === "lmc5" ? await getCoordinateBackfillStatus(env, namespace) : null;
   const timelineBackfill = input.tab === "x-review" ? await getTimelineBackfillStatus(env, namespace) : null;
-  return new Response(renderPage(input, { stats, types, quoteCategories, total: input.tab === "x-review" || input.tab === "m-review" ? candidateTotal : memories.total, records: memories.records, candidates, resolvedCandidates, heatmap, timelineDates, lmc5, coordinateBackfill, timelineBackfill, operationalPending }), {
+  return new Response(renderPage(input, { stats, types, quoteCategories, total: input.tab === "x-review" || input.tab === "m-review" ? candidateTotal : memories.total, records: memories.records, candidates, resolvedCandidates, heatmap, timelineDates, lmc5, coordinateBackfill, timelineBackfill, operationalPending, searchDegraded: "searchDegraded" in memories ? memories.searchDegraded ?? false : false }), {
     headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" }
   });
 }

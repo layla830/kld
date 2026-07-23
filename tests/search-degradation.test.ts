@@ -55,18 +55,20 @@ describe("memory search degradation contract", () => {
   });
 
   it("carries degraded sources in the recall trace without changing result layers", () => {
-    const trace = buildRecallTrace([], "hybrid_search", undefined, [{
+    const internalDegradation = {
       source: "keyword",
       code: "d1_text_search_failed",
       message: "simulated D1 text failure"
-    }]);
+    } as const;
+    const trace = buildRecallTrace([], "hybrid_search", undefined, [internalDegradation]);
 
     expect(trace.layers.fallback.count).toBe(0);
     expect(trace.degraded_sources).toEqual([{
       source: "keyword",
-      code: "d1_text_search_failed",
-      message: "simulated D1 text failure"
+      code: "d1_text_search_failed"
     }]);
+    expect(JSON.stringify(trace)).not.toContain("simulated D1 text failure");
+    expect(JSON.stringify(trace)).not.toContain('"message"');
   });
 
   it("fails closed instead of creating a duplicate when merge search is degraded", async () => {

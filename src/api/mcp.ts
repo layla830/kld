@@ -453,7 +453,7 @@ async function callTool(
     if (search.status === "degraded") {
       await recordMemorySearchDegradation(env, {
         namespace: resolveNamespace(profile, args.namespace),
-        degradations: [{ source: "exact_text", ...search.error }]
+        degradations: [{ source: "exact_text", code: search.error.code }]
       });
       return toolError("Memory text search is temporarily degraded");
     }
