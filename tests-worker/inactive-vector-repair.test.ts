@@ -238,4 +238,50 @@ describe("bounded historical Vector reconciliation requeue", () => {
     });
     expect(report.drift_count).toBe(2);
   });
+
+  it("audits non-scanner pending and unset states without repairing them", async () => {
+    const namespace = `vector-audit-non-scanner-${crypto.randomUUID()}`;
+    const pending = await memoryFixture(namespace, "pending but marked synced", {
+      vectorStatus: "pending",
+      vectorSynced: 1
+    });
+    const blank = await memoryFixture(namespace, "blank but marked synced", {
+      vectorStatus: " ",
+      vectorSynced: 1
+    });
+
+    const dryRun = await queryRows(buildVectorRepairDryRunQuery({ namespace, limit: 100 }));
+    expect(dryRun.results?.[0]).toMatchObject({
+      repairable_rows: 0,
+      needs_upsert_rows: 0,
+      needs_delete_rows: 0,
+      selected: 0
+    });
+    const applied = await queryRows(buildVectorRepairApplyQuery({ namespace, limit: 100 }));
+    expect(applied.meta.changes).toBe(0);
+
+    const report = await vectorAudit(namespace);
+    expect(report.sections.vector_state[0]).toMatchObject({
+      needs_upsert: 0,
+      needs_delete: 0,
+      scanner_managed_rows: 0,
+      non_scanner_managed_rows: 2,
+      vector_drift_rows: 2
+    });
+    expect(report.drift_count).toBe(2);
+
+    const rows = await env.DB.prepare(
+      `SELECT id, vector_sync_status, vector_synced
+       FROM memories WHERE namespace = ? ORDER BY id`
+    ).bind(namespace).all<Record<string, unknown>>();
+    const byId = new Map((rows.results ?? []).map((row) => [row.id, row]));
+    expect(byId.get(pending.id)).toMatchObject({
+      vector_sync_status: "pending",
+      vector_synced: 1
+    });
+    expect(byId.get(blank.id)).toMatchObject({
+      vector_sync_status: " ",
+      vector_synced: 1
+    });
+  });
 });

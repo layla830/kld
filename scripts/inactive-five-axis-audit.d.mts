@@ -15,6 +15,7 @@ export function historicalVectorNeedsUpsertPredicate(alias: string): string;
 export function historicalVectorNeedsDeletePredicate(alias: string): string;
 export function historicalVectorRepairPredicate(alias: string): string;
 export function historicalVectorMissingIdPredicate(alias: string): string;
+export function nonScannerManagedVectorStatePredicate(alias: string): string;
 export function originalDiaryTypePredicate(alias: string): string;
 export function buildInactiveFiveAxisAuditQueries(input: {
   namespace: string;

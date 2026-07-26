@@ -96,6 +96,17 @@ export function historicalVectorMissingIdPredicate(alias) {
   )`;
 }
 
+export function nonScannerManagedVectorStatePredicate(alias) {
+  return `(
+    ${alias}.vector_synced != 0
+    AND (
+      ${alias}.vector_sync_status IN ('pending', 'failed')
+      OR ${alias}.vector_sync_status IS NULL
+      OR TRIM(${alias}.vector_sync_status) = ''
+    )
+  )`;
+}
+
 export function originalDiaryTypePredicate(alias) {
   return `LOWER(TRIM(${alias}.type)) IN (${sqlList(ORIGINAL_DIARY_MEMORY_TYPES)})`;
 }
@@ -107,9 +118,11 @@ export function buildInactiveFiveAxisAuditQueries(input) {
   const vectorNeedsUpsert = historicalVectorNeedsUpsertPredicate("memory");
   const vectorNeedsDelete = historicalVectorNeedsDeletePredicate("memory");
   const vectorRepair = historicalVectorRepairPredicate("memory");
+  const nonScannerManagedVectorState = nonScannerManagedVectorStatePredicate("memory");
   const vectorDrift = `(
     ${vectorRepair}
     OR ${historicalVectorMissingIdPredicate("memory")}
+    OR ${nonScannerManagedVectorState}
     OR (
       NOT (${inactive("memory")})
       AND memory.vector_sync_status = 'deleted'
@@ -462,6 +475,8 @@ export function buildInactiveFiveAxisAuditQueries(input) {
            )
           THEN 1 ELSE 0 END
         ), 0) AS scanner_managed_rows,
+        COALESCE(SUM(CASE WHEN ${nonScannerManagedVectorState}
+          THEN 1 ELSE 0 END), 0) AS non_scanner_managed_rows,
         COALESCE(SUM(CASE WHEN ${historicalVectorMissingIdPredicate("memory")}
           THEN 1 ELSE 0 END), 0) AS missing_vector_id_rows,
         COALESCE(SUM(CASE

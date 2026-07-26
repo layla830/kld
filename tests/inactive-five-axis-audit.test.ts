@@ -54,6 +54,7 @@ describe("inactive five-axis audit command", () => {
     expect(sql).toContain("needs_delete");
     expect(sql).toContain("missing_vector_id_rows");
     expect(sql).toContain("scanner_managed_rows");
+    expect(sql).toContain("non_scanner_managed_rows");
     expect(sql).toContain("relation_rows");
     expect(sql).toContain("origin_diary_provenance_rows");
     expect(sql).toContain("axis_run_drift_rows");
