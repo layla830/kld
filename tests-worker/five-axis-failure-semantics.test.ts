@@ -485,8 +485,8 @@ describe("five-axis failure semantics", () => {
       `SELECT status, result_json FROM memory_five_axis_outbox
        WHERE namespace = 'default' AND memory_id = ? AND memory_revision = 2`
     ).bind(memory.id).first()).resolves.toMatchObject({
-      status: "queued",
-      result_json: null
+      status: "skipped",
+      result_json: JSON.stringify({ reason: "stale_revision" })
     });
     await expect(env.DB.prepare(
       `SELECT status FROM memory_five_axis_outbox

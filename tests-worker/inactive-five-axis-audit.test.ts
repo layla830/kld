@@ -61,6 +61,12 @@ describe("read-only inactive five-axis audit", () => {
       content: `ineligible ${privateMarker}`,
       status: "active"
     });
+    const failedVector = await createMemory(env.DB, {
+      namespace,
+      type: "note",
+      content: `failed vector ${privateMarker}`,
+      status: "active"
+    });
     await env.DB.batch([
       env.DB.prepare(
         `UPDATE memories
@@ -72,6 +78,11 @@ describe("read-only inactive five-axis audit", () => {
          SET vector_sync_status = 'synced', vector_synced = 1
          WHERE namespace = ? AND id = ?`
       ).bind(namespace, ineligible.id),
+      env.DB.prepare(
+        `UPDATE memories
+         SET vector_sync_status = 'failed', vector_synced = 0
+         WHERE namespace = ? AND id = ?`
+      ).bind(namespace, failedVector.id),
       env.DB.prepare(
         `INSERT INTO memory_relations (
            id, namespace, source_memory_id, target_memory_id,
@@ -182,7 +193,8 @@ describe("read-only inactive five-axis audit", () => {
     expect(report.sections.vector_state[0]).toMatchObject({
       eligible_marked_deleted: 1,
       ineligible_marked_synced: 1,
-      ineligible_vector_synced: 1
+      ineligible_vector_synced: 1,
+      failed_vector_states: 1
     });
     expect(report.sections.deprojection_operations[0]).toMatchObject({
       unfinished: 1,

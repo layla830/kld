@@ -105,7 +105,7 @@ describe("revision-safe vector reconciliation", () => {
     });
     await setVectorState(memory, "failed");
     const upsertedIds: string[] = [];
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify({
       data: [{ embedding: [0.1, 0.2, 0.3] }]
     }), { status: 200, headers: { "content-type": "application/json" } }));
     const runtime = vectorRuntime({
@@ -185,6 +185,84 @@ describe("revision-safe vector reconciliation", () => {
         vector_synced: 0
       }
     });
+  });
+
+  it("requeues revision nine when its upsert finishes before revision eight", async () => {
+    const namespace = `vector-same-direction-${crypto.randomUUID()}`;
+    const created = await createMemory(env.DB, {
+      namespace,
+      type: "note",
+      content: `revision eight ${crypto.randomUUID()}`,
+      status: "active"
+    });
+    await env.DB.prepare(
+      `UPDATE memories
+       SET five_axis_revision = 8, vector_sync_status = 'pending', vector_synced = 0
+       WHERE namespace = ? AND id = ?`
+    ).bind(namespace, created.id).run();
+    let releaseFirstUpsert: () => void = () => {
+      throw new Error("first upsert did not start");
+    };
+    let firstUpsertStarted: (() => void) | null = null;
+    const started = new Promise<void>((resolve) => {
+      firstUpsertStarted = resolve;
+    });
+    let upsertCalls = 0;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify({
+      data: [{ embedding: [0.1, 0.2, 0.3] }]
+    }), { status: 200, headers: { "content-type": "application/json" } }));
+    const runtime = vectorRuntime({
+      upsert: async () => {
+        upsertCalls += 1;
+        if (upsertCalls === 1) {
+          firstUpsertStarted?.();
+          await new Promise<void>((resolve) => {
+            releaseFirstUpsert = resolve;
+          });
+        }
+        return { mutationId: `upsert-${upsertCalls}` };
+      }
+    });
+
+    const revisionEight = reconcileMemoryVector(runtime, {
+      namespace,
+      memoryId: created.id
+    });
+    await started;
+    const revisionNine = await updateMemory(env.DB, {
+      namespace,
+      id: created.id,
+      patch: { content: `revision nine ${crypto.randomUUID()}` },
+      expectedRevision: 8
+    });
+    expect(revisionNine).toMatchObject({
+      five_axis_revision: 9,
+      vector_sync_status: "pending"
+    });
+    await expect(reconcileMemoryVector(runtime, {
+      namespace,
+      memoryId: created.id
+    })).resolves.toMatchObject({ outcome: "synced", action: "upsert" });
+    releaseFirstUpsert();
+
+    await expect(revisionEight).resolves.toMatchObject({
+      outcome: "stale",
+      attemptedAction: "upsert",
+      latestMemory: {
+        five_axis_revision: 9,
+        vector_sync_status: "pending",
+        vector_synced: 0
+      }
+    });
+    await expect(retryPendingMemoryVectors(runtime, namespace, 1))
+      .resolves.toMatchObject({ selected: 1, synced: 1 });
+    expect(upsertCalls).toBe(3);
+    await expect(getMemoryById(env.DB, { namespace, id: created.id }))
+      .resolves.toMatchObject({
+        five_axis_revision: 9,
+        vector_sync_status: "synced",
+        vector_synced: 1
+      });
   });
 
   it("processes only the requested bounded batch", async () => {

@@ -190,7 +190,7 @@ describe("five-axis outbox policy", () => {
 
     await handleQueueMessage(message, { DB: db } as Env);
 
-    expect(completion).toBeNull();
+    expect(completion).toEqual({ reason: "stale_revision" });
   });
 
   it("fails closed for a pre-migration queued row without a durable revision", async () => {
@@ -329,7 +329,7 @@ describe("five-axis outbox policy", () => {
 
     await handleQueueMessage(message, { DB: db } as Env);
 
-    expect(completion).toBeNull();
+    expect(completion).toEqual({ reason: "memory_ineligible" });
     expect(membershipDeleted).toBe(false);
     expect(relationBatches).toHaveLength(0);
   });

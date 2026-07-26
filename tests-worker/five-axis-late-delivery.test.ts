@@ -4,6 +4,9 @@ import {
   claimFiveAxisOutboxForDelivery,
   claimFiveAxisOutboxForExecution,
   completeFiveAxisOutboxExecution,
+  failFiveAxisOutboxClaim,
+  listDueFiveAxisOutbox,
+  skipRejectedFiveAxisDelivery,
   type MemoryFiveAxisOutboxRecord
 } from "../src/db/memoryFiveAxisOutbox";
 import {
@@ -11,7 +14,7 @@ import {
   completeFiveAxisRun,
   getFiveAxisRun
 } from "../src/db/memoryFiveAxisRuns";
-import { createMemory } from "../src/db/memories";
+import { createMemory, updateMemory } from "../src/db/memories";
 import { deprojectMemoryFromFiveAxes } from "../src/memory/deprojection";
 import { handleQueueMessage } from "../src/queue/consumer";
 import type { Env, MemoryFiveAxisProjectionQueueMessage, MemoryRecord } from "../src/types";
@@ -149,5 +152,123 @@ describe("five-axis late delivery guards", () => {
     ).bind(outbox.id).first<{ status: string; queued_at: string | null }>())
       .resolves.toMatchObject({ status: "skipped", queued_at: null });
     await expect(claimFiveAxisRun(env.DB, runKey)).resolves.toBeNull();
+  });
+
+  it("skips an old outbox when the revision advances before execution claim", async () => {
+    const memory = await createMemory(env.DB, {
+      namespace: "default",
+      type: "note",
+      content: `claim-before-revision ${crypto.randomUUID()}`,
+      status: "active"
+    });
+    const outbox = await outboxFor(memory);
+    const delivery = await claimFiveAxisOutboxForDelivery(env.DB, outbox);
+    if (!delivery) throw new Error("delivery claim failed");
+    const updated = await updateMemory(env.DB, {
+      namespace: memory.namespace,
+      id: memory.id,
+      patch: { content: `new revision ${crypto.randomUUID()}` },
+      expectedRevision: memory.five_axis_revision ?? 1
+    });
+    expect(updated?.five_axis_revision).toBe((memory.five_axis_revision ?? 1) + 1);
+
+    await handleQueueMessage(queueMessage(outbox, delivery), {
+      DB: env.DB,
+      ENABLE_FIVE_AXIS: "true"
+    } as Env);
+
+    await expect(env.DB.prepare(
+      "SELECT status, queued_at, result_json FROM memory_five_axis_outbox WHERE id = ?"
+    ).bind(outbox.id).first()).resolves.toMatchObject({
+      status: "skipped",
+      queued_at: null,
+      result_json: JSON.stringify({ reason: "stale_revision" })
+    });
+  });
+
+  it("turns stale complete and fail writes into skipped terminal state", async () => {
+    const completeMemory = await createMemory(env.DB, {
+      namespace: "default",
+      type: "note",
+      content: `stale complete ${crypto.randomUUID()}`,
+      status: "active"
+    });
+    const completeOutbox = await outboxFor(completeMemory);
+    const completeDelivery = await claimFiveAxisOutboxForDelivery(env.DB, completeOutbox);
+    if (!completeDelivery) throw new Error("complete delivery claim failed");
+    const completeExecution = await claimFiveAxisOutboxForExecution(env.DB, completeDelivery);
+    if (completeExecution.outcome !== "claimed") throw new Error("complete execution claim failed");
+    await updateMemory(env.DB, {
+      namespace: completeMemory.namespace,
+      id: completeMemory.id,
+      patch: { content: `complete revision advanced ${crypto.randomUUID()}` },
+      expectedRevision: completeMemory.five_axis_revision ?? 1
+    });
+    await expect(completeFiveAxisOutboxExecution(
+      env.DB,
+      completeExecution.claim,
+      "completed",
+      { stale: true }
+    )).resolves.toBe(true);
+    await expect(env.DB.prepare(
+      "SELECT status FROM memory_five_axis_outbox WHERE id = ?"
+    ).bind(completeOutbox.id).first()).resolves.toMatchObject({ status: "skipped" });
+
+    const failMemory = await createMemory(env.DB, {
+      namespace: "default",
+      type: "note",
+      content: `stale fail ${crypto.randomUUID()}`,
+      status: "active"
+    });
+    const failOutbox = await outboxFor(failMemory);
+    const failDelivery = await claimFiveAxisOutboxForDelivery(env.DB, failOutbox);
+    if (!failDelivery) throw new Error("fail delivery claim failed");
+    const failExecution = await claimFiveAxisOutboxForExecution(env.DB, failDelivery);
+    if (failExecution.outcome !== "claimed") throw new Error("fail execution claim failed");
+    await updateMemory(env.DB, {
+      namespace: failMemory.namespace,
+      id: failMemory.id,
+      patch: { content: `fail revision advanced ${crypto.randomUUID()}` },
+      expectedRevision: failMemory.five_axis_revision ?? 1
+    });
+    await expect(failFiveAxisOutboxClaim(
+      env.DB,
+      failExecution.claim,
+      new Error("stale failure")
+    )).resolves.toBe(true);
+    await expect(env.DB.prepare(
+      "SELECT status, last_error FROM memory_five_axis_outbox WHERE id = ?"
+    ).bind(failOutbox.id).first()).resolves.toMatchObject({
+      status: "skipped",
+      last_error: null
+    });
+  });
+
+  it("does not return a skipped stale outbox to the due list after fifteen minutes", async () => {
+    const memory = await createMemory(env.DB, {
+      namespace: "default",
+      type: "note",
+      content: `skipped due list ${crypto.randomUUID()}`,
+      status: "active"
+    });
+    const outbox = await outboxFor(memory);
+    const delivery = await claimFiveAxisOutboxForDelivery(env.DB, outbox);
+    if (!delivery) throw new Error("delivery claim failed");
+    await updateMemory(env.DB, {
+      namespace: memory.namespace,
+      id: memory.id,
+      patch: { content: `skipped revision advanced ${crypto.randomUUID()}` },
+      expectedRevision: memory.five_axis_revision ?? 1
+    });
+    await expect(skipRejectedFiveAxisDelivery(env.DB, delivery, "stale_revision"))
+      .resolves.toBe(true);
+    await env.DB.prepare(
+      `UPDATE memory_five_axis_outbox
+       SET updated_at = ?
+       WHERE id = ?`
+    ).bind(new Date(Date.now() - 16 * 60_000).toISOString(), outbox.id).run();
+
+    const due = await listDueFiveAxisOutbox(env.DB, 10);
+    expect(due.map((item) => item.id)).not.toContain(outbox.id);
   });
 });

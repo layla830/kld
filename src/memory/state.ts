@@ -252,20 +252,17 @@ export async function reconcileMemoryVector(
     });
     if (latestMemory) {
       const latestEligibility = isFiveAxisMemoryEligible(latestMemory) ? "eligible" : "ineligible";
-      const latestAction: VectorDesiredAction = latestEligibility === "eligible" ? "upsert" : "delete";
-      if (latestAction !== action) {
-        await markMemoryVectorResult(env.DB, {
-          namespace: latestMemory.namespace,
-          id: latestMemory.id,
-          expectedRevision: latestMemory.five_axis_revision ?? 1,
-          expectedEligibility: latestEligibility,
-          status: "pending"
-        });
-        latestMemory = await getMemoryById(env.DB, {
-          namespace: snapshot.namespace,
-          id: snapshot.id
-        });
-      }
+      await markMemoryVectorResult(env.DB, {
+        namespace: latestMemory.namespace,
+        id: latestMemory.id,
+        expectedRevision: latestMemory.five_axis_revision ?? 1,
+        expectedEligibility: latestEligibility,
+        status: "pending"
+      });
+      latestMemory = await getMemoryById(env.DB, {
+        namespace: snapshot.namespace,
+        id: snapshot.id
+      });
     }
     return {
       outcome: "stale",

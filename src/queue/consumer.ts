@@ -9,7 +9,8 @@ import { reconcileMemoryVector } from "../memory/state";
 import {
   claimFiveAxisOutboxForExecution,
   completeFiveAxisOutboxExecution,
-  failFiveAxisOutboxClaim
+  failFiveAxisOutboxClaim,
+  skipRejectedFiveAxisDelivery
 } from "../db/memoryFiveAxisOutbox";
 import { projectMemoryIntoFiveAxes } from "../memory/fiveAxis/projection";
 import { loadFiveAxisConfig } from "../config/runtime";
@@ -91,7 +92,24 @@ export async function handleQueueMessage(message: QueueMessage, env: Env): Promi
         attempt: message.outboxAttempt,
         queuedAt: message.outboxQueuedAt
       });
-      if (executionResult.outcome === "rejected") return;
+      if (executionResult.outcome === "rejected") {
+        if (
+          executionResult.reason === "stale_revision"
+          || executionResult.reason === "memory_ineligible"
+          || executionResult.reason === "memory_missing"
+        ) {
+          await skipRejectedFiveAxisDelivery(env.DB, {
+            id: message.outboxId,
+            namespace: message.namespace,
+            memoryId: message.memoryId,
+            memoryUpdatedAt: message.memoryUpdatedAt,
+            memoryRevision: message.memoryRevision ?? 1,
+            attempt: message.outboxAttempt,
+            queuedAt: message.outboxQueuedAt
+          }, executionResult.reason);
+        }
+        return;
+      }
       const execution = executionResult.claim;
       let failureRecorded = false;
       try {
@@ -114,7 +132,7 @@ export async function handleQueueMessage(message: QueueMessage, env: Env): Promi
         await completeFiveAxisOutboxExecution(
           env.DB,
           execution,
-          result ? "completed" : "skipped",
+          result && result.supersededByRevision === undefined ? "completed" : "skipped",
           result ?? {
             reason: "memory_not_projectable_or_revision_stale"
           }

@@ -52,6 +52,7 @@ describe("inactive five-axis audit command", () => {
       "deprojection_operations"
     ]);
     const sql = queries.map((query) => query.sql).join("\n");
+    expect(sql).toContain("failed_vector_states");
     expect(sql).not.toMatch(/\b(?:INSERT|UPDATE|DELETE|REPLACE|CREATE|ALTER|DROP)\b/i);
     expect(sql).not.toMatch(/\b(?:content|summary|tags|source_message_ids)\b/i);
   });

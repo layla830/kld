@@ -195,6 +195,7 @@ export function buildInactiveFiveAxisAuditQueries(input) {
         "eligible_invalid_unsynced_state",
         "ineligible_marked_synced",
         "ineligible_vector_synced",
+        "failed_vector_states",
         "stale_pending_or_failed"
       ],
       sql: `SELECT
@@ -216,6 +217,10 @@ export function buildInactiveFiveAxisAuditQueries(input) {
           WHEN ${inactive("memory")} AND memory.vector_synced != 0
           THEN 1 ELSE 0 END
         ) AS ineligible_vector_synced,
+        SUM(CASE
+          WHEN memory.vector_sync_status = 'failed'
+          THEN 1 ELSE 0 END
+        ) AS failed_vector_states,
         SUM(CASE
           WHEN memory.vector_sync_status IN ('pending', 'failed')
            AND julianday(memory.updated_at) < julianday('now', '-${staleHours} hours')
