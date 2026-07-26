@@ -13,6 +13,7 @@
     "memory:relations-audit": "node scripts/memory-relations-audit.mjs",
     "memory:lmc5-coordinates": "node scripts/lmc5-coordinate-audit.mjs",
     "audit:inactive-five-axis": "node scripts/audit-inactive-five-axis.mjs",
+    "repair:inactive-five-axis-d1": "node scripts/repair-inactive-five-axis-d1.mjs",
     "test": "npm run test:unit && npm run test:worker",
     "test:unit": "vitest run --config vitest.config.ts",
     "test:worker": "vitest run --config vitest.worker.config.ts",
