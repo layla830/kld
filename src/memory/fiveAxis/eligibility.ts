@@ -1,11 +1,7 @@
 import type { MemoryRecord } from "../../types";
+import { EXCLUDED_FIVE_AXIS_MEMORY_TYPES } from "./eligibilityContract.js";
 
-export const EXCLUDED_FIVE_AXIS_MEMORY_TYPES = [
-  "diary",
-  "layla_diary",
-  "auto_diary",
-  "dream_review"
-] as const;
+export { EXCLUDED_FIVE_AXIS_MEMORY_TYPES };
 
 const EXCLUDED_FIVE_AXIS_MEMORY_TYPE_SET = new Set<string>(EXCLUDED_FIVE_AXIS_MEMORY_TYPES);
 

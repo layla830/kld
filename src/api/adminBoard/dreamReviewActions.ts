@@ -17,7 +17,7 @@ import {
   prepareMemoryDeprojection,
   prepareMemoryDeprojectionCallerInvariant
 } from "../../memory/deprojection";
-import { patchSyncedMemory, syncMemoryVector } from "../../memory/state";
+import { patchSyncedMemory, reconcileMemoryVector } from "../../memory/state";
 import type { Env, MemoryRecord } from "../../types";
 import { cleanPinTags, parseTags, readFormText } from "./utils";
 
@@ -219,9 +219,14 @@ async function commitDreamReviewApproval(
     || (plan.replacement && !replacement)) return null;
 
   await Promise.all([
-    syncMemoryVector(env, proposal),
-    syncMemoryVector(env, target),
-    ...(replacement ? [syncMemoryVector(env, replacement)] : [])
+    reconcileMemoryVector(env, { namespace: proposal.namespace, memoryId: proposal.id }),
+    reconcileMemoryVector(env, { namespace: target.namespace, memoryId: target.id }),
+    ...(replacement
+      ? [reconcileMemoryVector(env, {
+          namespace: replacement.namespace,
+          memoryId: replacement.id
+        })]
+      : [])
   ]);
   return { proposal, target, replacement };
 }

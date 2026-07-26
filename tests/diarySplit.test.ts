@@ -11,7 +11,14 @@ vi.mock("../src/memory/embedding", async (importOriginal) => {
 });
 vi.mock("../src/memory/state", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../src/memory/state")>();
-  return { ...actual, removeMemoryVector: vi.fn(async () => "deleted" as const) };
+  return {
+    ...actual,
+    reconcileMemoryVector: vi.fn(async () => ({
+      outcome: "synced" as const,
+      action: "delete" as const,
+      memory: {} as never
+    }))
+  };
 });
 vi.mock("../src/db/memoryEvents", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../src/db/memoryEvents")>();

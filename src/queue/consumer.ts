@@ -5,8 +5,7 @@ import { runConversationChunking } from "../memory/chunking";
 import { runMemoryMaintenance } from "../memory/maintenance";
 import { splitDiaryMemories } from "../memory/diarySplit";
 import { createMemoryEvent } from "../db/memoryEvents";
-import { fetchMemoriesByIds } from "../db/memories";
-import { syncMemoryVector } from "../memory/state";
+import { reconcileMemoryVector } from "../memory/state";
 import {
   claimFiveAxisOutboxForExecution,
   completeFiveAxisOutboxExecution,
@@ -65,13 +64,18 @@ export async function handleQueueMessage(message: QueueMessage, env: Env): Promi
         "SELECT id FROM memory_events WHERE namespace = ? AND event_type = 'memory_vector_sync_complete' AND payload_json LIKE ? LIMIT 1"
       ).bind(message.namespace, eventKey).first<{ id: string }>();
       if (completed?.id) return;
-      const memories = await fetchMemoriesByIds(env.DB, {
-        namespace: message.namespace,
-        ids: message.memoryIds.slice(0, 3)
-      });
-      const results: Array<{ id: string; status: string }> = [];
-      for (const memory of memories) {
-        results.push({ id: memory.id, status: await syncMemoryVector(env, memory) });
+      const memoryIds = [...new Set(message.memoryIds.map((id) => id.trim()).filter(Boolean))].slice(0, 3);
+      const results: Array<{ id: string; outcome: string; action?: string }> = [];
+      for (const memoryId of memoryIds) {
+        const result = await reconcileMemoryVector(env, {
+          namespace: message.namespace,
+          memoryId
+        });
+        results.push({
+          id: memoryId,
+          outcome: result.outcome,
+          ...("action" in result ? { action: result.action } : {})
+        });
       }
       await createMemoryEvent(env.DB, {
         namespace: message.namespace,

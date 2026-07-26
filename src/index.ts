@@ -20,7 +20,7 @@ import { runDailyMemoryDigest } from "./memory/dailyDigest";
 import { runMemoryRetention } from "./memory/retention";
 import { runFiveAxisNightlyMaintenance } from "./memory/fiveAxis/nightly";
 import { runNarrativeTimeline, runTimelineSweep } from "./memory/narrativeTimeline";
-import { retryStaleVectorSyncs } from "./memory/state";
+import { retryPendingMemoryVectors } from "./memory/state";
 import { getCoordinateBackfillControl, recordCoordinateBackfillRun } from "./memory/coordinateBackfillControl";
 import { handleQueueMessage } from "./queue/consumer";
 import { enqueueMissedDiarySplits, enqueuePendingFiveAxisProjections } from "./queue/producer";
@@ -192,7 +192,7 @@ export default {
                 return result;
               })
             : Promise.resolve({ skipped: "disabled" as const }),
-          retryStaleVectorSyncs(env, namespace, 12),
+          retryPendingMemoryVectors(env, namespace, 12),
           enqueueMissedDiarySplits(env, namespace, 2),
           enqueuePendingFiveAxisProjections(env, 5)
         ])
@@ -221,7 +221,7 @@ export default {
             : { skipped: "dream_disabled" as const }
         })),
         runMemoryRetention(env, namespace),
-        retryStaleVectorSyncs(env, namespace, 50)
+        retryPendingMemoryVectors(env, namespace, 50)
       ]).then(([dream, retention, syncRetry]) => {
         console.log("scheduled daily memory maintenance", { namespace, dream, retention, syncRetry });
       })

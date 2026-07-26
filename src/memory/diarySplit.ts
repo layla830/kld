@@ -5,7 +5,7 @@ import { callOpenAICompat } from "../proxy/openaiAdapter";
 import type { Env, MemoryRecord, OpenAIChatRequest, OpenAIChatResponse } from "../types";
 import { upsertMemoryEmbedding } from "./embedding";
 import { DIARY_SPLIT_SOURCE_TYPE, isActiveDiarySplitSource } from "./diaryPolicy";
-import { removeMemoryVector } from "./state";
+import { reconcileMemoryVector } from "./state";
 import {
   DIARY_SPLIT_COMPLETE_EVENT,
   hasActiveV2DiarySplitItem,
@@ -279,7 +279,12 @@ async function activateRescreenedDiary(
   }
   await env.DB.batch(statements);
 
-  for (const memory of old.results ?? []) await removeMemoryVector(env, memory);
+  for (const memory of old.results ?? []) {
+    await reconcileMemoryVector(env, {
+      namespace: memory.namespace,
+      memoryId: memory.id
+    });
+  }
   return (old.results ?? []).map((memory) => memory.id);
 }
 

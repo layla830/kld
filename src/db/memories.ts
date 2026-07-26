@@ -1,4 +1,5 @@
 import type { MemoryRecord } from "../types";
+import { fiveAxisMemoryEligibilityPredicate } from "../memory/fiveAxis/eligibility";
 import { newId } from "../utils/ids";
 import { nowIso } from "../utils/time";
 import { buildVectorId } from "../utils/vectorId";
@@ -46,6 +47,9 @@ export interface ListUnsyncedMemoryFilters {
   force?: boolean;
   limit: number;
 }
+
+export type MemoryVectorEligibility = "eligible" | "ineligible";
+export type MemoryVectorResultStatus = "synced" | "deleted" | "failed" | "pending";
 
 export interface MemoryKeysetCursor {
   createdAt: string;
@@ -100,14 +104,6 @@ function chunk<T>(items: T[], size: number): T[][] {
     chunks.push(items.slice(index, index + size));
   }
   return chunks;
-}
-
-async function markMemoryVectorUnsynced(db: D1Database, input: { namespace: string; id: string }): Promise<void> {
-  try {
-    await db.prepare("UPDATE memories SET vector_synced = 0 WHERE namespace = ? AND id = ?").bind(input.namespace, input.id).run();
-  } catch (error) {
-    console.warn("memory vector_synced flag unavailable", input.id, error);
-  }
 }
 
 function activeFactForStatus(status: string): number {
@@ -342,6 +338,66 @@ export async function listUnsyncedVectorMemories(db: D1Database, input: ListUnsy
   return result.results ?? [];
 }
 
+export async function listPendingVectorReconciliations(
+  db: D1Database,
+  input: { namespace: string; limit: number }
+): Promise<Array<Pick<MemoryRecord, "namespace" | "id">>> {
+  const limit = Math.min(Math.max(Math.floor(input.limit), 1), 200);
+  const result = await db.prepare(
+    `SELECT namespace, id
+     FROM memories
+     WHERE namespace = ?
+       AND vector_synced = 0
+       AND (
+         vector_sync_status IN ('pending', 'failed')
+         OR vector_sync_status IS NULL
+         OR TRIM(vector_sync_status) = ''
+       )
+     ORDER BY updated_at ASC, id ASC
+     LIMIT ?`
+  ).bind(input.namespace, limit).all<Pick<MemoryRecord, "namespace" | "id">>();
+  return result.results ?? [];
+}
+
+export async function markMemoryVectorResult(
+  db: D1Database,
+  input: {
+    namespace: string;
+    id: string;
+    expectedRevision: number;
+    expectedEligibility: MemoryVectorEligibility;
+    status: MemoryVectorResultStatus;
+  }
+): Promise<boolean> {
+  if (input.expectedEligibility === "eligible" && input.status === "deleted") {
+    throw new Error("eligible_memory_cannot_be_marked_vector_deleted");
+  }
+  if (input.expectedEligibility === "ineligible" && input.status === "synced") {
+    throw new Error("ineligible_memory_cannot_be_marked_vector_synced");
+  }
+
+  const eligibility = fiveAxisMemoryEligibilityPredicate("memory");
+  const eligibilityGuard = input.expectedEligibility === "eligible"
+    ? eligibility.sql
+    : `NOT (${eligibility.sql})`;
+  const result = await db.prepare(
+    `UPDATE memories AS memory
+     SET vector_sync_status = ?, vector_synced = ?, updated_at = ?
+     WHERE memory.namespace = ? AND memory.id = ?
+       AND memory.five_axis_revision = ?
+       AND (${eligibilityGuard})`
+  ).bind(
+    input.status,
+    input.status === "synced" ? 1 : 0,
+    nowIso(),
+    input.namespace,
+    input.id,
+    input.expectedRevision,
+    ...eligibility.binds
+  ).run();
+  return (result.meta.changes ?? 0) === 1;
+}
+
 export async function listGuidanceSeedMemories(
   db: D1Database,
   input: { namespace: string; limit: number }
@@ -445,6 +501,7 @@ export function prepareMemoryUpdate(
 
   if (input.markVectorUnsynced) {
     set("vector_synced", 0);
+    if (input.patch.vectorSyncStatus === undefined) set("vector_sync_status", "pending");
   }
 
   set("updated_at", input.now ?? nowIso());
@@ -483,13 +540,15 @@ export async function updateMemory(
     requireUnpinned?: boolean;
   }
 ): Promise<MemoryRecord | null> {
-  const statement = prepareMemoryUpdate(db, input);
+  const statement = prepareMemoryUpdate(db, {
+    ...input,
+    markVectorUnsynced: input.patch.vectorSyncStatus === undefined
+  });
   if (!statement) return getMemoryById(db, input);
 
   const result = await statement.run();
 
   if ((result.meta.changes ?? 0) === 0) return null;
-  if (input.patch.vectorSyncStatus === undefined) await markMemoryVectorUnsynced(db, input);
   return getMemoryById(db, input);
 }
 

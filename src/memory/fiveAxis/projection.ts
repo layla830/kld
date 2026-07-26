@@ -14,8 +14,9 @@ import type { Env, MemoryRecord } from "../../types";
 import { needsCoordinateBackfill, runCoordinateBackfill, type CoordinateBackfillResult } from "../coordinateBackfill";
 import { scanFactTransitionReviewCandidates } from "../factTransitionReview";
 import { scanMetabolismReviewCandidates } from "../metabolismReview";
-import { syncMemoryVector } from "../state";
+import { reconcileMemoryVector } from "../state";
 import { queueTimelineCandidateForMemory, type TimelineMemoryProjectionResult } from "../timelineBackfill";
+import { isFiveAxisMemoryEligible } from "./eligibility";
 import { runRelationBuild } from "./yRelations";
 
 export interface MemoryFiveAxisProjectionInput {
@@ -67,7 +68,10 @@ export interface MemoryFiveAxisProjectionDependencies {
   getMemory: (env: Env, namespace: string, id: string) => Promise<MemoryRecord | null>;
   projectTimeline: typeof queueTimelineCandidateForMemory;
   projectCoordinates: (env: Env, memory: MemoryRecord) => Promise<CoordinateProjectionResult>;
-  syncVector: typeof syncMemoryVector;
+  syncVector: (
+    env: Env,
+    input: { namespace: string; memoryId: string }
+  ) => Promise<unknown>;
   projectRelations: typeof runRelationBuild;
   projectFacts: typeof scanFactTransitionReviewCandidates;
   projectMetabolism: typeof scanMetabolismReviewCandidates;
@@ -102,7 +106,7 @@ const defaultDependencies: MemoryFiveAxisProjectionDependencies = {
       offset: 0
     }, labelCoordinateBatch);
   },
-  syncVector: syncMemoryVector,
+  syncVector: reconcileMemoryVector,
   projectRelations: runRelationBuild,
   projectFacts: scanFactTransitionReviewCandidates,
   projectMetabolism: scanMetabolismReviewCandidates,
@@ -197,8 +201,10 @@ export async function projectMemoryIntoFiveAxes(
     ...dependencyOverrides
   };
   const initial = await dependencies.getMemory(env, input.namespace, input.memoryId);
-  if (!initial || initial.status !== "active") return null;
-  const memoryRevision = input.memoryRevision ?? initial.five_axis_revision ?? 1;
+  if (!initial || !isFiveAxisMemoryEligible(initial)) return null;
+  const initialRevision = initial.five_axis_revision ?? 1;
+  const memoryRevision = input.memoryRevision ?? initialRevision;
+  if (memoryRevision !== initialRevision) return null;
   const store = dependencies.axisRuns;
 
   const e = await runAxisStage(
@@ -212,7 +218,10 @@ export async function projectMemoryIntoFiveAxes(
       const result = await dependencies.projectCoordinates(env, initial);
       if (!("skipped" in result) && result.applied > 0) {
         const updated = await dependencies.getMemory(env, input.namespace, input.memoryId) ?? initial;
-        await dependencies.syncVector(env, updated);
+        await dependencies.syncVector(env, {
+          namespace: updated.namespace,
+          memoryId: updated.id
+        });
       }
       return result;
     },
@@ -227,7 +236,6 @@ export async function projectMemoryIntoFiveAxes(
     : await dependencies.getMemory(env, input.namespace, input.memoryId) ?? initial;
 
   const currentRevision = current.five_axis_revision ?? 1;
-  const initialRevision = initial.five_axis_revision ?? 1;
   if (!eBlocksX && currentRevision !== initialRevision) {
     const superseded = { status: "superseded", reused: false, error: `superseded_by_revision:${currentRevision}` } as const;
     return {
