@@ -8,7 +8,7 @@ export const AUDIT_PENDING_CANDIDATE_STATUSES = Object.freeze([
   "deferred_relation"
 ]);
 
-function sqlString(value) {
+export function sqlString(value) {
   return `'${String(value).replaceAll("'", "''")}'`;
 }
 
@@ -24,6 +24,10 @@ export function inactiveMemoryPredicate(alias) {
   )`;
 }
 
+export function excludedMemoryTypePredicate(alias) {
+  return `LOWER(TRIM(${alias}.type)) IN (${sqlList(EXCLUDED_FIVE_AXIS_MEMORY_TYPES)})`;
+}
+
 export function buildInactiveFiveAxisAuditQueries(input) {
   const namespace = sqlString(input.namespace);
   const staleHours = Math.min(Math.max(Math.floor(input.staleHours ?? 24), 1), 24 * 365);
@@ -32,10 +36,21 @@ export function buildInactiveFiveAxisAuditQueries(input) {
   return [
     {
       name: "relations",
-      driftFields: ["relations_as_source", "relations_as_target", "distinct_memories"],
+      driftFields: ["relation_rows"],
       sql: `SELECT
-        SUM(CASE WHEN ${inactive("source_memory")} THEN 1 ELSE 0 END) AS relations_as_source,
-        SUM(CASE WHEN ${inactive("target_memory")} THEN 1 ELSE 0 END) AS relations_as_target,
+        COUNT(*) AS relation_rows,
+        COALESCE(SUM(CASE
+          WHEN ${inactive("source_memory")} AND ${inactive("target_memory")}
+          THEN 1 ELSE 0 END
+        ), 0) AS both_endpoints_ineligible,
+        COALESCE(SUM(CASE
+          WHEN ${inactive("source_memory")} AND NOT (${inactive("target_memory")})
+          THEN 1 ELSE 0 END
+        ), 0) AS source_only_ineligible,
+        COALESCE(SUM(CASE
+          WHEN NOT (${inactive("source_memory")}) AND ${inactive("target_memory")}
+          THEN 1 ELSE 0 END
+        ), 0) AS target_only_ineligible,
         (
           SELECT COUNT(*) FROM (
             SELECT relation.source_memory_id AS memory_id
@@ -65,7 +80,7 @@ export function buildInactiveFiveAxisAuditQueries(input) {
     },
     {
       name: "timeline",
-      driftFields: ["membership_rows", "diary_membership_rows", "distinct_memories"],
+      driftFields: ["membership_rows", "diary_drift_rows"],
       sql: `SELECT
         (
           SELECT COUNT(*)
@@ -78,59 +93,66 @@ export function buildInactiveFiveAxisAuditQueries(input) {
         (
           SELECT COUNT(*)
           FROM memory_diary_timeline_memberships AS membership
+          LEFT JOIN memories AS member
+            ON member.namespace = membership.namespace
+           AND member.id = membership.memory_id
+          LEFT JOIN memories AS origin
+            ON origin.namespace = membership.namespace
+           AND origin.id = membership.origin_diary_id
+          LEFT JOIN memories AS day
+            ON day.namespace = membership.namespace
+           AND day.id = membership.day_memory_id
           WHERE membership.namespace = ${namespace}
             AND (
-              EXISTS (
-                SELECT 1 FROM memories AS memory
-                WHERE memory.namespace = membership.namespace
-                  AND memory.id = membership.memory_id
-                  AND ${inactive("memory")}
-              )
-              OR EXISTS (
-                SELECT 1 FROM memories AS memory
-                WHERE memory.namespace = membership.namespace
-                  AND memory.id = membership.origin_diary_id
-                  AND ${inactive("memory")}
-              )
-              OR EXISTS (
-                SELECT 1 FROM memories AS memory
-                WHERE memory.namespace = membership.namespace
-                  AND memory.id = membership.day_memory_id
-                  AND ${inactive("memory")}
-              )
+              member.id IS NULL OR ${inactive("member")}
+              OR day.id IS NULL OR ${inactive("day")}
+              OR origin.id IS NULL OR NOT (${excludedMemoryTypePredicate("origin")})
             )
-        ) AS diary_membership_rows,
+        ) AS diary_drift_rows,
         (
-          SELECT COUNT(*) FROM (
-            SELECT membership.memory_id
-            FROM memory_timeline_memberships AS membership
-            JOIN memories AS memory
-              ON memory.namespace = membership.namespace
-             AND memory.id = membership.memory_id
-            WHERE membership.namespace = ${namespace} AND ${inactive("memory")}
-            UNION
-            SELECT membership.memory_id
-            FROM memory_diary_timeline_memberships AS membership
-            JOIN memories AS memory
-              ON memory.namespace = membership.namespace
-             AND memory.id = membership.memory_id
-            WHERE membership.namespace = ${namespace} AND ${inactive("memory")}
-            UNION
-            SELECT membership.origin_diary_id
-            FROM memory_diary_timeline_memberships AS membership
-            JOIN memories AS memory
-              ON memory.namespace = membership.namespace
-             AND memory.id = membership.origin_diary_id
-            WHERE membership.namespace = ${namespace} AND ${inactive("memory")}
-            UNION
-            SELECT membership.day_memory_id
-            FROM memory_diary_timeline_memberships AS membership
-            JOIN memories AS memory
-              ON memory.namespace = membership.namespace
-             AND memory.id = membership.day_memory_id
-            WHERE membership.namespace = ${namespace} AND ${inactive("memory")}
-          )
-        ) AS distinct_memories`
+          SELECT COUNT(*)
+          FROM memory_diary_timeline_memberships AS membership
+          LEFT JOIN memories AS member
+            ON member.namespace = membership.namespace
+           AND member.id = membership.memory_id
+          WHERE membership.namespace = ${namespace}
+            AND (member.id IS NULL OR ${inactive("member")})
+        ) AS diary_member_drift_rows,
+        (
+          SELECT COUNT(*)
+          FROM memory_diary_timeline_memberships AS membership
+          LEFT JOIN memories AS day
+            ON day.namespace = membership.namespace
+           AND day.id = membership.day_memory_id
+          WHERE membership.namespace = ${namespace}
+            AND (day.id IS NULL OR ${inactive("day")})
+        ) AS diary_day_drift_rows,
+        (
+          SELECT COUNT(*)
+          FROM memory_diary_timeline_memberships AS membership
+          LEFT JOIN memories AS origin
+            ON origin.namespace = membership.namespace
+           AND origin.id = membership.origin_diary_id
+          WHERE membership.namespace = ${namespace}
+            AND (origin.id IS NULL OR NOT (${excludedMemoryTypePredicate("origin")}))
+        ) AS invalid_origin_diary_rows,
+        (
+          SELECT COUNT(*)
+          FROM memory_diary_timeline_memberships AS membership
+          JOIN memories AS member
+            ON member.namespace = membership.namespace
+           AND member.id = membership.memory_id
+          JOIN memories AS origin
+            ON origin.namespace = membership.namespace
+           AND origin.id = membership.origin_diary_id
+          JOIN memories AS day
+            ON day.namespace = membership.namespace
+           AND day.id = membership.day_memory_id
+          WHERE membership.namespace = ${namespace}
+            AND ${excludedMemoryTypePredicate("origin")}
+            AND NOT (${inactive("member")})
+            AND NOT (${inactive("day")})
+        ) AS origin_diary_provenance_rows`
     },
     {
       name: "outbox",
@@ -148,23 +170,37 @@ export function buildInactiveFiveAxisAuditQueries(input) {
     },
     {
       name: "axis_runs",
-      driftFields: ["ineligible_non_terminal", "active_leases", "revision_mismatches"],
+      driftFields: ["ineligible_non_terminal", "stale_revision_runs", "future_revision_anomalies"],
       sql: `SELECT
-        SUM(CASE
+        COALESCE(SUM(CASE
           WHEN run.status IN (${sqlList(AUDIT_NON_TERMINAL_RUN_STATUSES)})
            AND ${inactive("memory")}
           THEN 1 ELSE 0 END
-        ) AS ineligible_non_terminal,
-        SUM(CASE
-          WHEN (run.claim_token IS NOT NULL OR run.lease_expires_at IS NOT NULL)
-           AND ${inactive("memory")}
+        ), 0) AS ineligible_non_terminal,
+        COALESCE(SUM(CASE
+          WHEN run.status = 'running'
+           AND run.lease_expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
           THEN 1 ELSE 0 END
-        ) AS active_leases,
-        SUM(CASE
+        ), 0) AS active_leases,
+        COALESCE(SUM(CASE
           WHEN run.status IN (${sqlList(AUDIT_NON_TERMINAL_RUN_STATUSES)})
-           AND run.memory_revision != memory.five_axis_revision
+           AND run.memory_revision < memory.five_axis_revision
           THEN 1 ELSE 0 END
-        ) AS revision_mismatches
+        ), 0) AS stale_revision_runs,
+        COALESCE(SUM(CASE
+          WHEN run.status IN (${sqlList(AUDIT_NON_TERMINAL_RUN_STATUSES)})
+           AND run.memory_revision > memory.five_axis_revision
+          THEN 1 ELSE 0 END
+        ), 0) AS future_revision_anomalies,
+        COALESCE(SUM(CASE
+          WHEN run.status = 'running'
+           AND run.memory_revision < memory.five_axis_revision
+           AND (
+             run.lease_expires_at IS NULL
+             OR run.lease_expires_at <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+           )
+          THEN 1 ELSE 0 END
+        ), 0) AS expired_stale_running
       FROM memory_five_axis_runs AS run
       JOIN memories AS memory
         ON memory.namespace = run.namespace
@@ -199,33 +235,33 @@ export function buildInactiveFiveAxisAuditQueries(input) {
         "stale_pending_or_failed"
       ],
       sql: `SELECT
-        SUM(CASE
+        COALESCE(SUM(CASE
           WHEN NOT (${inactive("memory")}) AND memory.vector_sync_status = 'deleted'
           THEN 1 ELSE 0 END
-        ) AS eligible_marked_deleted,
-        SUM(CASE
+        ), 0) AS eligible_marked_deleted,
+        COALESCE(SUM(CASE
           WHEN NOT (${inactive("memory")})
            AND memory.vector_synced = 0
            AND COALESCE(memory.vector_sync_status, '') NOT IN ('pending', 'failed')
           THEN 1 ELSE 0 END
-        ) AS eligible_invalid_unsynced_state,
-        SUM(CASE
+        ), 0) AS eligible_invalid_unsynced_state,
+        COALESCE(SUM(CASE
           WHEN ${inactive("memory")} AND memory.vector_sync_status = 'synced'
           THEN 1 ELSE 0 END
-        ) AS ineligible_marked_synced,
-        SUM(CASE
+        ), 0) AS ineligible_marked_synced,
+        COALESCE(SUM(CASE
           WHEN ${inactive("memory")} AND memory.vector_synced != 0
           THEN 1 ELSE 0 END
-        ) AS ineligible_vector_synced,
-        SUM(CASE
+        ), 0) AS ineligible_vector_synced,
+        COALESCE(SUM(CASE
           WHEN memory.vector_sync_status = 'failed'
           THEN 1 ELSE 0 END
-        ) AS failed_vector_states,
-        SUM(CASE
+        ), 0) AS failed_vector_states,
+        COALESCE(SUM(CASE
           WHEN memory.vector_sync_status IN ('pending', 'failed')
            AND julianday(memory.updated_at) < julianday('now', '-${staleHours} hours')
           THEN 1 ELSE 0 END
-        ) AS stale_pending_or_failed
+        ), 0) AS stale_pending_or_failed
       FROM memories AS memory
       WHERE memory.namespace = ${namespace}`
     },
@@ -238,20 +274,20 @@ export function buildInactiveFiveAxisAuditQueries(input) {
         "duplicate_successes"
       ],
       sql: `SELECT
-        SUM(CASE WHEN operation.completed_at IS NULL THEN 1 ELSE 0 END) AS unfinished,
-        SUM(CASE
+        COALESCE(SUM(CASE WHEN operation.completed_at IS NULL THEN 1 ELSE 0 END), 0) AS unfinished,
+        COALESCE(SUM(CASE
           WHEN operation.completed_at IS NOT NULL AND operation.invariants_verified != 1
           THEN 1 ELSE 0 END
-        ) AS invalid_completed,
-        SUM(CASE
+        ), 0) AS invalid_completed,
+        COALESCE(SUM(CASE
           WHEN operation.current_revision > memory.five_axis_revision
             OR (
               operation.current_revision = memory.five_axis_revision
               AND NOT (${inactive("memory")})
             )
           THEN 1 ELSE 0 END
-        ) AS revision_anomalies,
-        (
+        ), 0) AS revision_anomalies,
+        COALESCE((
           SELECT COUNT(*) FROM (
             SELECT namespace, memory_id, current_revision
             FROM memory_deprojections
@@ -261,7 +297,7 @@ export function buildInactiveFiveAxisAuditQueries(input) {
             GROUP BY namespace, memory_id, current_revision
             HAVING COUNT(*) > 1
           )
-        ) AS duplicate_successes
+        ), 0) AS duplicate_successes
       FROM memory_deprojections AS operation
       JOIN memories AS memory
         ON memory.namespace = operation.namespace

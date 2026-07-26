@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -86,6 +85,10 @@ function executeReadOnlyQuery(args, query) {
   ], {
     cwd: process.cwd(),
     encoding: "utf8",
+    env: {
+      ...process.env,
+      WRANGLER_LOG_PATH: path.join(process.cwd(), ".wrangler", "inactive-five-axis-audit.log")
+    },
     stdio: ["ignore", "pipe", "pipe"]
   });
   if (result.status !== 0) {

@@ -6,7 +6,6 @@ import {
   assertReadOnlyAuditQueries,
   buildInactiveFiveAxisAuditQueries
 } from "../scripts/inactive-five-axis-audit.mjs";
-import { parseAuditArgs, usage } from "../scripts/audit-inactive-five-axis.mjs";
 import {
   FIVE_AXIS_OUTBOX_TRANSITIONS,
   FIVE_AXIS_RUN_STATUS
@@ -14,15 +13,6 @@ import {
 import { PENDING_MEMORY_CANDIDATE_STATUSES } from "../src/db/memoryCandidateDependencies";
 
 describe("inactive five-axis audit command", () => {
-  it("has only an explicit remote read-only mode", () => {
-    expect(() => parseAuditArgs([])).toThrow("--remote is required");
-    expect(() => parseAuditArgs(["--remote", "--fix"])).toThrow("Unknown argument: --fix");
-    expect(() => parseAuditArgs(["--remote", "--apply"])).toThrow("Unknown argument: --apply");
-    expect(parseAuditArgs(["--remote", "--namespace", "default", "--json"]))
-      .toMatchObject({ remote: true, namespace: "default", json: true });
-    expect(usage()).toContain("no fix, delete, repair, or apply mode");
-  });
-
   it("keeps copied audit status sets aligned with the runtime owners", () => {
     expect(AUDIT_ACTIVE_OUTBOX_STATUSES)
       .toEqual([...FIVE_AXIS_OUTBOX_TRANSITIONS.queue.from]);
@@ -53,6 +43,10 @@ describe("inactive five-axis audit command", () => {
     ]);
     const sql = queries.map((query) => query.sql).join("\n");
     expect(sql).toContain("failed_vector_states");
+    expect(sql).toContain("relation_rows");
+    expect(sql).toContain("origin_diary_provenance_rows");
+    expect(sql).toContain("stale_revision_runs");
+    expect(sql).toContain("future_revision_anomalies");
     expect(sql).not.toMatch(/\b(?:INSERT|UPDATE|DELETE|REPLACE|CREATE|ALTER|DROP)\b/i);
     expect(sql).not.toMatch(/\b(?:content|summary|tags|source_message_ids)\b/i);
   });

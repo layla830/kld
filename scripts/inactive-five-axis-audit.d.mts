@@ -7,7 +7,9 @@ export interface AuditQuery {
 export const AUDIT_ACTIVE_OUTBOX_STATUSES: readonly string[];
 export const AUDIT_NON_TERMINAL_RUN_STATUSES: readonly string[];
 export const AUDIT_PENDING_CANDIDATE_STATUSES: readonly string[];
+export function sqlString(value: unknown): string;
 export function inactiveMemoryPredicate(alias: string): string;
+export function excludedMemoryTypePredicate(alias: string): string;
 export function buildInactiveFiveAxisAuditQueries(input: {
   namespace: string;
   staleHours?: number;
