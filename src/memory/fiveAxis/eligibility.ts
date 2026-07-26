@@ -1,11 +1,15 @@
 import type { MemoryRecord } from "../../types";
-import { EXCLUDED_FIVE_AXIS_MEMORY_TYPES } from "./eligibilityContract.js";
+import {
+  EXCLUDED_FIVE_AXIS_MEMORY_TYPES,
+  fiveAxisMemoryEligibilityPredicate
+} from "./eligibilityContract.js";
 
-export { EXCLUDED_FIVE_AXIS_MEMORY_TYPES };
+export {
+  EXCLUDED_FIVE_AXIS_MEMORY_TYPES,
+  fiveAxisMemoryEligibilityPredicate
+};
 
 const EXCLUDED_FIVE_AXIS_MEMORY_TYPE_SET = new Set<string>(EXCLUDED_FIVE_AXIS_MEMORY_TYPES);
-
-type EligibilitySqlAlias = "memory" | "source_memory" | "target_memory";
 
 export type MemoryEligibilityTransition =
   | "eligible_to_eligible"
@@ -56,16 +60,4 @@ export function isFiveAxisMemoryEligible(
   return memory.status === "active"
     && memory.active_fact !== 0
     && isFiveAxisMemoryTypeEligible(memory.type);
-}
-
-export function fiveAxisMemoryEligibilityPredicate(
-  alias: EligibilitySqlAlias
-): { sql: string; binds: unknown[] } {
-  const placeholders = EXCLUDED_FIVE_AXIS_MEMORY_TYPES.map(() => "?").join(", ");
-  return {
-    sql: `${alias}.status = 'active'
-      AND ${alias}.active_fact != 0
-      AND LOWER(TRIM(${alias}.type)) NOT IN (${placeholders})`,
-    binds: [...EXCLUDED_FIVE_AXIS_MEMORY_TYPES]
-  };
 }

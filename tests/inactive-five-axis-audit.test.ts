@@ -44,8 +44,16 @@ describe("inactive five-axis audit command", () => {
       "vector_state",
       "deprojection_operations"
     ]);
+    expect(queries.find((query) => query.name === "vector_state")?.driftFields)
+      .toEqual(["vector_drift_rows"]);
     const sql = queries.map((query) => query.sql).join("\n");
     expect(sql).toContain("failed_vector_states");
+    expect(sql).toContain("vector_drift_rows");
+    expect(sql).toContain("unique_vector_drift_memories");
+    expect(sql).toContain("needs_upsert");
+    expect(sql).toContain("needs_delete");
+    expect(sql).toContain("missing_vector_id_rows");
+    expect(sql).toContain("scanner_managed_rows");
     expect(sql).toContain("relation_rows");
     expect(sql).toContain("origin_diary_provenance_rows");
     expect(sql).toContain("axis_run_drift_rows");

@@ -72,6 +72,8 @@ const memoryFiveAxisOutbox = fs.readFileSync("src/db/memoryFiveAxisOutbox.ts", "
 const memoryFiveAxisRuns = fs.readFileSync("src/db/memoryFiveAxisRuns.ts", "utf8");
 const inactiveFiveAxisAudit = fs.readFileSync("scripts/inactive-five-axis-audit.mjs", "utf8");
 const inactiveFiveAxisAuditCli = fs.readFileSync("scripts/audit-inactive-five-axis.mjs", "utf8");
+const inactiveVectorRepair = fs.readFileSync("scripts/inactive-vector-repair.mjs", "utf8");
+const inactiveVectorRepairCli = fs.readFileSync("scripts/repair-inactive-vector-state.mjs", "utf8");
 const memoryDeprojection = fs.readFileSync("src/memory/deprojection.ts", "utf8");
 const legacyRelations = fs.readFileSync("src/memory/legacyRelations.ts", "utf8");
 const diarySplit = fs.readFileSync("src/memory/diarySplit.ts", "utf8");
@@ -476,6 +478,18 @@ const checks = [
       !inactiveFiveAxisAuditCli.includes('arg === "--repair"') &&
       !inactiveFiveAxisAuditCli.includes('arg === "--apply"') &&
       inactiveFiveAxisAudit.includes("buildInactiveFiveAxisAuditQueries"),
+  ],
+  [
+    "Inactive Vector repair: bounded requeue leaves reconciliation to the scanner",
+    inactiveVectorRepairCli.includes("--remote is required") &&
+      inactiveVectorRepairCli.includes("--apply requires --confirm") &&
+      !inactiveVectorRepairCli.includes('arg === "--cohort"') &&
+      !inactiveVectorRepairCli.includes("reconcileMemoryVector") &&
+      inactiveVectorRepair.includes("vector_sync_status = 'pending'") &&
+      inactiveVectorRepair.includes("vector_synced = 0") &&
+      !inactiveVectorRepair.includes("VECTORIZE") &&
+      !inactiveVectorRepair.includes("memory_relations") &&
+      !inactiveVectorRepair.includes("memory_five_axis_runs"),
   ],
   [
     "Coordinate backfill: scheduled use case is not duplicated in Queue",

@@ -203,6 +203,10 @@ describe("read-only inactive five-axis audit", () => {
       count: 1
     });
     expect(report.sections.vector_state[0]).toMatchObject({
+      needs_upsert: 0,
+      needs_delete: 1,
+      unique_vector_drift_memories: 1,
+      vector_drift_rows: 3,
       eligible_marked_deleted: 1,
       ineligible_marked_synced: 1,
       ineligible_vector_synced: 1,
