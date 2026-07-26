@@ -7,6 +7,11 @@ export const AUDIT_PENDING_CANDIDATE_STATUSES = Object.freeze([
   "needs_subject_review",
   "deferred_relation"
 ]);
+export const ORIGINAL_DIARY_MEMORY_TYPES = Object.freeze([
+  "diary",
+  "layla_diary",
+  "auto_diary"
+]);
 
 export function sqlString(value) {
   return `'${String(value).replaceAll("'", "''")}'`;
@@ -24,8 +29,8 @@ export function inactiveMemoryPredicate(alias) {
   )`;
 }
 
-export function excludedMemoryTypePredicate(alias) {
-  return `LOWER(TRIM(${alias}.type)) IN (${sqlList(EXCLUDED_FIVE_AXIS_MEMORY_TYPES)})`;
+export function originalDiaryTypePredicate(alias) {
+  return `LOWER(TRIM(${alias}.type)) IN (${sqlList(ORIGINAL_DIARY_MEMORY_TYPES)})`;
 }
 
 export function buildInactiveFiveAxisAuditQueries(input) {
@@ -106,7 +111,7 @@ export function buildInactiveFiveAxisAuditQueries(input) {
             AND (
               member.id IS NULL OR ${inactive("member")}
               OR day.id IS NULL OR ${inactive("day")}
-              OR origin.id IS NULL OR NOT (${excludedMemoryTypePredicate("origin")})
+              OR origin.id IS NULL OR NOT (${originalDiaryTypePredicate("origin")})
             )
         ) AS diary_drift_rows,
         (
@@ -134,7 +139,7 @@ export function buildInactiveFiveAxisAuditQueries(input) {
             ON origin.namespace = membership.namespace
            AND origin.id = membership.origin_diary_id
           WHERE membership.namespace = ${namespace}
-            AND (origin.id IS NULL OR NOT (${excludedMemoryTypePredicate("origin")}))
+            AND (origin.id IS NULL OR NOT (${originalDiaryTypePredicate("origin")}))
         ) AS invalid_origin_diary_rows,
         (
           SELECT COUNT(*)
@@ -149,7 +154,7 @@ export function buildInactiveFiveAxisAuditQueries(input) {
             ON day.namespace = membership.namespace
            AND day.id = membership.day_memory_id
           WHERE membership.namespace = ${namespace}
-            AND ${excludedMemoryTypePredicate("origin")}
+            AND ${originalDiaryTypePredicate("origin")}
             AND NOT (${inactive("member")})
             AND NOT (${inactive("day")})
         ) AS origin_diary_provenance_rows`
@@ -170,7 +175,12 @@ export function buildInactiveFiveAxisAuditQueries(input) {
     },
     {
       name: "axis_runs",
-      driftFields: ["ineligible_non_terminal", "stale_revision_runs", "future_revision_anomalies"],
+      driftFields: [
+        "ineligible_non_terminal",
+        "stale_revision_runs",
+        "future_revision_anomalies",
+        "ownership_anomalies"
+      ],
       sql: `SELECT
         COALESCE(SUM(CASE
           WHEN run.status IN (${sqlList(AUDIT_NON_TERMINAL_RUN_STATUSES)})
@@ -179,6 +189,8 @@ export function buildInactiveFiveAxisAuditQueries(input) {
         ), 0) AS ineligible_non_terminal,
         COALESCE(SUM(CASE
           WHEN run.status = 'running'
+           AND run.claim_token IS NOT NULL
+           AND run.lease_expires_at IS NOT NULL
            AND run.lease_expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
           THEN 1 ELSE 0 END
         ), 0) AS active_leases,
@@ -195,12 +207,37 @@ export function buildInactiveFiveAxisAuditQueries(input) {
         COALESCE(SUM(CASE
           WHEN run.status = 'running'
            AND run.memory_revision < memory.five_axis_revision
-           AND (
-             run.lease_expires_at IS NULL
-             OR run.lease_expires_at <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-           )
+           AND run.claim_token IS NOT NULL
+           AND run.lease_expires_at IS NOT NULL
+           AND run.lease_expires_at <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
           THEN 1 ELSE 0 END
-        ), 0) AS expired_stale_running
+        ), 0) AS expired_stale_running,
+        COALESCE(SUM(CASE
+          WHEN (
+            run.status = 'running'
+            AND (run.claim_token IS NULL OR run.lease_expires_at IS NULL)
+          ) OR (
+            run.status != 'running'
+            AND (run.claim_token IS NOT NULL OR run.lease_expires_at IS NOT NULL)
+          )
+          THEN 1 ELSE 0 END
+        ), 0) AS ownership_anomalies,
+        COALESCE(SUM(CASE
+          WHEN run.status = 'running' AND run.claim_token IS NULL
+          THEN 1 ELSE 0 END
+        ), 0) AS running_missing_claim_token,
+        COALESCE(SUM(CASE
+          WHEN run.status = 'running' AND run.lease_expires_at IS NULL
+          THEN 1 ELSE 0 END
+        ), 0) AS running_missing_lease,
+        COALESCE(SUM(CASE
+          WHEN run.status != 'running' AND run.claim_token IS NOT NULL
+          THEN 1 ELSE 0 END
+        ), 0) AS non_running_claim_token_residue,
+        COALESCE(SUM(CASE
+          WHEN run.status != 'running' AND run.lease_expires_at IS NOT NULL
+          THEN 1 ELSE 0 END
+        ), 0) AS non_running_lease_residue
       FROM memory_five_axis_runs AS run
       JOIN memories AS memory
         ON memory.namespace = run.namespace

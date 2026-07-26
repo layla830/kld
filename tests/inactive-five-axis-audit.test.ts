@@ -3,6 +3,7 @@ import {
   AUDIT_ACTIVE_OUTBOX_STATUSES,
   AUDIT_NON_TERMINAL_RUN_STATUSES,
   AUDIT_PENDING_CANDIDATE_STATUSES,
+  ORIGINAL_DIARY_MEMORY_TYPES,
   assertReadOnlyAuditQueries,
   buildInactiveFiveAxisAuditQueries
 } from "../scripts/inactive-five-axis-audit.mjs";
@@ -24,6 +25,8 @@ describe("inactive five-axis audit command", () => {
       ]);
     expect(AUDIT_PENDING_CANDIDATE_STATUSES)
       .toEqual([...PENDING_MEMORY_CANDIDATE_STATUSES]);
+    expect(ORIGINAL_DIARY_MEMORY_TYPES)
+      .toEqual(["diary", "layla_diary", "auto_diary"]);
   });
 
   it("builds SELECT-only queries without private memory fields", () => {
@@ -47,6 +50,9 @@ describe("inactive five-axis audit command", () => {
     expect(sql).toContain("origin_diary_provenance_rows");
     expect(sql).toContain("stale_revision_runs");
     expect(sql).toContain("future_revision_anomalies");
+    expect(sql).toContain("ownership_anomalies");
+    expect(sql).toContain("running_missing_claim_token");
+    expect(sql).toContain("non_running_lease_residue");
     expect(sql).not.toMatch(/\b(?:INSERT|UPDATE|DELETE|REPLACE|CREATE|ALTER|DROP)\b/i);
     expect(sql).not.toMatch(/\b(?:content|summary|tags|source_message_ids)\b/i);
   });

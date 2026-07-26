@@ -244,6 +244,12 @@ describe("read-only inactive five-axis audit", () => {
       content: "not an origin diary",
       status: "active"
     });
+    const dreamReviewOrigin = await createMemory(env.DB, {
+      namespace,
+      type: "dream_review",
+      content: "review proposal, not an origin diary",
+      status: "active"
+    });
     const day = await createMemory(env.DB, {
       namespace,
       type: "timeline_day",
@@ -268,6 +274,12 @@ describe("read-only inactive five-axis audit", () => {
       content: "wrong origin member",
       status: "active"
     });
+    const dreamReviewOriginMember = await createMemory(env.DB, {
+      namespace,
+      type: "timeline_item",
+      content: "dream review origin member",
+      status: "active"
+    });
     const ineligibleMember = await createMemory(env.DB, {
       namespace,
       type: "diary",
@@ -283,6 +295,7 @@ describe("read-only inactive five-axis audit", () => {
     await env.DB.batch([
       [cleanMember.id, origin.id, day.id],
       [wrongOriginMember.id, wrongOrigin.id, day.id],
+      [dreamReviewOriginMember.id, dreamReviewOrigin.id, day.id],
       [ineligibleMember.id, origin.id, day.id],
       [badDayMember.id, origin.id, ineligibleDay.id]
     ].map(([memoryId, originDiaryId, dayMemoryId]) => env.DB.prepare(
@@ -295,10 +308,10 @@ describe("read-only inactive five-axis audit", () => {
     const report = await runAudit(namespace);
     expect(report.sections.timeline[0]).toMatchObject({
       membership_rows: 0,
-      diary_drift_rows: 3,
+      diary_drift_rows: 4,
       diary_member_drift_rows: 1,
       diary_day_drift_rows: 1,
-      invalid_origin_diary_rows: 1,
+      invalid_origin_diary_rows: 2,
       origin_diary_provenance_rows: 1
     });
   });
@@ -309,7 +322,7 @@ async function executeRepairQuery(query: { sql: string }) {
 }
 
 describe("bounded inactive five-axis D1 repair", () => {
-  it("deletes only unlinked inactive-endpoint relations and is idempotent", async () => {
+  it("deletes every selected inactive-endpoint relation and is idempotent", async () => {
     const namespace = `inactive-repair-relations-${crypto.randomUUID()}`;
     const now = new Date().toISOString();
     const eligible = await createMemory(env.DB, {
@@ -324,31 +337,21 @@ describe("bounded inactive five-axis D1 repair", () => {
       content: "ineligible relation endpoint",
       status: "active"
     });
-    const removableId = `rel_${crypto.randomUUID()}`;
-    const linkedId = `rel_${crypto.randomUUID()}`;
-    const candidateId = `candidate_${crypto.randomUUID()}`;
-    const candidateKey = `repair-linked:${crypto.randomUUID()}`;
+    const firstId = `rel_${crypto.randomUUID()}`;
+    const secondId = `rel_${crypto.randomUUID()}`;
     await env.DB.batch([
       env.DB.prepare(
         `INSERT INTO memory_relations (
            id, namespace, source_memory_id, target_memory_id,
            relation_type, strength, reason, created_at
          ) VALUES (?, ?, ?, ?, 'same_topic', 0.8, 'historical derived edge', ?)`
-      ).bind(removableId, namespace, ineligible.id, eligible.id, now),
+      ).bind(firstId, namespace, ineligible.id, eligible.id, now),
       env.DB.prepare(
         `INSERT INTO memory_relations (
            id, namespace, source_memory_id, target_memory_id,
            relation_type, strength, reason, created_at
          ) VALUES (?, ?, ?, ?, 'supports', 0.8, 'reviewed edge', ?)`
-      ).bind(linkedId, namespace, ineligible.id, eligible.id, now),
-      env.DB.prepare(
-        `INSERT INTO memory_candidates (
-           id, namespace, external_key, dream_date, action, subject, target_id,
-           payload_json, source_chunk_ids_json, source_chunks_json,
-           status, result_memory_id, created_at, updated_at
-         ) VALUES (?, ?, ?, '2026-07-26', 'y_relation_review', NULL, NULL,
-           '{}', '[]', '[]', 'approved', ?, ?, ?)`
-      ).bind(candidateId, namespace, candidateKey, linkedId, now, now)
+      ).bind(secondId, namespace, ineligible.id, eligible.id, now)
     ]);
 
     const dryRun = buildRepairDryRunQuery({ namespace, cohort: "relations", limit: 100 });
@@ -356,9 +359,8 @@ describe("bounded inactive five-axis D1 repair", () => {
     await expect(executeRepairQuery(dryRun)).resolves.toMatchObject({
       results: [{
         relation_rows: 2,
-        candidate_linked_rows: 1,
-        repairable_rows: 1,
-        selected: 1,
+        repairable_rows: 2,
+        selected: 2,
         has_more: 0
       }]
     });
@@ -366,20 +368,20 @@ describe("bounded inactive five-axis D1 repair", () => {
     const applied = await executeRepairQuery(
       buildRepairApplyQuery({ namespace, cohort: "relations", limit: 100 })
     );
-    expect(applied.results).toHaveLength(1);
-    expect(applied.meta.changes).toBe(1);
+    expect(applied.results).toHaveLength(2);
+    expect(applied.meta.changes).toBe(2);
     await expect(env.DB.prepare(
       "SELECT id FROM memory_relations WHERE namespace = ? AND id = ?"
-    ).bind(namespace, removableId).first()).resolves.toBeNull();
+    ).bind(namespace, firstId).first()).resolves.toBeNull();
     await expect(env.DB.prepare(
       "SELECT id FROM memory_relations WHERE namespace = ? AND id = ?"
-    ).bind(namespace, linkedId).first()).resolves.toMatchObject({ id: linkedId });
+    ).bind(namespace, secondId).first()).resolves.toBeNull();
     await expect(executeRepairQuery(
       buildRepairApplyQuery({ namespace, cohort: "relations", limit: 100 })
     )).resolves.toMatchObject({ results: [] });
   });
 
-  it("skips stale failed and expired running Y runs but preserves active leases and candidate links", async () => {
+  it("repairs only unowned stale failed Y runs and audits malformed ownership", async () => {
     const namespace = `inactive-repair-runs-${crypto.randomUUID()}`;
     const now = new Date().toISOString();
     const expired = new Date(Date.now() - 60_000).toISOString();
@@ -402,6 +404,18 @@ describe("bounded inactive five-axis D1 repair", () => {
       content: "active stale run",
       status: "active"
     });
+    const missingLeaseMemory = await createMemory(env.DB, {
+      namespace,
+      type: "note",
+      content: "running with no lease",
+      status: "active"
+    });
+    const missingTokenMemory = await createMemory(env.DB, {
+      namespace,
+      type: "note",
+      content: "running with no claim token",
+      status: "active"
+    });
     const linkedMemory = await createMemory(env.DB, {
       namespace,
       type: "note",
@@ -412,6 +426,8 @@ describe("bounded inactive five-axis D1 repair", () => {
       failedMemory,
       expiredMemory,
       activeMemory,
+      missingLeaseMemory,
+      missingTokenMemory,
       linkedMemory
     ].map((memory) => env.DB.prepare(
       "UPDATE memories SET five_axis_revision = 2 WHERE namespace = ? AND id = ?"
@@ -443,8 +459,38 @@ describe("bounded inactive five-axis D1 repair", () => {
            namespace, memory_id, memory_revision, axis, status, attempts,
            result_json, last_error, claim_token, lease_expires_at,
            started_at, completed_at, updated_at
+         ) VALUES (?, ?, 1, 'Y', 'running', 1, NULL, NULL, 'missing-lease-claim', NULL, ?, NULL, ?)`
+      ).bind(namespace, missingLeaseMemory.id, now, now),
+      env.DB.prepare(
+        `INSERT INTO memory_five_axis_runs (
+           namespace, memory_id, memory_revision, axis, status, attempts,
+           result_json, last_error, claim_token, lease_expires_at,
+           started_at, completed_at, updated_at
+         ) VALUES (?, ?, 1, 'Y', 'running', 1, NULL, NULL, NULL, ?, ?, NULL, ?)`
+      ).bind(namespace, missingTokenMemory.id, expired, now, now),
+      env.DB.prepare(
+        `INSERT INTO memory_five_axis_runs (
+           namespace, memory_id, memory_revision, axis, status, attempts,
+           result_json, last_error, claim_token, lease_expires_at,
+           started_at, completed_at, updated_at
          ) VALUES (?, ?, 1, 'Y', 'failed', 1, NULL, 'linked failure', NULL, NULL, ?, ?, ?)`
-      ).bind(namespace, linkedMemory.id, now, now, now)
+      ).bind(namespace, linkedMemory.id, now, now, now),
+      env.DB.prepare(
+        `INSERT INTO memory_five_axis_runs (
+           namespace, memory_id, memory_revision, axis, status, attempts,
+           result_json, last_error, claim_token, lease_expires_at,
+           started_at, completed_at, updated_at
+         ) VALUES (?, ?, 2, 'X', 'failed', 1, NULL, 'claim residue',
+           'orphan-claim', NULL, ?, ?, ?)`
+      ).bind(namespace, activeMemory.id, now, now, now),
+      env.DB.prepare(
+        `INSERT INTO memory_five_axis_runs (
+           namespace, memory_id, memory_revision, axis, status, attempts,
+           result_json, last_error, claim_token, lease_expires_at,
+           started_at, completed_at, updated_at
+         ) VALUES (?, ?, 2, 'M', 'failed', 1, NULL, 'lease residue',
+           NULL, ?, ?, ?, ?)`
+      ).bind(namespace, activeMemory.id, active, now, now, now)
     ]);
     const candidateId = `candidate_${crypto.randomUUID()}`;
     const candidateKey = `repair-run-linked:${crypto.randomUUID()}`;
@@ -464,14 +510,25 @@ describe("bounded inactive five-axis D1 repair", () => {
       ).bind(namespace, candidateKey, linkedMemory.id, now)
     ]);
 
+    const audit = await runAudit(namespace);
+    expect(audit.sections.axis_runs[0]).toMatchObject({
+      active_leases: 1,
+      stale_revision_runs: 6,
+      expired_stale_running: 1,
+      ownership_anomalies: 4,
+      running_missing_claim_token: 1,
+      running_missing_lease: 1,
+      non_running_claim_token_residue: 1,
+      non_running_lease_residue: 1
+    });
+
     const dryRun = buildRepairDryRunQuery({ namespace, cohort: "stale-axis-runs", limit: 100 });
     expect(() => assertReadOnlyRepairQuery(dryRun)).not.toThrow();
     await expect(executeRepairQuery(dryRun)).resolves.toMatchObject({
       results: [{
-        repairable_rows: 2,
+        repairable_rows: 1,
         failed_rows: 1,
-        expired_running_rows: 1,
-        selected: 2,
+        selected: 1,
         has_more: 0
       }]
     });
@@ -479,12 +536,12 @@ describe("bounded inactive five-axis D1 repair", () => {
     const applied = await executeRepairQuery(
       buildRepairApplyQuery({ namespace, cohort: "stale-axis-runs", limit: 100 })
     );
-    expect(applied.results).toHaveLength(2);
-    expect(applied.meta.changes).toBe(2);
+    expect(applied.results).toHaveLength(1);
+    expect(applied.meta.changes).toBe(1);
     const rows = await env.DB.prepare(
       `SELECT memory_id, status, result_json, claim_token, lease_expires_at
        FROM memory_five_axis_runs
-       WHERE namespace = ? ORDER BY memory_id`
+       WHERE namespace = ? AND axis = 'Y' ORDER BY memory_id`
     ).bind(namespace).all<Record<string, unknown>>();
     const byMemory = new Map((rows.results ?? []).map((row) => [row.memory_id, row]));
     expect(byMemory.get(failedMemory.id)).toMatchObject({
@@ -495,12 +552,27 @@ describe("bounded inactive five-axis D1 repair", () => {
     expect(JSON.parse(String(byMemory.get(failedMemory.id)?.result_json))).toMatchObject({
       reason: "superseded_by_newer_memory_revision",
       previous_revision: 1,
-      current_revision: 2
+      current_revision: 2,
+      repair: "inactive_five_axis_history"
     });
-    expect(byMemory.get(expiredMemory.id)).toMatchObject({ status: "skipped" });
+    expect(byMemory.get(expiredMemory.id)).toMatchObject({
+      status: "running",
+      claim_token: "expired-claim",
+      lease_expires_at: expired
+    });
     expect(byMemory.get(activeMemory.id)).toMatchObject({
       status: "running",
       claim_token: "active-claim"
+    });
+    expect(byMemory.get(missingLeaseMemory.id)).toMatchObject({
+      status: "running",
+      claim_token: "missing-lease-claim",
+      lease_expires_at: null
+    });
+    expect(byMemory.get(missingTokenMemory.id)).toMatchObject({
+      status: "running",
+      claim_token: null,
+      lease_expires_at: expired
     });
     expect(byMemory.get(linkedMemory.id)).toMatchObject({ status: "failed" });
   });

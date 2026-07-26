@@ -56,7 +56,7 @@ describe("inactive five-axis repair command", () => {
       limit: 100
     }).sql;
     expect(relationWrite).toContain("DELETE FROM memory_relations");
-    expect(relationWrite).toContain("candidate.result_memory_id = relation.id");
+    expect(relationWrite).not.toContain("memory_candidates");
     expect(relationWrite).not.toContain("UPDATE memories");
     expect(relationWrite).not.toContain("memory_deprojections");
 
@@ -67,7 +67,11 @@ describe("inactive five-axis repair command", () => {
     }).sql;
     expect(runWrite).toContain("UPDATE memory_five_axis_runs");
     expect(runWrite).toContain("superseded_by_newer_memory_revision");
-    expect(runWrite).toContain("run.lease_expires_at <=");
+    expect(runWrite).toContain("run.status = 'failed'");
+    expect(runWrite).toContain("run.claim_token IS NULL");
+    expect(runWrite).toContain("run.lease_expires_at IS NULL");
+    expect(runWrite).not.toContain("run.status = 'running'");
+    expect(runWrite).toContain("'repair', 'inactive_five_axis_history'");
     expect(runWrite).not.toContain("UPDATE memories");
     expect(runWrite).not.toContain("memory_five_axis_outbox");
   });

@@ -9,16 +9,6 @@ export const INACTIVE_FIVE_AXIS_REPAIR_COHORTS = Object.freeze([
   "stale-axis-runs"
 ]);
 
-function approvedCandidateRelationPredicate(alias) {
-  return `EXISTS (
-    SELECT 1
-    FROM memory_candidates AS candidate
-    WHERE candidate.namespace = ${alias}.namespace
-      AND candidate.action = 'y_relation_review'
-      AND candidate.result_memory_id = ${alias}.id
-  )`;
-}
-
 function inactiveRelationSelection(namespace) {
   const inactiveSource = inactiveMemoryPredicate("source_memory");
   const inactiveTarget = inactiveMemoryPredicate("target_memory");
@@ -51,20 +41,9 @@ function staleAxisRunSelection(namespace) {
           AND link.memory_revision = run.memory_revision
           AND link.axis = run.axis
       )
-      AND (
-        (
-          run.status = 'failed'
-          AND run.claim_token IS NULL
-          AND run.lease_expires_at IS NULL
-        )
-        OR (
-          run.status = 'running'
-          AND (
-            run.lease_expires_at IS NULL
-            OR run.lease_expires_at <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-          )
-        )
-      )`;
+      AND run.status = 'failed'
+      AND run.claim_token IS NULL
+      AND run.lease_expires_at IS NULL`;
 }
 
 export function buildRepairDryRunQuery(input) {
@@ -74,7 +53,6 @@ export function buildRepairDryRunQuery(input) {
     const selection = inactiveRelationSelection(namespace);
     const inactiveSource = inactiveMemoryPredicate("source_memory");
     const inactiveTarget = inactiveMemoryPredicate("target_memory");
-    const candidateLinked = approvedCandidateRelationPredicate("relation");
     return {
       name: "relations",
       sql: `SELECT
@@ -91,13 +69,9 @@ export function buildRepairDryRunQuery(input) {
           WHEN NOT (${inactiveSource}) AND ${inactiveTarget}
           THEN 1 ELSE 0 END
         ), 0) AS target_only_ineligible,
-        COALESCE(SUM(CASE WHEN ${candidateLinked} THEN 1 ELSE 0 END), 0) AS candidate_linked_rows,
-        COALESCE(SUM(CASE WHEN NOT (${candidateLinked}) THEN 1 ELSE 0 END), 0) AS repairable_rows,
-        MIN(COALESCE(SUM(CASE WHEN NOT (${candidateLinked}) THEN 1 ELSE 0 END), 0), ${limit}) AS selected,
-        CASE
-          WHEN COALESCE(SUM(CASE WHEN NOT (${candidateLinked}) THEN 1 ELSE 0 END), 0) > ${limit}
-          THEN 1 ELSE 0 END
-        AS has_more
+        COUNT(*) AS repairable_rows,
+        MIN(COUNT(*), ${limit}) AS selected,
+        CASE WHEN COUNT(*) > ${limit} THEN 1 ELSE 0 END AS has_more
       ${selection}`
     };
   }
@@ -108,7 +82,6 @@ export function buildRepairDryRunQuery(input) {
       sql: `SELECT
         COUNT(*) AS repairable_rows,
         COALESCE(SUM(CASE WHEN run.status = 'failed' THEN 1 ELSE 0 END), 0) AS failed_rows,
-        COALESCE(SUM(CASE WHEN run.status = 'running' THEN 1 ELSE 0 END), 0) AS expired_running_rows,
         MIN(COUNT(*), ${limit}) AS selected,
         CASE WHEN COUNT(*) > ${limit} THEN 1 ELSE 0 END AS has_more
       ${selection}`
@@ -122,13 +95,11 @@ export function buildRepairApplyQuery(input) {
   const limit = Math.min(Math.max(Math.floor(input.limit), 1), MAX_REPAIR_LIMIT);
   if (input.cohort === "relations") {
     const selection = inactiveRelationSelection(namespace);
-    const candidateLinked = approvedCandidateRelationPredicate("relation");
     return {
       name: "relations",
       sql: `WITH selected AS (
         SELECT relation.rowid
         ${selection}
-          AND NOT (${candidateLinked})
         ORDER BY relation.id
         LIMIT ${limit}
       )
@@ -157,7 +128,8 @@ export function buildRepairApplyQuery(input) {
               FROM memories AS memory
               WHERE memory.namespace = memory_five_axis_runs.namespace
                 AND memory.id = memory_five_axis_runs.memory_id
-            )
+            ),
+            'repair', 'inactive_five_axis_history'
           ),
           last_error = NULL,
           claim_token = NULL,
