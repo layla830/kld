@@ -168,8 +168,8 @@ describe("per-memory five-axis projection", () => {
   });
 
   it("does not persist X while E is failed, then runs X after E succeeds on retry", async () => {
-    const initial = memory({ thread: null });
-    const labeled = memory({ thread: "kld", risk_level: "normal", valence: 0.2 });
+    const initial = memory({ thread: null, five_axis_revision: 8 });
+    const labeled = memory({ thread: "kld", risk_level: "normal", valence: 0.2, five_axis_revision: 8 });
     const records = new Map<FiveAxisName, MemoryFiveAxisRunRecord>();
     let eAttempts = 0;
     const timelineThreads: Array<string | null> = [];
@@ -266,7 +266,7 @@ describe("per-memory five-axis projection", () => {
   });
 
   it("reuses completed axes and retries only the failed axis for the same revision", async () => {
-    const initial = memory({ fact_key: null, thread: "kld", valence: 0.2 });
+    const initial = memory({ fact_key: null, thread: "kld", valence: 0.2, five_axis_revision: 7 });
     const records = new Map<FiveAxisName, MemoryFiveAxisRunRecord>();
     const calls = { X: 0, Y: 0, Z: 0, E: 0, M: 0 };
     let yAttempt = 0;
@@ -421,7 +421,7 @@ describe("per-memory five-axis projection", () => {
   });
 
   it("links every review-producing axis to its candidate external keys", async () => {
-    const initial = memory({ thread: "kld", valence: 0.2 });
+    const initial = memory({ thread: "kld", valence: 0.2, five_axis_revision: 9 });
     const records = new Map<FiveAxisName, MemoryFiveAxisRunRecord>();
     const linked = new Map<FiveAxisName, string[]>();
     const dependencies: MemoryFiveAxisProjectionDependencies = {

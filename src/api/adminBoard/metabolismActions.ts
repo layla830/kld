@@ -17,7 +17,7 @@ import { newId } from "../../utils/ids";
 import { nowIso } from "../../utils/time";
 import { payloadOf, readFormText } from "./utils";
 import { prepareMemoryDeprojection } from "../../memory/deprojection";
-import { syncMemoryVector } from "../../memory/state";
+import { reconcileMemoryVector } from "../../memory/state";
 import {
   combineMutationGuards,
   memoryCandidateStatusGuard,
@@ -180,7 +180,10 @@ export async function approveMetabolismCandidate(
     if (!committed) return null;
     const archived = await getMemoryById(env.DB, { namespace, id: target.id });
     if (!archived) throw new Error("metabolism_deprojection_target_missing");
-    await syncMemoryVector(env, archived);
+    await reconcileMemoryVector(env, {
+      namespace: archived.namespace,
+      memoryId: archived.id
+    });
     return { memory: archived, action };
   }
 

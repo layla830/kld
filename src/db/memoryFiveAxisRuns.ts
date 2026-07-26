@@ -1,5 +1,6 @@
 import { newId } from "../utils/ids";
 import { nowIso } from "../utils/time";
+import { fiveAxisMemoryEligibilityPredicate } from "../memory/fiveAxis/eligibility";
 import type { FiveAxisName, FiveAxisRunStatus } from "./fiveAxisStatuses";
 import {
   candidateReviewStatusSql,
@@ -116,12 +117,20 @@ export async function claimFiveAxisRun(db: D1Database, key: FiveAxisRunKey): Pro
   const now = nowIso();
   const claimToken = newId("axisrun");
   const leaseExpiresAt = new Date(Date.now() + AXIS_RUN_LEASE_MS).toISOString();
+  const eligibility = fiveAxisMemoryEligibilityPredicate("memory");
   const result = await db.prepare(
     `INSERT INTO memory_five_axis_runs (
        namespace, memory_id, memory_revision, axis, status, attempts,
        result_json, last_error, claim_token, lease_expires_at,
        started_at, completed_at, updated_at
-     ) VALUES (?, ?, ?, ?, 'running', 1, NULL, NULL, ?, ?, ?, NULL, ?)
+     )
+     SELECT
+       memory.namespace, memory.id, memory.five_axis_revision, ?,
+       'running', 1, NULL, NULL, ?, ?, ?, NULL, ?
+     FROM memories AS memory
+     WHERE memory.namespace = ? AND memory.id = ?
+       AND memory.five_axis_revision = ?
+       AND (${eligibility.sql})
      ON CONFLICT(namespace, memory_id, memory_revision, axis) DO UPDATE SET
        status = 'running', attempts = memory_five_axis_runs.attempts + 1,
        result_json = NULL, last_error = NULL, claim_token = excluded.claim_token,
@@ -135,14 +144,15 @@ export async function claimFiveAxisRun(db: D1Database, key: FiveAxisRunKey): Pro
                   OR memory_five_axis_runs.lease_expires_at <= excluded.started_at))
        )`
   ).bind(
-    key.namespace,
-    key.memoryId,
-    key.memoryRevision,
     key.axis,
     claimToken,
     leaseExpiresAt,
     now,
     now,
+    key.namespace,
+    key.memoryId,
+    key.memoryRevision,
+    ...eligibility.binds,
     MAX_FIVE_AXIS_RUN_ATTEMPTS
   ).run();
   return (result.meta.changes ?? 0) === 1 ? claimToken : null;
@@ -159,12 +169,21 @@ export async function completeFiveAxisRun(
   const now = nowIso();
   const uniqueCandidateKeys = [...new Set(candidateExternalKeys.map((value) => value.trim()).filter(Boolean))];
   if (status === "pending_review" && uniqueCandidateKeys.length === 0) return false;
+  const eligibility = fiveAxisMemoryEligibilityPredicate("memory");
+  const currentMemoryGuard = `EXISTS (
+    SELECT 1 FROM memories AS memory
+    WHERE memory.namespace = memory_five_axis_runs.namespace
+      AND memory.id = memory_five_axis_runs.memory_id
+      AND memory.five_axis_revision = memory_five_axis_runs.memory_revision
+      AND (${eligibility.sql})
+  )`;
   const writeStatement = db.prepare(
     `UPDATE memory_five_axis_runs
      SET status = ?, result_json = ?, last_error = NULL, claim_token = NULL,
          lease_expires_at = NULL, completed_at = ?, updated_at = ?
      WHERE namespace = ? AND memory_id = ? AND memory_revision = ? AND axis = ?
-       AND status = 'running' AND claim_token = ?`
+       AND status = 'running' AND claim_token = ?
+       AND (${currentMemoryGuard})`
   ).bind(
     status,
     JSON.stringify(result),
@@ -174,7 +193,8 @@ export async function completeFiveAxisRun(
     key.memoryId,
     key.memoryRevision,
     key.axis,
-    claimToken
+    claimToken,
+    ...eligibility.binds
   );
   if (status !== "pending_review") {
     const write = await writeStatement.run();
@@ -190,6 +210,7 @@ export async function completeFiveAxisRun(
        SELECT 1 FROM memory_five_axis_runs
        WHERE namespace = ? AND memory_id = ? AND memory_revision = ? AND axis = ?
          AND status = 'running' AND claim_token = ?
+         AND (${currentMemoryGuard})
      )
        AND EXISTS (
          SELECT 1 FROM memory_candidates
@@ -207,6 +228,7 @@ export async function completeFiveAxisRun(
     key.memoryRevision,
     key.axis,
     claimToken,
+    ...eligibility.binds,
     key.namespace,
     candidateExternalKey
   ));

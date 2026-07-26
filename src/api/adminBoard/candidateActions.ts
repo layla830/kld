@@ -22,7 +22,7 @@ import {
 } from "../../memory/candidateActionContract";
 import { payloadOf, readFormText } from "./utils";
 import { prepareMemoryRelationInsert } from "../../db/memoryRelations";
-import { syncMemoryVector } from "../../memory/state";
+import { reconcileMemoryVector } from "../../memory/state";
 import { assessCandidateQuality } from "../../memory/candidateQuality";
 import { canOverrideCandidateValidation } from "../../memory/candidateOverride";
 import { createMemoryEvent, prepareMemoryEventInsert } from "../../db/memoryEvents";
@@ -577,7 +577,10 @@ async function approveFactGroup(
   const target = await commitApproval(env, candidate, ids[0], statements, appliedGuard);
   if (!target) return null;
   const updated = await fetchMemoriesByIds(env.DB, { namespace: candidate.namespace, ids });
-  await Promise.all(updated.map((memory) => syncMemoryVector(env, memory)));
+  await Promise.all(updated.map((memory) => reconcileMemoryVector(env, {
+    namespace: memory.namespace,
+    memoryId: memory.id
+  })));
   return target;
 }
 
@@ -629,7 +632,12 @@ export async function approveCandidate(env: Env, form: FormData): Promise<Memory
   }
   const target = await approveByAction(env, candidate, payload, candidate.action, validationOverride);
   if (!target) return null;
-  if (candidate.action !== "fact_group") await syncMemoryVector(env, target);
+  if (candidate.action !== "fact_group") {
+    await reconcileMemoryVector(env, {
+      namespace: target.namespace,
+      memoryId: target.id
+    });
+  }
   if (validationOverride) {
     await createMemoryEvent(env.DB, {
       namespace: "default",

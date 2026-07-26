@@ -35,10 +35,15 @@ describe("five-axis outbox policy", () => {
   it("does not execute a late queue delivery after the outbox becomes dead letter", async () => {
     const db = {
       prepare(sql: string) {
-        expect(sql).toBe("SELECT * FROM memory_five_axis_outbox WHERE id = ?");
         return {
           bind() {
-            return { first: async () => ({ id: 1, status: "dead_letter" }) };
+            if (sql.includes("SET queued_at = ?, updated_at = ?")) {
+              return { run: async () => ({ meta: { changes: 0 } }) };
+            }
+            if (sql === "SELECT * FROM memory_five_axis_outbox WHERE id = ?") {
+              return { first: async () => ({ id: 1, status: "dead_letter" }) };
+            }
+            throw new Error(`unexpected SQL: ${sql}`);
           }
         };
       }
@@ -129,7 +134,7 @@ describe("five-axis outbox policy", () => {
     expect(bound).toEqual(["default", "mem_1", 7]);
   });
 
-  it("skips an outbox job when the material memory revision has advanced", async () => {
+  it("rejects an outbox claim when the material memory revision has advanced", async () => {
     let completion: Record<string, unknown> | null = null;
     const outbox = {
       id: 11,
@@ -156,7 +161,7 @@ describe("five-axis outbox policy", () => {
               };
             }
             if (sql.includes("SET queued_at = ?, updated_at = ?")) {
-              return { run: async () => ({ meta: { changes: 1 } }) };
+              return { run: async () => ({ meta: { changes: 0 } }) };
             }
             if (sql.startsWith("UPDATE memory_five_axis_outbox")) {
               return {
@@ -185,10 +190,10 @@ describe("five-axis outbox policy", () => {
 
     await handleQueueMessage(message, { DB: db } as Env);
 
-    expect(completion).toEqual({ reason: "memory_revision_mismatch", expected: 1, current: 2 });
+    expect(completion).toEqual({ reason: "stale_revision" });
   });
 
-  it("keeps pre-migration queued messages compatible until the revision migration is applied", async () => {
+  it("fails closed for a pre-migration queued row without a durable revision", async () => {
     let completion: Record<string, unknown> | null = null;
     const outbox = {
       id: 11,
@@ -215,7 +220,7 @@ describe("five-axis outbox policy", () => {
               return { first: async () => ({ id: 12 }) };
             }
             if (sql.includes("SET queued_at = ?, updated_at = ?")) {
-              return { run: async () => ({ meta: { changes: 1 } }) };
+              return { run: async () => ({ meta: { changes: 0 } }) };
             }
             if (sql.startsWith("UPDATE memory_five_axis_outbox")) {
               return {
@@ -243,10 +248,10 @@ describe("five-axis outbox policy", () => {
 
     await handleQueueMessage(message, { DB: db } as Env);
 
-    expect(completion).toEqual({ reason: "superseded_by_newer_memory_version" });
+    expect(completion).toBeNull();
   });
 
-  it("cleans X ownership and skips projection when an eligible memory becomes a diary", async () => {
+  it("does not let a late worker mutate ownership after a memory becomes a diary", async () => {
     let completion: Record<string, unknown> | null = null;
     let membershipDeleted = false;
     const relationBatches: Array<Array<{ sql: string; args: unknown[] }>> = [];
@@ -293,7 +298,7 @@ describe("five-axis outbox policy", () => {
               } };
             }
             if (sql.includes("SET queued_at = ?, updated_at = ?")) {
-              return { run: async () => ({ meta: { changes: 1 } }) };
+              return { run: async () => ({ meta: { changes: 0 } }) };
             }
             if (sql.startsWith("UPDATE memory_five_axis_outbox")) {
               return { run: async () => {
@@ -324,9 +329,8 @@ describe("five-axis outbox policy", () => {
 
     await handleQueueMessage(message, { DB: db } as Env);
 
-    expect(completion).toEqual({ reason: "memory_type_not_projectable" });
-    expect(membershipDeleted).toBe(true);
-    expect(relationBatches).toHaveLength(1);
-    expect(relationBatches[0][0].args[1]).toBe('timeline_approved:["kld","project:kld.release"]');
+    expect(completion).toEqual({ reason: "memory_ineligible" });
+    expect(membershipDeleted).toBe(false);
+    expect(relationBatches).toHaveLength(0);
   });
 });

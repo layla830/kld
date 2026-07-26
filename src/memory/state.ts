@@ -1,6 +1,8 @@
 import {
   createMemory,
   getMemoryById,
+  listPendingVectorReconciliations,
+  markMemoryVectorResult,
   updateMemory,
   type CreateMemoryInput,
   type UpdateMemoryInput,
@@ -18,8 +20,42 @@ import {
 } from "./fiveAxis/eligibility";
 import type { Env, MemoryRecord } from "../types";
 
-export type VectorSyncStatus = "synced" | "failed" | "pending" | "deleted";
-export type MemoryVectorAction = "upsert" | "delete";
+export type VectorDesiredAction = "upsert" | "delete";
+export type VectorReconciliationErrorCode =
+  | "vector_upsert_failed"
+  | "vector_delete_failed"
+  | "vector_binding_missing"
+  | "vector_id_missing";
+
+export type VectorReconciliationResult =
+  | {
+      outcome: "synced";
+      action: VectorDesiredAction;
+      memory: MemoryRecord;
+    }
+  | {
+      outcome: "failed";
+      action: VectorDesiredAction;
+      memory: MemoryRecord;
+      errorCode: VectorReconciliationErrorCode;
+    }
+  | {
+      outcome: "stale";
+      attemptedAction: VectorDesiredAction;
+      latestMemory: MemoryRecord | null;
+    }
+  | {
+      outcome: "missing";
+    };
+
+export interface VectorRetrySummary {
+  selected: number;
+  synced: number;
+  deleted: number;
+  failed: number;
+  stale: number;
+  missing: number;
+}
 
 export interface MemoryLifecycleMutationOptions {
   source: MemoryDeprojectionSource;
@@ -33,50 +69,38 @@ export interface MemoryLifecycleMutationOptions {
 export interface MemoryLifecycleMutationResult {
   transition: MemoryEligibilityTransition;
   memory: MemoryRecord;
-  vectorAction: MemoryVectorAction;
 }
 
-async function syncVector(env: Env, memory: MemoryRecord): Promise<VectorSyncStatus> {
-  if (!isFiveAxisMemoryEligible(memory)) return "deleted";
-  try {
-    const ok = await upsertMemoryEmbedding(env, memory);
-    return ok ? "synced" : "failed";
-  } catch (error) {
-    console.error("syncVector failed", { id: memory.id, error: error instanceof Error ? error.message : String(error) });
-    return "failed";
-  }
-}
-
-async function removeVector(env: Env, memory: MemoryRecord): Promise<VectorSyncStatus> {
-  try {
-    await deleteMemoryEmbedding(env, memory);
-    return "deleted";
-  } catch (error) {
-    console.error("removeVector failed", { id: memory.id, error: error instanceof Error ? error.message : String(error) });
-    return "failed";
-  }
-}
-
-function vectorActionForMutation(
-  memory: MemoryRecord,
-  transition: MemoryEligibilityTransition
-): MemoryVectorAction {
-  if (transition === "eligible_to_ineligible") return "delete";
-  return isFiveAxisMemoryEligible(memory) ? "upsert" : "delete";
-}
-
-async function updateSyncStatus(
+async function applyVectorAction(
   env: Env,
-  namespace: string,
-  id: string,
-  status: VectorSyncStatus
-): Promise<void> {
+  memory: MemoryRecord,
+  action: VectorDesiredAction
+): Promise<{ ok: true } | { ok: false; errorCode: VectorReconciliationErrorCode }> {
+  if (!env.VECTORIZE) return { ok: false, errorCode: "vector_binding_missing" };
+  if (!memory.vector_id) return { ok: false, errorCode: "vector_id_missing" };
+
   try {
-    await env.DB.prepare(
-      "UPDATE memories SET vector_sync_status = ?, vector_synced = ?, updated_at = ? WHERE namespace = ? AND id = ?"
-    ).bind(status, status === "synced" ? 1 : 0, new Date().toISOString(), namespace, id).run();
+    const ok = action === "upsert"
+      ? await upsertMemoryEmbedding(env, memory)
+      : await deleteMemoryEmbedding(env, memory);
+    return ok
+      ? { ok: true }
+      : {
+          ok: false,
+          errorCode: action === "upsert" ? "vector_upsert_failed" : "vector_delete_failed"
+        };
   } catch (error) {
-    console.error("updateSyncStatus failed", { id, status, error: error instanceof Error ? error.message : String(error) });
+    console.error("memory vector action failed", {
+      namespace: memory.namespace,
+      id: memory.id,
+      revision: memory.five_axis_revision ?? 1,
+      action,
+      error: error instanceof Error ? error.message : String(error)
+    });
+    return {
+      ok: false,
+      errorCode: action === "upsert" ? "vector_upsert_failed" : "vector_delete_failed"
+    };
   }
 }
 
@@ -84,15 +108,10 @@ async function syncLifecycleMutation(
   env: Env,
   result: MemoryLifecycleMutationResult
 ): Promise<MemoryRecord> {
-  const syncStatus = result.vectorAction === "delete"
-    ? await removeVector(env, result.memory)
-    : await syncVector(env, result.memory);
-  await updateSyncStatus(
-    env,
-    result.memory.namespace,
-    result.memory.id,
-    syncStatus
-  );
+  await reconcileMemoryVector(env, {
+    namespace: result.memory.namespace,
+    memoryId: result.memory.id
+  });
   return (
     await getMemoryById(env.DB, {
       namespace: result.memory.namespace,
@@ -106,8 +125,10 @@ export async function createSyncedMemory(
   input: CreateMemoryInput
 ): Promise<MemoryRecord> {
   const record = await createMemory(env.DB, input);
-  const syncStatus = await syncVector(env, record);
-  await updateSyncStatus(env, record.namespace, record.id, syncStatus);
+  await reconcileMemoryVector(env, {
+    namespace: record.namespace,
+    memoryId: record.id
+  });
   return (await getMemoryById(env.DB, { namespace: record.namespace, id: record.id })) ?? record;
 }
 
@@ -143,8 +164,7 @@ export async function mutateMemoryLifecycle(
     });
     return {
       transition,
-      memory: result.memory,
-      vectorAction: "delete"
+      memory: result.memory
     };
   }
 
@@ -159,8 +179,7 @@ export async function mutateMemoryLifecycle(
   return updated
     ? {
         transition,
-        memory: updated,
-        vectorAction: vectorActionForMutation(updated, transition)
+        memory: updated
       }
     : null;
 }
@@ -202,52 +221,90 @@ export async function deleteSyncedMemory(
   return syncLifecycleMutation(env, mutation);
 }
 
-export async function syncMemoryVector(
+export async function reconcileMemoryVector(
   env: Env,
-  memory: MemoryRecord
-): Promise<VectorSyncStatus> {
-  const status = isFiveAxisMemoryEligible(memory)
-    ? await syncVector(env, memory)
-    : await removeVector(env, memory);
-  await updateSyncStatus(env, memory.namespace, memory.id, status);
-  return status;
+  input: { namespace: string; memoryId: string }
+): Promise<VectorReconciliationResult> {
+  const snapshot = await getMemoryById(env.DB, {
+    namespace: input.namespace,
+    id: input.memoryId
+  });
+  if (!snapshot) return { outcome: "missing" };
+
+  const expectedRevision = snapshot.five_axis_revision ?? 1;
+  const expectedEligibility = isFiveAxisMemoryEligible(snapshot) ? "eligible" : "ineligible";
+  const action: VectorDesiredAction = expectedEligibility === "eligible" ? "upsert" : "delete";
+  const external = await applyVectorAction(env, snapshot, action);
+  const status = external.ok
+    ? action === "upsert" ? "synced" : "deleted"
+    : "failed";
+  const written = await markMemoryVectorResult(env.DB, {
+    namespace: snapshot.namespace,
+    id: snapshot.id,
+    expectedRevision,
+    expectedEligibility,
+    status
+  });
+  if (!written) {
+    let latestMemory = await getMemoryById(env.DB, {
+      namespace: snapshot.namespace,
+      id: snapshot.id
+    });
+    if (latestMemory) {
+      const latestEligibility = isFiveAxisMemoryEligible(latestMemory) ? "eligible" : "ineligible";
+      await markMemoryVectorResult(env.DB, {
+        namespace: latestMemory.namespace,
+        id: latestMemory.id,
+        expectedRevision: latestMemory.five_axis_revision ?? 1,
+        expectedEligibility: latestEligibility,
+        status: "pending"
+      });
+      latestMemory = await getMemoryById(env.DB, {
+        namespace: snapshot.namespace,
+        id: snapshot.id
+      });
+    }
+    return {
+      outcome: "stale",
+      attemptedAction: action,
+      latestMemory
+    };
+  }
+
+  const memory = await getMemoryById(env.DB, {
+    namespace: snapshot.namespace,
+    id: snapshot.id
+  }) ?? snapshot;
+  return external.ok
+    ? { outcome: "synced", action, memory }
+    : { outcome: "failed", action, memory, errorCode: external.errorCode };
 }
 
-export async function removeMemoryVector(
-  env: Env,
-  memory: MemoryRecord
-): Promise<VectorSyncStatus> {
-  const status = await removeVector(env, memory);
-  await updateSyncStatus(env, memory.namespace, memory.id, status);
-  return status;
-}
-
-export async function retryStaleVectorSyncs(
+export async function retryPendingMemoryVectors(
   env: Env,
   namespace: string,
   limit = 50
-): Promise<{ scanned: number; retried: number; fixed: number }> {
-  const rows = await env.DB
-    .prepare(
-      `SELECT * FROM memories
-       WHERE namespace = ?
-         AND status = 'active'
-         AND type NOT IN ('diary','layla_diary','auto_diary')
-         AND (vector_sync_status = 'failed' OR vector_sync_status = 'pending' OR vector_sync_status IS NULL)
-       ORDER BY updated_at DESC
-       LIMIT ?`
-    )
-    .bind(namespace, Math.min(Math.max(limit, 1), 200))
-    .all<MemoryRecord>();
+): Promise<VectorRetrySummary> {
+  const pending = await listPendingVectorReconciliations(env.DB, { namespace, limit });
+  const summary: VectorRetrySummary = {
+    selected: pending.length,
+    synced: 0,
+    deleted: 0,
+    failed: 0,
+    stale: 0,
+    missing: 0
+  };
 
-  const memories = rows.results ?? [];
-  let fixed = 0;
-
-  for (const memory of memories) {
-    const status = await syncVector(env, memory);
-    await updateSyncStatus(env, namespace, memory.id, status);
-    if (status === "synced") fixed += 1;
+  for (const memory of pending) {
+    const result = await reconcileMemoryVector(env, {
+      namespace: memory.namespace,
+      memoryId: memory.id
+    });
+    if (result.outcome === "synced") {
+      summary[result.action === "upsert" ? "synced" : "deleted"] += 1;
+    } else {
+      summary[result.outcome] += 1;
+    }
   }
-
-  return { scanned: memories.length, retried: memories.length, fixed };
+  return summary;
 }

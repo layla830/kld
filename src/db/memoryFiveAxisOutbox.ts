@@ -1,6 +1,11 @@
 import { nowIso } from "../utils/time";
 import { newId } from "../utils/ids";
 import {
+  fiveAxisMemoryEligibilityPredicate,
+  isFiveAxisMemoryEligible
+} from "../memory/fiveAxis/eligibility";
+import { getMemoryById } from "./memories";
+import {
   FIVE_AXIS_OUTBOX_TRANSITIONS,
   FIVE_AXIS_OUTBOX_STATUS,
   statusPlaceholders,
@@ -25,9 +30,30 @@ export interface MemoryFiveAxisOutboxRecord {
 
 export interface FiveAxisOutboxClaim {
   id: number;
+  namespace: string;
+  memoryId: string;
+  memoryUpdatedAt: string;
+  memoryRevision: number;
   attempt: number;
   queuedAt: string;
 }
+
+export type FiveAxisExecutionClaimRejection =
+  | "outbox_missing"
+  | "outbox_terminal"
+  | "delivery_not_claimed"
+  | "stale_revision"
+  | "memory_missing"
+  | "memory_ineligible";
+
+export type TerminalizableFiveAxisExecutionRejection = Extract<
+  FiveAxisExecutionClaimRejection,
+  "stale_revision" | "memory_missing" | "memory_ineligible"
+>;
+
+export type FiveAxisExecutionClaimResult =
+  | { outcome: "claimed"; claim: FiveAxisOutboxClaim }
+  | { outcome: "rejected"; reason: FiveAxisExecutionClaimRejection };
 
 export const MAX_FIVE_AXIS_OUTBOX_ATTEMPTS = 5;
 const STALE_QUEUED_AFTER_MS = 15 * 60_000;
@@ -137,7 +163,15 @@ export async function claimFiveAxisOutboxForDelivery(
     record.queued_at
   ).run();
   return (result.meta.changes ?? 0) === 1
-    ? { id: record.id, attempt: record.attempts + 1, queuedAt: now }
+    ? {
+        id: record.id,
+        namespace: record.namespace,
+        memoryId: record.memory_id,
+        memoryUpdatedAt: record.memory_updated_at,
+        memoryRevision: record.memory_revision ?? 1,
+        attempt: record.attempts + 1,
+        queuedAt: now
+      }
     : null;
 }
 
@@ -150,21 +184,120 @@ function nextLeaseTimestamp(previous: string): string {
 export async function claimFiveAxisOutboxForExecution(
   db: D1Database,
   delivery: FiveAxisOutboxClaim
-): Promise<FiveAxisOutboxClaim | null> {
+): Promise<FiveAxisExecutionClaimResult> {
   const refreshedAt = nextLeaseTimestamp(delivery.queuedAt);
+  const eligibility = fiveAxisMemoryEligibilityPredicate("memory");
   const write = await db.prepare(
-    `UPDATE memory_five_axis_outbox
+    `UPDATE memory_five_axis_outbox AS outbox
      SET queued_at = ?, updated_at = ?
-     WHERE id = ? AND status = ? AND attempts = ? AND queued_at = ?`
+     WHERE outbox.id = ?
+       AND outbox.namespace = ?
+       AND outbox.memory_id = ?
+       AND outbox.memory_updated_at = ?
+       AND outbox.memory_revision = ?
+       AND outbox.status = ?
+       AND outbox.attempts = ?
+       AND outbox.queued_at = ?
+       AND EXISTS (
+         SELECT 1
+         FROM memories AS memory
+         WHERE memory.namespace = outbox.namespace
+           AND memory.id = outbox.memory_id
+           AND memory.five_axis_revision = outbox.memory_revision
+           AND (${eligibility.sql})
+       )`
   ).bind(
     refreshedAt,
     refreshedAt,
     delivery.id,
+    delivery.namespace,
+    delivery.memoryId,
+    delivery.memoryUpdatedAt,
+    delivery.memoryRevision,
     FIVE_AXIS_OUTBOX_STATUS.QUEUED,
     delivery.attempt,
-    delivery.queuedAt
+    delivery.queuedAt,
+    ...eligibility.binds
   ).run();
-  return (write.meta.changes ?? 0) === 1 ? { ...delivery, queuedAt: refreshedAt } : null;
+  if ((write.meta.changes ?? 0) === 1) {
+    return {
+      outcome: "claimed",
+      claim: { ...delivery, queuedAt: refreshedAt }
+    };
+  }
+
+  const outbox = await getFiveAxisOutbox(db, delivery.id);
+  if (!outbox) return { outcome: "rejected", reason: "outbox_missing" };
+  if (outbox.status !== FIVE_AXIS_OUTBOX_STATUS.QUEUED) {
+    return { outcome: "rejected", reason: "outbox_terminal" };
+  }
+  if (
+    outbox.namespace !== delivery.namespace
+    || outbox.memory_id !== delivery.memoryId
+    || outbox.memory_updated_at !== delivery.memoryUpdatedAt
+    || (outbox.memory_revision ?? 1) !== delivery.memoryRevision
+    || outbox.attempts !== delivery.attempt
+    || outbox.queued_at !== delivery.queuedAt
+  ) {
+    return { outcome: "rejected", reason: "delivery_not_claimed" };
+  }
+  const memory = await getMemoryById(db, {
+    namespace: delivery.namespace,
+    id: delivery.memoryId
+  });
+  if (!memory) return { outcome: "rejected", reason: "memory_missing" };
+  if ((memory.five_axis_revision ?? 1) !== delivery.memoryRevision) {
+    return { outcome: "rejected", reason: "stale_revision" };
+  }
+  if (!isFiveAxisMemoryEligible(memory)) {
+    return { outcome: "rejected", reason: "memory_ineligible" };
+  }
+  return { outcome: "rejected", reason: "delivery_not_claimed" };
+}
+
+export async function skipRejectedFiveAxisDelivery(
+  db: D1Database,
+  delivery: FiveAxisOutboxClaim,
+  reason: TerminalizableFiveAxisExecutionRejection
+): Promise<boolean> {
+  const now = nowIso();
+  const eligibility = fiveAxisMemoryEligibilityPredicate("memory");
+  const write = await db.prepare(
+    `UPDATE memory_five_axis_outbox AS outbox
+     SET status = ?, queued_at = NULL, completed_at = ?, updated_at = ?,
+         last_error = NULL, result_json = ?
+     WHERE outbox.id = ?
+       AND outbox.namespace = ?
+       AND outbox.memory_id = ?
+       AND outbox.memory_updated_at = ?
+       AND outbox.memory_revision = ?
+       AND outbox.status = ?
+       AND outbox.attempts = ?
+       AND outbox.queued_at = ?
+       AND NOT EXISTS (
+         SELECT 1
+         FROM memories AS memory
+         WHERE memory.namespace = outbox.namespace
+           AND memory.id = outbox.memory_id
+           AND memory.five_axis_revision = outbox.memory_revision
+           AND (${eligibility.sql})
+       )`
+  ).bind(
+    FIVE_AXIS_OUTBOX_STATUS.SKIPPED,
+    now,
+    now,
+    JSON.stringify({ reason }),
+    delivery.id,
+    delivery.namespace,
+    delivery.memoryId,
+    delivery.memoryUpdatedAt,
+    delivery.memoryRevision,
+    FIVE_AXIS_OUTBOX_STATUS.QUEUED,
+    delivery.attempt,
+    delivery.queuedAt,
+    ...eligibility.binds
+  ).run();
+  return (write.meta.changes ?? 0) === 1;
 }
 
 export async function completeFiveAxisOutboxExecution(
@@ -177,17 +310,31 @@ export async function completeFiveAxisOutboxExecution(
     ? FIVE_AXIS_OUTBOX_TRANSITIONS.complete
     : FIVE_AXIS_OUTBOX_TRANSITIONS.skip;
   const now = nowIso();
+  const currentRevision = `EXISTS (
+    SELECT 1 FROM memories AS memory
+    WHERE memory.namespace = outbox.namespace
+      AND memory.id = outbox.memory_id
+      AND memory.five_axis_revision = outbox.memory_revision
+  )`;
   const write = await db.prepare(
-    `UPDATE memory_five_axis_outbox
-     SET status = ?, completed_at = ?, updated_at = ?, last_error = NULL, result_json = ?
-     WHERE id = ? AND status IN (${statusPlaceholders(transition.from)})
-       AND attempts = ? AND queued_at = ?`
+    `UPDATE memory_five_axis_outbox AS outbox
+     SET status = CASE WHEN (${currentRevision}) THEN ? ELSE ? END,
+         queued_at = NULL, completed_at = ?, updated_at = ?,
+         last_error = NULL, result_json = ?
+     WHERE outbox.id = ? AND outbox.namespace = ? AND outbox.memory_id = ?
+       AND outbox.memory_revision = ?
+       AND outbox.status IN (${statusPlaceholders(transition.from)})
+       AND outbox.attempts = ? AND outbox.queued_at = ?`
   ).bind(
     status,
+    FIVE_AXIS_OUTBOX_STATUS.SKIPPED,
     now,
     now,
     JSON.stringify(result),
     claim.id,
+    claim.namespace,
+    claim.memoryId,
+    claim.memoryRevision,
     ...transition.from,
     claim.attempt,
     claim.queuedAt
@@ -204,23 +351,51 @@ export async function failFiveAxisOutboxClaim(
   const transition = FIVE_AXIS_OUTBOX_TRANSITIONS.fail;
   const now = nowIso();
   const message = error instanceof Error ? error.message : String(error);
+  const currentRevision = `EXISTS (
+    SELECT 1 FROM memories AS memory
+    WHERE memory.namespace = outbox.namespace
+      AND memory.id = outbox.memory_id
+      AND memory.five_axis_revision = outbox.memory_revision
+  )`;
   const write = await db.prepare(
-    `UPDATE memory_five_axis_outbox
-     SET status = CASE WHEN attempts >= ? THEN ? ELSE ? END,
-         completed_at = CASE WHEN attempts >= ? THEN ? ELSE completed_at END,
-         updated_at = ?, last_error = ?, result_json = COALESCE(?, result_json)
-     WHERE id = ? AND status IN (${statusPlaceholders(transition.from)})
-       AND attempts = ? AND queued_at = ?`
+    `UPDATE memory_five_axis_outbox AS outbox
+     SET status = CASE
+           WHEN NOT (${currentRevision}) THEN ?
+           WHEN outbox.attempts >= ? THEN ?
+           ELSE ?
+         END,
+         queued_at = CASE WHEN NOT (${currentRevision}) THEN NULL ELSE outbox.queued_at END,
+         completed_at = CASE
+           WHEN NOT (${currentRevision}) THEN ?
+           WHEN outbox.attempts >= ? THEN ?
+           ELSE outbox.completed_at
+         END,
+         updated_at = ?,
+         last_error = CASE WHEN NOT (${currentRevision}) THEN NULL ELSE ? END,
+         result_json = CASE
+           WHEN NOT (${currentRevision}) THEN ?
+           ELSE COALESCE(?, outbox.result_json)
+         END
+     WHERE outbox.id = ? AND outbox.namespace = ? AND outbox.memory_id = ?
+       AND outbox.memory_revision = ?
+       AND outbox.status IN (${statusPlaceholders(transition.from)})
+       AND outbox.attempts = ? AND outbox.queued_at = ?`
   ).bind(
+    FIVE_AXIS_OUTBOX_STATUS.SKIPPED,
     MAX_FIVE_AXIS_OUTBOX_ATTEMPTS,
     FIVE_AXIS_OUTBOX_STATUS.DEAD_LETTER,
     FIVE_AXIS_OUTBOX_STATUS.FAILED,
+    now,
     MAX_FIVE_AXIS_OUTBOX_ATTEMPTS,
     now,
     now,
     message.slice(0, 1000),
+    JSON.stringify({ reason: "stale_revision" }),
     result === undefined ? null : JSON.stringify(result),
     claim.id,
+    claim.namespace,
+    claim.memoryId,
+    claim.memoryRevision,
     ...transition.from,
     claim.attempt,
     claim.queuedAt
