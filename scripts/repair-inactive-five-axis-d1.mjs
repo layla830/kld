@@ -6,15 +6,13 @@ import {
   assertReadOnlyRepairQuery,
   buildRepairApplyQuery,
   buildRepairDryRunQuery,
-  INACTIVE_FIVE_AXIS_REPAIR_COHORTS,
   MAX_REPAIR_LIMIT
 } from "./inactive-five-axis-repair.mjs";
 
 export {
   assertReadOnlyRepairQuery,
   buildRepairApplyQuery,
-  buildRepairDryRunQuery,
-  INACTIVE_FIVE_AXIS_REPAIR_COHORTS
+  buildRepairDryRunQuery
 } from "./inactive-five-axis-repair.mjs";
 
 const DEFAULT_DB = "companion_memory_proxy";
@@ -25,27 +23,26 @@ const WRANGLER_ENTRY = path.join(process.cwd(), "node_modules", "wrangler", "bin
 
 export function usage() {
   return `Usage:
-  npm run repair:inactive-five-axis-d1 -- --remote --cohort <relations|stale-axis-runs> [options]
+  npm run repair:inactive-five-axis-d1 -- --remote [options]
 
 Options:
   --remote              Required. Target the configured remote D1 database.
   --db <name>           D1 database name. Default: ${DEFAULT_DB}
   --namespace <name>    Memory namespace. Default: ${DEFAULT_NAMESPACE}
-  --cohort <name>       Required. Exactly one repair cohort.
   --limit <n>           Maximum rows in this run. Default: ${DEFAULT_LIMIT}; max: ${MAX_REPAIR_LIMIT}
   --apply               Execute one bounded write statement.
   --confirm <text>      Required with --apply; must equal ${APPLY_CONFIRMATION}
   --json                Emit machine-readable JSON.
   --help                Show this help.
 
-Without --apply this command executes SELECT only. There is no "all" cohort or automatic loop.`;
+Without --apply this command executes SELECT only. It targets stale failed Y runs and
+strictly expired stale running Y runs. It does not repair relations or loop automatically.`;
 }
 
 export function parseRepairArgs(argv) {
   const args = {
     db: DEFAULT_DB,
     namespace: DEFAULT_NAMESPACE,
-    cohort: "",
     limit: DEFAULT_LIMIT,
     remote: false,
     apply: false,
@@ -61,7 +58,6 @@ export function parseRepairArgs(argv) {
     else if (arg === "--json") args.json = true;
     else if (arg === "--db") args.db = String(argv[++index] ?? "").trim();
     else if (arg === "--namespace") args.namespace = String(argv[++index] ?? "").trim();
-    else if (arg === "--cohort") args.cohort = String(argv[++index] ?? "").trim();
     else if (arg === "--limit") args.limit = Number(argv[++index]);
     else if (arg === "--confirm") args.confirm = String(argv[++index] ?? "");
     else throw new Error(`Unknown argument: ${arg}`);
@@ -70,9 +66,6 @@ export function parseRepairArgs(argv) {
   if (!args.remote) throw new Error("--remote is required for the production repair command.");
   if (!args.db) throw new Error("--db requires a value.");
   if (!args.namespace) throw new Error("--namespace requires a value.");
-  if (!INACTIVE_FIVE_AXIS_REPAIR_COHORTS.includes(args.cohort)) {
-    throw new Error("--cohort must be relations or stale-axis-runs.");
-  }
   if (!Number.isInteger(args.limit) || args.limit < 1 || args.limit > MAX_REPAIR_LIMIT) {
     throw new Error(`--limit must be an integer between 1 and ${MAX_REPAIR_LIMIT}.`);
   }
@@ -142,7 +135,6 @@ export function runInactiveFiveAxisRepair(args, execute = executeQuery) {
       schema_version: 1,
       mode: "dry_run",
       namespace: args.namespace,
-      cohort: args.cohort,
       limit: args.limit,
       ...(preview.rows[0] ?? {})
     };
@@ -155,7 +147,6 @@ export function runInactiveFiveAxisRepair(args, execute = executeQuery) {
     schema_version: 1,
     mode: "apply",
     namespace: args.namespace,
-    cohort: args.cohort,
     limit: args.limit,
     changed: applied.changes,
     remaining: Number(after.repairable_rows ?? 0),
@@ -166,7 +157,6 @@ export function runInactiveFiveAxisRepair(args, execute = executeQuery) {
 function printHumanReport(report) {
   console.log(`Inactive five-axis D1 repair: ${report.mode}`);
   console.log(`Namespace: ${report.namespace}`);
-  console.log(`Cohort: ${report.cohort}`);
   console.log(JSON.stringify(report, null, 2));
 }
 

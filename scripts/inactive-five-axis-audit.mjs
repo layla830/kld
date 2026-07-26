@@ -37,6 +37,68 @@ export function buildInactiveFiveAxisAuditQueries(input) {
   const namespace = sqlString(input.namespace);
   const staleHours = Math.min(Math.max(Math.floor(input.staleHours ?? 24), 1), 24 * 365);
   const inactive = (alias) => inactiveMemoryPredicate(alias);
+  const nonTerminalRun = `run.status IN (${sqlList(AUDIT_NON_TERMINAL_RUN_STATUSES)})`;
+  const staleRun = "run.memory_revision < memory.five_axis_revision";
+  const futureRun = "run.memory_revision > memory.five_axis_revision";
+  const eligibleRunMemory = `NOT (${inactive("memory")})`;
+  const candidateLinkedRun = `EXISTS (
+    SELECT 1
+    FROM memory_candidate_axis_runs AS link
+    WHERE link.namespace = run.namespace
+      AND link.memory_id = run.memory_id
+      AND link.memory_revision = run.memory_revision
+      AND link.axis = run.axis
+  )`;
+  const malformedOwnership = `(
+    (
+      run.status = 'running'
+      AND (run.claim_token IS NULL OR run.lease_expires_at IS NULL)
+    ) OR (
+      run.status != 'running'
+      AND (run.claim_token IS NOT NULL OR run.lease_expires_at IS NOT NULL)
+    )
+  )`;
+  const staleFailedRepairable = `(
+    run.axis = 'Y'
+    AND ${staleRun}
+    AND ${eligibleRunMemory}
+    AND NOT (${candidateLinkedRun})
+    AND run.status = 'failed'
+    AND run.claim_token IS NULL
+    AND run.lease_expires_at IS NULL
+  )`;
+  const staleExpiredRunningRepairable = `(
+    run.axis = 'Y'
+    AND ${staleRun}
+    AND ${eligibleRunMemory}
+    AND NOT (${candidateLinkedRun})
+    AND run.status = 'running'
+    AND run.claim_token IS NOT NULL
+    AND run.lease_expires_at IS NOT NULL
+    AND run.lease_expires_at <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+  )`;
+  const staleActiveRunning = `(
+    ${staleRun}
+    AND run.status = 'running'
+    AND run.claim_token IS NOT NULL
+    AND run.lease_expires_at IS NOT NULL
+    AND run.lease_expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+  )`;
+  const candidateLinkedStaleRun = `(
+    ${nonTerminalRun}
+    AND ${staleRun}
+    AND ${candidateLinkedRun}
+  )`;
+  const ineligibleNonTerminalRun = `(${nonTerminalRun} AND ${inactive("memory")})`;
+  const futureRevisionRun = `(${nonTerminalRun} AND ${futureRun})`;
+  const axisRunDrift = `(
+    ${staleFailedRepairable}
+    OR ${staleExpiredRunningRepairable}
+    OR ${malformedOwnership}
+    OR ${futureRevisionRun}
+    OR ${candidateLinkedStaleRun}
+    OR ${ineligibleNonTerminalRun}
+  )`;
 
   return [
     {
@@ -175,51 +237,42 @@ export function buildInactiveFiveAxisAuditQueries(input) {
     },
     {
       name: "axis_runs",
-      driftFields: [
-        "ineligible_non_terminal",
-        "stale_revision_runs",
-        "future_revision_anomalies",
-        "ownership_anomalies"
-      ],
+      driftFields: ["axis_run_drift_rows"],
       sql: `SELECT
         COALESCE(SUM(CASE
-          WHEN run.status IN (${sqlList(AUDIT_NON_TERMINAL_RUN_STATUSES)})
-           AND ${inactive("memory")}
+          WHEN ${axisRunDrift}
+          THEN 1 ELSE 0 END
+        ), 0) AS axis_run_drift_rows,
+        COALESCE(SUM(CASE
+          WHEN ${ineligibleNonTerminalRun}
           THEN 1 ELSE 0 END
         ), 0) AS ineligible_non_terminal,
         COALESCE(SUM(CASE
-          WHEN run.status = 'running'
-           AND run.claim_token IS NOT NULL
-           AND run.lease_expires_at IS NOT NULL
-           AND run.lease_expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+          WHEN ${staleActiveRunning}
           THEN 1 ELSE 0 END
-        ), 0) AS active_leases,
+        ), 0) AS stale_running_active_lease,
         COALESCE(SUM(CASE
-          WHEN run.status IN (${sqlList(AUDIT_NON_TERMINAL_RUN_STATUSES)})
-           AND run.memory_revision < memory.five_axis_revision
+          WHEN ${nonTerminalRun} AND ${staleRun}
           THEN 1 ELSE 0 END
         ), 0) AS stale_revision_runs,
         COALESCE(SUM(CASE
-          WHEN run.status IN (${sqlList(AUDIT_NON_TERMINAL_RUN_STATUSES)})
-           AND run.memory_revision > memory.five_axis_revision
+          WHEN ${staleFailedRepairable}
+          THEN 1 ELSE 0 END
+        ), 0) AS stale_failed_repairable,
+        COALESCE(SUM(CASE
+          WHEN ${staleExpiredRunningRepairable}
+          THEN 1 ELSE 0 END
+        ), 0) AS stale_running_expired_repairable,
+        COALESCE(SUM(CASE
+          WHEN ${futureRevisionRun}
           THEN 1 ELSE 0 END
         ), 0) AS future_revision_anomalies,
         COALESCE(SUM(CASE
-          WHEN run.status = 'running'
-           AND run.memory_revision < memory.five_axis_revision
-           AND run.claim_token IS NOT NULL
-           AND run.lease_expires_at IS NOT NULL
-           AND run.lease_expires_at <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+          WHEN ${candidateLinkedStaleRun}
           THEN 1 ELSE 0 END
-        ), 0) AS expired_stale_running,
+        ), 0) AS candidate_linked_stale_runs,
         COALESCE(SUM(CASE
-          WHEN (
-            run.status = 'running'
-            AND (run.claim_token IS NULL OR run.lease_expires_at IS NULL)
-          ) OR (
-            run.status != 'running'
-            AND (run.claim_token IS NOT NULL OR run.lease_expires_at IS NOT NULL)
-          )
+          WHEN ${malformedOwnership}
           THEN 1 ELSE 0 END
         ), 0) AS ownership_anomalies,
         COALESCE(SUM(CASE

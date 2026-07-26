@@ -48,7 +48,11 @@ describe("inactive five-axis audit command", () => {
     expect(sql).toContain("failed_vector_states");
     expect(sql).toContain("relation_rows");
     expect(sql).toContain("origin_diary_provenance_rows");
+    expect(sql).toContain("axis_run_drift_rows");
     expect(sql).toContain("stale_revision_runs");
+    expect(sql).toContain("stale_running_active_lease");
+    expect(sql).toContain("stale_failed_repairable");
+    expect(sql).toContain("stale_running_expired_repairable");
     expect(sql).toContain("future_revision_anomalies");
     expect(sql).toContain("ownership_anomalies");
     expect(sql).toContain("running_missing_claim_token");

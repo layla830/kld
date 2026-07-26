@@ -190,11 +190,12 @@ describe("read-only inactive five-axis audit", () => {
     expect(report.sections.timeline[0]).toMatchObject({ membership_rows: 1 });
     expect(report.sections.outbox[0]).toMatchObject({ status: "pending", count: 1 });
     expect(report.sections.axis_runs[0]).toMatchObject({
+      axis_run_drift_rows: 1,
       ineligible_non_terminal: 1,
-      active_leases: 1,
+      stale_running_active_lease: 0,
       stale_revision_runs: 0,
       future_revision_anomalies: 1,
-      expired_stale_running: 0
+      stale_running_expired_repairable: 0
     });
     expect(report.sections.candidate_dependencies[0]).toMatchObject({
       action: "update",
@@ -322,66 +323,7 @@ async function executeRepairQuery(query: { sql: string }) {
 }
 
 describe("bounded inactive five-axis D1 repair", () => {
-  it("deletes every selected inactive-endpoint relation and is idempotent", async () => {
-    const namespace = `inactive-repair-relations-${crypto.randomUUID()}`;
-    const now = new Date().toISOString();
-    const eligible = await createMemory(env.DB, {
-      namespace,
-      type: "note",
-      content: "eligible relation endpoint",
-      status: "active"
-    });
-    const ineligible = await createMemory(env.DB, {
-      namespace,
-      type: "diary",
-      content: "ineligible relation endpoint",
-      status: "active"
-    });
-    const firstId = `rel_${crypto.randomUUID()}`;
-    const secondId = `rel_${crypto.randomUUID()}`;
-    await env.DB.batch([
-      env.DB.prepare(
-        `INSERT INTO memory_relations (
-           id, namespace, source_memory_id, target_memory_id,
-           relation_type, strength, reason, created_at
-         ) VALUES (?, ?, ?, ?, 'same_topic', 0.8, 'historical derived edge', ?)`
-      ).bind(firstId, namespace, ineligible.id, eligible.id, now),
-      env.DB.prepare(
-        `INSERT INTO memory_relations (
-           id, namespace, source_memory_id, target_memory_id,
-           relation_type, strength, reason, created_at
-         ) VALUES (?, ?, ?, ?, 'supports', 0.8, 'reviewed edge', ?)`
-      ).bind(secondId, namespace, ineligible.id, eligible.id, now)
-    ]);
-
-    const dryRun = buildRepairDryRunQuery({ namespace, cohort: "relations", limit: 100 });
-    expect(() => assertReadOnlyRepairQuery(dryRun)).not.toThrow();
-    await expect(executeRepairQuery(dryRun)).resolves.toMatchObject({
-      results: [{
-        relation_rows: 2,
-        repairable_rows: 2,
-        selected: 2,
-        has_more: 0
-      }]
-    });
-
-    const applied = await executeRepairQuery(
-      buildRepairApplyQuery({ namespace, cohort: "relations", limit: 100 })
-    );
-    expect(applied.results).toHaveLength(2);
-    expect(applied.meta.changes).toBe(2);
-    await expect(env.DB.prepare(
-      "SELECT id FROM memory_relations WHERE namespace = ? AND id = ?"
-    ).bind(namespace, firstId).first()).resolves.toBeNull();
-    await expect(env.DB.prepare(
-      "SELECT id FROM memory_relations WHERE namespace = ? AND id = ?"
-    ).bind(namespace, secondId).first()).resolves.toBeNull();
-    await expect(executeRepairQuery(
-      buildRepairApplyQuery({ namespace, cohort: "relations", limit: 100 })
-    )).resolves.toMatchObject({ results: [] });
-  });
-
-  it("repairs only unowned stale failed Y runs and audits malformed ownership", async () => {
+  it("repairs stale failed and strictly expired running Y runs", async () => {
     const namespace = `inactive-repair-runs-${crypto.randomUUID()}`;
     const now = new Date().toISOString();
     const expired = new Date(Date.now() - 60_000).toISOString();
@@ -512,9 +454,12 @@ describe("bounded inactive five-axis D1 repair", () => {
 
     const audit = await runAudit(namespace);
     expect(audit.sections.axis_runs[0]).toMatchObject({
-      active_leases: 1,
+      axis_run_drift_rows: 7,
+      stale_running_active_lease: 1,
       stale_revision_runs: 6,
-      expired_stale_running: 1,
+      stale_failed_repairable: 1,
+      stale_running_expired_repairable: 1,
+      candidate_linked_stale_runs: 1,
       ownership_anomalies: 4,
       running_missing_claim_token: 1,
       running_missing_lease: 1,
@@ -522,22 +467,23 @@ describe("bounded inactive five-axis D1 repair", () => {
       non_running_lease_residue: 1
     });
 
-    const dryRun = buildRepairDryRunQuery({ namespace, cohort: "stale-axis-runs", limit: 100 });
+    const dryRun = buildRepairDryRunQuery({ namespace, limit: 100 });
     expect(() => assertReadOnlyRepairQuery(dryRun)).not.toThrow();
     await expect(executeRepairQuery(dryRun)).resolves.toMatchObject({
       results: [{
-        repairable_rows: 1,
+        repairable_rows: 2,
         failed_rows: 1,
-        selected: 1,
+        expired_running_rows: 1,
+        selected: 2,
         has_more: 0
       }]
     });
 
     const applied = await executeRepairQuery(
-      buildRepairApplyQuery({ namespace, cohort: "stale-axis-runs", limit: 100 })
+      buildRepairApplyQuery({ namespace, limit: 100 })
     );
-    expect(applied.results).toHaveLength(1);
-    expect(applied.meta.changes).toBe(1);
+    expect(applied.results).toHaveLength(2);
+    expect(applied.meta.changes).toBe(2);
     const rows = await env.DB.prepare(
       `SELECT memory_id, status, result_json, claim_token, lease_expires_at
        FROM memory_five_axis_runs
@@ -549,16 +495,17 @@ describe("bounded inactive five-axis D1 repair", () => {
       claim_token: null,
       lease_expires_at: null
     });
-    expect(JSON.parse(String(byMemory.get(failedMemory.id)?.result_json))).toMatchObject({
+    const failedResult = JSON.parse(String(byMemory.get(failedMemory.id)?.result_json));
+    expect(failedResult).toMatchObject({
       reason: "superseded_by_newer_memory_revision",
       previous_revision: 1,
-      current_revision: 2,
-      repair: "inactive_five_axis_history"
+      current_revision: 2
     });
+    expect(failedResult).not.toHaveProperty("repair");
     expect(byMemory.get(expiredMemory.id)).toMatchObject({
-      status: "running",
-      claim_token: "expired-claim",
-      lease_expires_at: expired
+      status: "skipped",
+      claim_token: null,
+      lease_expires_at: null
     });
     expect(byMemory.get(activeMemory.id)).toMatchObject({
       status: "running",
