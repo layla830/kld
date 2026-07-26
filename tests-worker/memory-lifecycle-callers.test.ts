@@ -166,6 +166,28 @@ function mcpRequest(name: "update_memory" | "delete_memory", args: Record<string
   });
 }
 
+async function createUpdateCandidate(
+  targetId: string,
+  payload: Record<string, unknown>,
+  label: string
+): Promise<string> {
+  const externalKey = `dream-update:${label}:${crypto.randomUUID()}`;
+  await upsertMemoryCandidate(env.DB, "default", {
+    externalKey,
+    dreamDate: "2026-07-26",
+    action: "update",
+    targetId,
+    payload,
+    sourceChunkIds: [],
+    status: "pending"
+  });
+  const candidate = await env.DB.prepare(
+    "SELECT id FROM memory_candidates WHERE namespace = 'default' AND external_key = ?"
+  ).bind(externalKey).first<{ id: string }>();
+  if (!candidate) throw new Error(`missing update candidate for ${targetId}`);
+  return candidate.id;
+}
+
 describe("inactive memory lifecycle callers", () => {
   it("routes Memory API DELETE through the deprojection contract", async () => {
     const memory = await createEligibleMemory("api delete");
@@ -364,6 +386,179 @@ describe("inactive memory lifecycle callers", () => {
       candidate_id: null,
       invariants_verified: 1
     });
+  });
+
+  it("atomically deprojects an inactivating Dream update candidate before approval", async () => {
+    const memory = await createEligibleMemory("dream candidate type update");
+    await seedRelation(memory, "dream candidate type update");
+    const candidateId = await createUpdateCandidate(memory.id, { type: "diary" }, "type");
+    const vectors = vectorRuntime();
+
+    const response = await worker.fetch(
+      adminRequest(ADMIN_BOARD_ROUTES.approveCandidate.path, { id: candidateId }),
+      vectors.runtime,
+      createExecutionContext()
+    );
+
+    expect(response.status).toBe(303);
+    await expect(env.DB.prepare(
+      "SELECT status, result_memory_id FROM memory_candidates WHERE namespace = 'default' AND id = ?"
+    ).bind(candidateId).first()).resolves.toMatchObject({
+      status: "approved",
+      result_memory_id: memory.id
+    });
+    await expect(env.DB.prepare(
+      `SELECT status, type, active_fact, vector_sync_status, vector_synced
+       FROM memories WHERE namespace = 'default' AND id = ?`
+    ).bind(memory.id).first()).resolves.toMatchObject({
+      status: "active",
+      type: "diary",
+      active_fact: 1,
+      vector_sync_status: "deleted",
+      vector_synced: 0
+    });
+    await expect(relationCount(memory.id)).resolves.toBe(0);
+    await expect(deprojection(memory.id)).resolves.toMatchObject({
+      source: "dream_candidate",
+      reason: "dream_candidate_update",
+      candidate_id: candidateId,
+      invariants_verified: 1
+    });
+    expect(vectors.deletedIds).toContain(memory.vector_id);
+    expect(vectors.upsertedIds).not.toContain(memory.vector_id);
+    expect(vectors.fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("keeps an ordinary Dream update candidate on the guarded update path", async () => {
+    const memory = await createEligibleMemory("dream candidate content update");
+    const updatedContent = `approved candidate content ${crypto.randomUUID()}`;
+    const candidateId = await createUpdateCandidate(
+      memory.id,
+      { content: updatedContent },
+      "content"
+    );
+    const vectors = vectorRuntime();
+
+    const response = await worker.fetch(
+      adminRequest(ADMIN_BOARD_ROUTES.approveCandidate.path, { id: candidateId }),
+      vectors.runtime,
+      createExecutionContext()
+    );
+
+    expect(response.status).toBe(303);
+    await expect(env.DB.prepare(
+      "SELECT status, result_memory_id FROM memory_candidates WHERE namespace = 'default' AND id = ?"
+    ).bind(candidateId).first()).resolves.toMatchObject({
+      status: "approved",
+      result_memory_id: memory.id
+    });
+    await expect(env.DB.prepare(
+      `SELECT content, vector_sync_status, vector_synced
+       FROM memories WHERE namespace = 'default' AND id = ?`
+    ).bind(memory.id).first()).resolves.toMatchObject({
+      content: updatedContent,
+      vector_sync_status: "synced",
+      vector_synced: 1
+    });
+    await expect(env.DB.prepare(
+      `SELECT COUNT(*) AS count FROM memory_deprojections
+       WHERE namespace = 'default' AND memory_id = ?`
+    ).bind(memory.id).first()).resolves.toMatchObject({ count: 0 });
+    expect(vectors.upsertedIds).toContain(memory.vector_id);
+    expect(vectors.deletedIds).not.toContain(memory.vector_id);
+    expect(vectors.fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not approve a Dream update candidate after a revision race", async () => {
+    const memory = await createEligibleMemory("dream candidate stale revision");
+    const candidateId = await createUpdateCandidate(
+      memory.id,
+      { content: "candidate must not win the revision race" },
+      "stale"
+    );
+    const triggerName = `stale_dream_update_${crypto.randomUUID().replaceAll("-", "")}`;
+    await env.DB.prepare(
+      `CREATE TRIGGER ${triggerName}
+       BEFORE UPDATE OF content ON memories
+       WHEN OLD.namespace = 'default' AND OLD.id = '${memory.id}'
+       BEGIN
+         UPDATE memories
+         SET five_axis_revision = five_axis_revision + 1,
+             updated_at = '2026-07-26T06:30:00.000Z'
+         WHERE namespace = OLD.namespace AND id = OLD.id;
+         SELECT RAISE(IGNORE);
+       END`
+    ).run();
+
+    try {
+      const response = await worker.fetch(
+        adminRequest(ADMIN_BOARD_ROUTES.approveCandidate.path, { id: candidateId }),
+        runtimeEnv,
+        createExecutionContext()
+      );
+      expect(response.status).toBe(303);
+    } finally {
+      await env.DB.prepare(`DROP TRIGGER IF EXISTS ${triggerName}`).run();
+    }
+
+    await expect(env.DB.prepare(
+      "SELECT status FROM memory_candidates WHERE namespace = 'default' AND id = ?"
+    ).bind(candidateId).first()).resolves.toMatchObject({ status: "pending" });
+    await expect(env.DB.prepare(
+      `SELECT content, five_axis_revision FROM memories
+       WHERE namespace = 'default' AND id = ?`
+    ).bind(memory.id).first()).resolves.toMatchObject({
+      content: memory.content,
+      five_axis_revision: (memory.five_axis_revision ?? 1) + 1
+    });
+    await expect(env.DB.prepare(
+      `SELECT COUNT(*) AS count FROM memory_deprojections
+       WHERE namespace = 'default' AND memory_id = ?`
+    ).bind(memory.id).first()).resolves.toMatchObject({ count: 0 });
+  });
+
+  it("keeps target, relation, and candidate pending when deprojection cannot start", async () => {
+    const memory = await createEligibleMemory("dream candidate atomic failure");
+    await seedRelation(memory, "dream candidate atomic failure");
+    const candidateId = await createUpdateCandidate(memory.id, { type: "diary" }, "atomic");
+    const operationId = `deproj_${candidateId}`;
+    const triggerName = `ignore_dream_update_${crypto.randomUUID().replaceAll("-", "")}`;
+    await env.DB.prepare(
+      `CREATE TRIGGER ${triggerName}
+       BEFORE INSERT ON memory_deprojections
+       WHEN NEW.operation_id = '${operationId}'
+       BEGIN
+         SELECT RAISE(IGNORE);
+       END`
+    ).run();
+
+    try {
+      const response = await worker.fetch(
+        adminRequest(ADMIN_BOARD_ROUTES.approveCandidate.path, { id: candidateId }),
+        runtimeEnv,
+        createExecutionContext()
+      );
+      expect(response.status).toBe(303);
+    } finally {
+      await env.DB.prepare(`DROP TRIGGER IF EXISTS ${triggerName}`).run();
+    }
+
+    await expect(env.DB.prepare(
+      "SELECT status FROM memory_candidates WHERE namespace = 'default' AND id = ?"
+    ).bind(candidateId).first()).resolves.toMatchObject({ status: "pending" });
+    await expect(env.DB.prepare(
+      `SELECT status, type, active_fact, five_axis_revision
+       FROM memories WHERE namespace = 'default' AND id = ?`
+    ).bind(memory.id).first()).resolves.toMatchObject({
+      status: "active",
+      type: "note",
+      active_fact: 1,
+      five_axis_revision: memory.five_axis_revision ?? 1
+    });
+    await expect(relationCount(memory.id)).resolves.toBe(1);
+    await expect(env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM memory_deprojections WHERE operation_id = ?"
+    ).bind(operationId).first()).resolves.toMatchObject({ count: 0 });
   });
 
   it("approves a Dream delete candidate in the same batch as deprojection", async () => {

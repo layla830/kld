@@ -33,6 +33,10 @@ import {
 } from "../../memory/dreamCandidatePolicy";
 import { nowIso } from "../../utils/time";
 import { prepareMemoryDeprojection } from "../../memory/deprojection";
+import {
+  applyMemoryEligibilityPatch,
+  classifyMemoryEligibilityTransition
+} from "../../memory/fiveAxis/eligibility";
 
 function text(value: unknown): string | undefined { return typeof value === "string" && value.trim() ? value.trim() : undefined; }
 function number(value: unknown): number | undefined {
@@ -114,6 +118,10 @@ export function candidateUpdatePatch(payload: Record<string, unknown>): UpdateMe
   return {
     content: hasOwn(payload, "content") ? text(payload.content) : undefined,
     type: hasOwn(payload, "type") ? text(payload.type) : undefined,
+    ...(hasOwn(payload, "status") ? { status: text(payload.status) } : {}),
+    ...(hasOwn(payload, "active_fact")
+      ? { activeFact: typeof payload.active_fact === "boolean" ? payload.active_fact : undefined }
+      : {}),
     factKey: nullableTextPatch(payload, "fact_key"),
     thread: nullableTextPatch(payload, "thread"),
     riskLevel: nullableTextPatch(payload, "risk_level"),
@@ -409,20 +417,64 @@ async function approveUpdateCandidate(
       targetType: existing?.type
     });
   }
+  const patch = candidateUpdatePatch(payload);
+  if (!Object.values(patch).some((value) => value !== undefined)) return null;
+  const expectedRevision = existing.five_axis_revision ?? 1;
+  const transition = classifyMemoryEligibilityTransition(
+    existing,
+    applyMemoryEligibilityPatch(existing, patch)
+  );
+  if (transition === "eligible_to_ineligible") {
+    const deprojection = await prepareMemoryDeprojection(env.DB, {
+      namespace: candidate.namespace,
+      memoryId: existing.id,
+      patch,
+      expectedStatus: "active",
+      expectedRevision,
+      source: "dream_candidate",
+      reason: "dream_candidate_update",
+      candidateId: candidate.id,
+      operationId: `deproj_${candidate.id}`,
+      memory: existing,
+      guard: candidateApprovalGuard(candidate)
+    });
+    const committed = await commitMemoryCandidateApproval(env.DB, {
+      namespace: candidate.namespace,
+      id: candidate.id,
+      expectedStatus: candidate.status,
+      resultMemoryId: existing.id,
+      businessStatements: deprojection.statements,
+      successGuard: deprojection.successGuard
+    });
+    if (!committed) return null;
+    const updated = await getMemoryById(env.DB, {
+      namespace: candidate.namespace,
+      id: existing.id
+    });
+    if (!updated) throw new Error("dream_candidate_update_target_missing");
+    return updated;
+  }
+
+  const mutationAt = nowIso();
   const statement = prepareMemoryUpdate(env.DB, {
     namespace: candidate.namespace,
-    id: candidate.target_id,
-    patch: candidateUpdatePatch(payload),
+    id: existing.id,
+    patch,
     expectedStatus: "active",
+    expectedRevision,
     guard: candidateApprovalGuard(candidate),
-    markVectorUnsynced: true
+    markVectorUnsynced: true,
+    now: mutationAt
   });
   return commitApproval(
     env,
     candidate,
-    candidate.target_id,
+    existing.id,
     statement ? [statement] : [],
-    memoryStatusGuard(candidate.namespace, candidate.target_id, "active")
+    {
+      sql: "EXISTS (SELECT 1 FROM memories WHERE namespace = ? AND id = ? AND updated_at = ?)",
+      binds: [candidate.namespace, existing.id, mutationAt]
+    }
   );
 }
 

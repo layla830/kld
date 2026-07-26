@@ -73,6 +73,10 @@ function diarySplitAny(needle) {
 }
 const diarySplitState = fs.readFileSync("src/db/diarySplitState.ts", "utf8");
 const candidateActions = fs.readFileSync("src/api/adminBoard/candidateActions.ts", "utf8");
+const candidateUpdateApproval = candidateActions.slice(
+  candidateActions.indexOf("async function approveUpdateCandidate"),
+  candidateActions.indexOf("async function approveDeleteCandidate")
+);
 const candidateActionContract = fs.readFileSync("src/memory/candidateActionContract.ts", "utf8");
 const candidateView = fs.readFileSync("src/api/adminBoard/candidateView.ts", "utf8");
 const adminBoard = fs.readFileSync("src/api/adminBoard.ts", "utf8");
@@ -774,6 +778,18 @@ const checks = [
       candidateActions.includes('source: "dream_candidate"') &&
       factTransitionActions.includes('source: "z_review"') &&
       metabolismActions.includes('source: "m_review"'),
+  ],
+  [
+    "Dream update candidates classify eligibility before choosing atomic mutation ownership",
+    candidateUpdateApproval.includes("candidateUpdatePatch(payload)") &&
+      candidateUpdateApproval.includes("classifyMemoryEligibilityTransition") &&
+      candidateUpdateApproval.includes('transition === "eligible_to_ineligible"') &&
+      candidateUpdateApproval.includes("prepareMemoryDeprojection") &&
+      candidateUpdateApproval.includes('reason: "dream_candidate_update"') &&
+      candidateUpdateApproval.includes("commitMemoryCandidateApproval") &&
+      candidateUpdateApproval.includes("deprojection.successGuard") &&
+      candidateUpdateApproval.includes("prepareMemoryUpdate") &&
+      candidateUpdateApproval.includes("expectedRevision"),
   ],
   [
     "Z: compatibility debug approval delegates to the same candidate use case",
