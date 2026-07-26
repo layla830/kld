@@ -37,6 +37,12 @@ import {
   applyMemoryEligibilityPatch,
   classifyMemoryEligibilityTransition
 } from "../../memory/fiveAxis/eligibility";
+import {
+  combineMutationGuards,
+  memoryCandidateStatusGuard,
+  memoryEventExistsGuard,
+  memoryExistsGuard
+} from "../../db/mutationGuards";
 
 function text(value: unknown): string | undefined { return typeof value === "string" && value.trim() ? value.trim() : undefined; }
 function number(value: unknown): number | undefined {
@@ -174,42 +180,12 @@ function assertNever(value: never): never {
   throw new Error(`unhandled_candidate_action:${String(value)}`);
 }
 
-function combineGuards(...guards: MemoryMutationGuard[]): MemoryMutationGuard {
-  return {
-    sql: guards.map((guard) => `(${guard.sql})`).join(" AND "),
-    binds: guards.flatMap((guard) => guard.binds)
-  };
-}
-
 function candidateApprovalGuard(candidate: MemoryCandidateRecord): MemoryMutationGuard {
-  return {
-    sql: `EXISTS (
-      SELECT 1 FROM memory_candidates
-      WHERE namespace = ? AND id = ? AND status = ?
-    )`,
-    binds: [candidate.namespace, candidate.id, candidate.status]
-  };
-}
-
-function memoryExistsGuard(namespace: string, memoryId: string): MemoryMutationGuard {
-  return {
-    sql: "EXISTS (SELECT 1 FROM memories WHERE namespace = ? AND id = ?)",
-    binds: [namespace, memoryId]
-  };
-}
-
-function memoryStatusGuard(namespace: string, memoryId: string, status: string): MemoryMutationGuard {
-  return {
-    sql: "EXISTS (SELECT 1 FROM memories WHERE namespace = ? AND id = ? AND status = ?)",
-    binds: [namespace, memoryId, status]
-  };
-}
-
-function memoryEventExistsGuard(namespace: string, eventId: string): MemoryMutationGuard {
-  return {
-    sql: "EXISTS (SELECT 1 FROM memory_events WHERE namespace = ? AND id = ?)",
-    binds: [namespace, eventId]
-  };
+  return memoryCandidateStatusGuard(
+    candidate.namespace,
+    candidate.id,
+    candidate.status
+  );
 }
 
 function dreamDeleteTargetAllowedGuard(namespace: string, memoryId: string): MemoryMutationGuard {
@@ -366,7 +342,7 @@ async function approveDiarySplitFact(
       candidate,
       existing.id,
       [],
-      combineGuards(memoryExistsGuard(candidate.namespace, existing.id), diaryGuard)
+      combineMutationGuards(memoryExistsGuard(candidate.namespace, existing.id), diaryGuard)
     );
   }
   const record = buildMemoryRecord({
@@ -393,8 +369,8 @@ async function approveDiarySplitFact(
     env,
     candidate,
     record.id,
-    [prepareMemoryInsert(env.DB, record, combineGuards(candidateApprovalGuard(candidate), diaryGuard))],
-    combineGuards(memoryExistsGuard(candidate.namespace, record.id), diaryGuard)
+    [prepareMemoryInsert(env.DB, record, combineMutationGuards(candidateApprovalGuard(candidate), diaryGuard))],
+    combineMutationGuards(memoryExistsGuard(candidate.namespace, record.id), diaryGuard)
   );
 }
 
@@ -511,7 +487,7 @@ async function approveDeleteCandidate(
     candidateId: candidate.id,
     operationId: `deproj_${candidate.id}`,
     memory: existing,
-    guard: combineGuards(candidateApprovalGuard(candidate), targetGuard),
+    guard: combineMutationGuards(candidateApprovalGuard(candidate), targetGuard),
     now: mutationAt
   });
   const ownershipEvent = prepareMemoryEventInsert(env.DB, {
@@ -522,14 +498,14 @@ async function approveDeleteCandidate(
   }, {
     id: ownershipEventId,
     now: mutationAt,
-    guard: combineGuards(candidateApprovalGuard(candidate), targetGuard)
+    guard: combineMutationGuards(candidateApprovalGuard(candidate), targetGuard)
   });
   const deleted = await commitApproval(
     env,
     candidate,
     candidate.target_id,
     [ownershipEvent, ...deprojection.statements],
-    combineGuards(
+    combineMutationGuards(
       deprojection.successGuard,
       memoryEventExistsGuard(candidate.namespace, ownershipEventId)
     )
@@ -569,7 +545,7 @@ async function approveFactGroup(
     sql: `(SELECT COUNT(*) FROM memories WHERE namespace = ? AND id IN (${placeholders})) = ?`,
     binds: [candidate.namespace, ...ids, ids.length]
   };
-  const transactionGuard = combineGuards(candidateApprovalGuard(candidate), membersExistGuard);
+  const transactionGuard = combineMutationGuards(candidateApprovalGuard(candidate), membersExistGuard);
   const statements: D1PreparedStatement[] = ids.map((memoryId) => {
     const statement = prepareMemoryUpdate(env.DB, {
       namespace: candidate.namespace,

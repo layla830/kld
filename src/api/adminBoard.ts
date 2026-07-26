@@ -1,6 +1,7 @@
 import type { Env } from "../types";
 import { enqueueDiarySplitIfNeeded, enqueueMemoryVectorSync } from "../queue/producer";
-import { approveDreamReview, createBoardMemory, deleteBoardMemory, editBoardMemory, rejectDreamReview } from "./adminBoard/actions";
+import { createBoardMemory, deleteBoardMemory, editBoardMemory } from "./adminBoard/actions";
+import { approveDreamReview, rejectDreamReview } from "./adminBoard/dreamReviewActions";
 import { forbidden, isAuthorized, isSameOriginAdminPost, unauthorized } from "./adminBoard/auth";
 import { fetchHeatmap, fetchLmc5Dashboard, fetchMemories, fetchQuoteCategories, fetchStats, fetchTimelineDates, fetchTypes } from "./adminBoard/data";
 import { fetchDreamReviewMemories } from "./adminBoard/reviewData";

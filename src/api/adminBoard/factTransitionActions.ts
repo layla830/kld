@@ -6,12 +6,17 @@ import {
   resolveMemoryCandidate,
   rollbackMemoryCandidate
 } from "../../db/memoryCandidates";
-import { getMemoryById, updateMemory, type MemoryMutationGuard } from "../../db/memories";
+import { getMemoryById, updateMemory } from "../../db/memories";
 import { listFactKeyConflictsForReview } from "../../memory/fiveAxis/zFacts";
 import { prepareMemoryDeprojection } from "../../memory/deprojection";
 import { syncMemoryVector } from "../../memory/state";
 import type { Env, MemoryRecord } from "../../types";
 import { payloadOf, readFormText } from "./utils";
+import {
+  combineMutationGuards,
+  memoryCandidateStatusGuard,
+  memoryEventsExistGuard
+} from "../../db/mutationGuards";
 
 interface Snapshot {
   id: string;
@@ -59,28 +64,6 @@ function matchesPendingSnapshot(memory: MemoryRecord | null, snapshot: Snapshot)
     && memory.updated_at === snapshot.updated_at);
 }
 
-function combineGuards(...guards: MemoryMutationGuard[]): MemoryMutationGuard {
-  return {
-    sql: guards.map((guard) => `(${guard.sql})`).join(" AND "),
-    binds: guards.flatMap((guard) => guard.binds)
-  };
-}
-
-function pendingCandidateGuard(namespace: string, candidateId: string): MemoryMutationGuard {
-  return {
-    sql: "EXISTS (SELECT 1 FROM memory_candidates WHERE namespace = ? AND id = ? AND status = 'pending')",
-    binds: [namespace, candidateId]
-  };
-}
-
-function memoryEventsExistGuard(namespace: string, eventIds: string[]): MemoryMutationGuard {
-  const placeholders = eventIds.map(() => "?").join(", ");
-  return {
-    sql: `(SELECT COUNT(*) FROM memory_events WHERE namespace = ? AND id IN (${placeholders})) = ?`,
-    binds: [namespace, ...eventIds, eventIds.length]
-  };
-}
-
 export async function approveFactTransitionCandidate(env: Env, form: FormData): Promise<FactTransitionResult | null> {
   const id = readFormText(form, "id");
   if (!id) return null;
@@ -115,7 +98,7 @@ export async function approveFactTransitionCandidate(env: Env, form: FormData): 
     candidateId: candidate.id,
     operationId: `deproj_${candidate.id}`,
     memory: weaker,
-    guard: pendingCandidateGuard(candidate.namespace, candidate.id)
+    guard: memoryCandidateStatusGuard(candidate.namespace, candidate.id, "pending")
   });
   const snapshotEventId = `ev_z_snapshot_${candidate.id}`;
   const conflictEventId = `ev_z_conflict_${candidate.id}`;
@@ -149,7 +132,7 @@ export async function approveFactTransitionCandidate(env: Env, form: FormData): 
     expectedStatus: "pending",
     resultMemoryId: best.id,
     businessStatements: [...deprojection.statements, snapshotEvent, conflictEvent],
-    successGuard: combineGuards(
+    successGuard: combineMutationGuards(
       deprojection.successGuard,
       memoryEventsExistGuard(candidate.namespace, [snapshotEventId, conflictEventId])
     )

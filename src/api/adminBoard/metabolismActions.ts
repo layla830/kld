@@ -6,7 +6,7 @@ import {
   resolveMemoryCandidate,
   rollbackMemoryCandidate
 } from "../../db/memoryCandidates";
-import { getMemoryById, updateMemory, type MemoryMutationGuard } from "../../db/memories";
+import { getMemoryById, updateMemory } from "../../db/memories";
 import type { Env, MemoryRecord } from "../../types";
 import {
   COLD_MEMORY_MAX_CONFIDENCE,
@@ -18,6 +18,11 @@ import { nowIso } from "../../utils/time";
 import { payloadOf, readFormText } from "./utils";
 import { prepareMemoryDeprojection } from "../../memory/deprojection";
 import { syncMemoryVector } from "../../memory/state";
+import {
+  combineMutationGuards,
+  memoryCandidateStatusGuard,
+  memoryEventExistsGuard
+} from "../../db/mutationGuards";
 
 export type MetabolismAction = "m_archive" | "m_relation_cleanup";
 type MetabolismResult = { memory: MemoryRecord | null; action: MetabolismAction | "rollback" };
@@ -34,27 +39,6 @@ const MAX_METABOLISM_BATCH_SIZE = 30;
 
 function beforeOf(payload: Record<string, unknown>): Record<string, unknown> {
   return payload.before && typeof payload.before === "object" ? payload.before as Record<string, unknown> : {};
-}
-
-function combineGuards(...guards: MemoryMutationGuard[]): MemoryMutationGuard {
-  return {
-    sql: guards.map((guard) => `(${guard.sql})`).join(" AND "),
-    binds: guards.flatMap((guard) => guard.binds)
-  };
-}
-
-function pendingCandidateGuard(namespace: string, candidateId: string): MemoryMutationGuard {
-  return {
-    sql: "EXISTS (SELECT 1 FROM memory_candidates WHERE namespace = ? AND id = ? AND status = 'pending')",
-    binds: [namespace, candidateId]
-  };
-}
-
-function memoryEventExistsGuard(namespace: string, eventId: string): MemoryMutationGuard {
-  return {
-    sql: "EXISTS (SELECT 1 FROM memory_events WHERE namespace = ? AND id = ?)",
-    binds: [namespace, eventId]
-  };
 }
 
 function relationSnapshotStatement(
@@ -165,8 +149,8 @@ export async function approveMetabolismCandidate(
       candidateId: candidate.id,
       operationId: `deproj_${candidate.id}`,
       memory: target,
-      guard: combineGuards(
-        pendingCandidateGuard(namespace, candidate.id),
+      guard: combineMutationGuards(
+        memoryCandidateStatusGuard(namespace, candidate.id, "pending"),
         { sql: "memory.updated_at = ?", binds: [target.updated_at] }
       ),
       now: mutationAt
@@ -188,7 +172,7 @@ export async function approveMetabolismCandidate(
       expectedStatus: "pending",
       resultMemoryId: target.id,
       businessStatements: [...deprojection.statements, snapshotEvent],
-      successGuard: combineGuards(
+      successGuard: combineMutationGuards(
         deprojection.successGuard,
         memoryEventExistsGuard(namespace, snapshotEventId)
       )

@@ -20,7 +20,12 @@ function digestAny(needle) {
   );
 }
 const merge = fs.readFileSync("src/memory/merge.ts", "utf8");
-const reviewActions = fs.readFileSync("src/api/adminBoard/actions.ts", "utf8");
+const adminActions = fs.readFileSync("src/api/adminBoard/actions.ts", "utf8");
+const dreamReviewActions = fs.readFileSync(
+  "src/api/adminBoard/dreamReviewActions.ts",
+  "utf8",
+);
+const mutationGuards = fs.readFileSync("src/db/mutationGuards.ts", "utf8");
 const reviewView = fs.readFileSync("src/api/adminBoard/reviewView.ts", "utf8");
 const postProcess = fs.readFileSync("src/memory/postProcess.ts", "utf8");
 const metabolismReview = fs.readFileSync(
@@ -617,11 +622,11 @@ const checks = [
   ],
   [
     "Z: supersede review has approve and reject closure",
-    reviewActions.includes('parsed.action !== "supersede"') &&
-      reviewActions.includes("previousTarget: result.target") &&
-      reviewActions.includes('status: "superseded"') &&
-      reviewActions.includes("activeFact: false") &&
-      reviewActions.includes('reason: "dream_review_supersede"'),
+    dreamReviewActions.includes('parsed.action !== "supersede"') &&
+      dreamReviewActions.includes("previousTarget: result.target") &&
+      dreamReviewActions.includes('status: "superseded"') &&
+      dreamReviewActions.includes("activeFact: false") &&
+      dreamReviewActions.includes('reason: "dream_review_supersede"'),
   ],
   [
     "Z: supersede review displays before and after content",
@@ -773,11 +778,26 @@ const checks = [
       !memoriesApi.includes("softDeleteMemory") &&
       mcpApi.includes('reason: "mcp_memory_delete"') &&
       !mcpApi.includes("softDeleteMemory") &&
-      reviewActions.includes('reason: "admin_board_delete"') &&
-      reviewActions.includes('reason: "dream_review_delete"') &&
+      adminActions.includes('reason: "admin_board_delete"') &&
+      dreamReviewActions.includes('reason: "dream_review_delete"') &&
       candidateActions.includes('source: "dream_candidate"') &&
       factTransitionActions.includes('source: "z_review"') &&
       metabolismActions.includes('source: "m_review"'),
+  ],
+  [
+    "Architecture: Admin CRUD, Dream review, and mutation guards have single owners",
+    !adminActions.includes("approveDreamReview") &&
+      !adminActions.includes("rejectDreamReview") &&
+      dreamReviewActions.includes("export async function approveDreamReview") &&
+      dreamReviewActions.includes("export async function rejectDreamReview") &&
+      dreamReviewActions.includes("commitDreamReviewApproval") &&
+      mutationGuards.includes("export function combineMutationGuards") &&
+      mutationGuards.includes("export function memoryCandidateStatusGuard") &&
+      mutationGuards.includes("export function memoryEventsExistGuard") &&
+      [adminActions, dreamReviewActions, candidateActions, factTransitionActions, metabolismActions]
+        .every((source) => !source.includes("function combineGuards")) &&
+      [candidateActions, factTransitionActions, metabolismActions]
+        .every((source) => source.includes('from "../../db/mutationGuards"')),
   ],
   [
     "Dream update candidates classify eligibility before choosing atomic mutation ownership",
