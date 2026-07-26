@@ -118,10 +118,6 @@ export function candidateUpdatePatch(payload: Record<string, unknown>): UpdateMe
   return {
     content: hasOwn(payload, "content") ? text(payload.content) : undefined,
     type: hasOwn(payload, "type") ? text(payload.type) : undefined,
-    ...(hasOwn(payload, "status") ? { status: text(payload.status) } : {}),
-    ...(hasOwn(payload, "active_fact")
-      ? { activeFact: typeof payload.active_fact === "boolean" ? payload.active_fact : undefined }
-      : {}),
     factKey: nullableTextPatch(payload, "fact_key"),
     thread: nullableTextPatch(payload, "thread"),
     riskLevel: nullableTextPatch(payload, "risk_level"),
