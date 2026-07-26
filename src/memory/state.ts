@@ -7,15 +7,19 @@ import {
 } from "../db/memories";
 import { deleteMemoryEmbedding, upsertMemoryEmbedding } from "./embedding";
 import {
-  applyMemoryEligibilityPatch,
-  classifyMemoryEligibilityTransition,
   deprojectMemoryFromFiveAxes,
   type MemoryDeprojectionSource,
-  type MemoryEligibilityTransition,
 } from "./deprojection";
+import {
+  applyMemoryEligibilityPatch,
+  classifyMemoryEligibilityTransition,
+  isFiveAxisMemoryEligible,
+  type MemoryEligibilityTransition,
+} from "./fiveAxis/eligibility";
 import type { Env, MemoryRecord } from "../types";
 
 export type VectorSyncStatus = "synced" | "failed" | "pending" | "deleted";
+export type MemoryVectorAction = "upsert" | "delete";
 
 export interface MemoryLifecycleMutationOptions {
   source: MemoryDeprojectionSource;
@@ -29,10 +33,11 @@ export interface MemoryLifecycleMutationOptions {
 export interface MemoryLifecycleMutationResult {
   transition: MemoryEligibilityTransition;
   memory: MemoryRecord;
+  vectorAction: MemoryVectorAction;
 }
 
 async function syncVector(env: Env, memory: MemoryRecord): Promise<VectorSyncStatus> {
-  if (memory.status !== "active") return "deleted";
+  if (!isFiveAxisMemoryEligible(memory)) return "deleted";
   try {
     const ok = await upsertMemoryEmbedding(env, memory);
     return ok ? "synced" : "failed";
@@ -52,6 +57,14 @@ async function removeVector(env: Env, memory: MemoryRecord): Promise<VectorSyncS
   }
 }
 
+function vectorActionForMutation(
+  memory: MemoryRecord,
+  transition: MemoryEligibilityTransition
+): MemoryVectorAction {
+  if (transition === "eligible_to_ineligible") return "delete";
+  return isFiveAxisMemoryEligible(memory) ? "upsert" : "delete";
+}
+
 async function updateSyncStatus(
   env: Env,
   namespace: string,
@@ -65,6 +78,27 @@ async function updateSyncStatus(
   } catch (error) {
     console.error("updateSyncStatus failed", { id, status, error: error instanceof Error ? error.message : String(error) });
   }
+}
+
+async function syncLifecycleMutation(
+  env: Env,
+  result: MemoryLifecycleMutationResult
+): Promise<MemoryRecord> {
+  const syncStatus = result.vectorAction === "delete"
+    ? await removeVector(env, result.memory)
+    : await syncVector(env, result.memory);
+  await updateSyncStatus(
+    env,
+    result.memory.namespace,
+    result.memory.id,
+    syncStatus
+  );
+  return (
+    await getMemoryById(env.DB, {
+      namespace: result.memory.namespace,
+      id: result.memory.id
+    })
+  ) ?? result.memory;
 }
 
 export async function createSyncedMemory(
@@ -107,7 +141,11 @@ export async function mutateMemoryLifecycle(
       reason: options.reason,
       operationId: options.operationId
     });
-    return { transition, memory: result.memory };
+    return {
+      transition,
+      memory: result.memory,
+      vectorAction: "delete"
+    };
   }
 
   const updated = await updateMemory(env.DB, {
@@ -118,7 +156,13 @@ export async function mutateMemoryLifecycle(
     expectedRevision: options.expectedRevision ?? existing.five_axis_revision ?? 1,
     requireUnpinned: options.requireUnpinned
   });
-  return updated ? { transition, memory: updated } : null;
+  return updated
+    ? {
+        transition,
+        memory: updated,
+        vectorAction: vectorActionForMutation(updated, transition)
+      }
+    : null;
 }
 
 export async function patchSyncedMemory(
@@ -132,18 +176,7 @@ export async function patchSyncedMemory(
   }
 ): Promise<MemoryRecord | null> {
   const mutation = await mutateMemoryLifecycle(env, namespace, id, patch, options);
-  if (!mutation) return null;
-  const updated = mutation.memory;
-
-  if (updated.status === "active") {
-    const syncStatus = await syncVector(env, updated);
-    await updateSyncStatus(env, namespace, id, syncStatus);
-  } else {
-    const syncStatus = await removeVector(env, updated);
-    await updateSyncStatus(env, namespace, id, syncStatus);
-  }
-
-  return getMemoryById(env.DB, { namespace, id });
+  return mutation ? syncLifecycleMutation(env, mutation) : null;
 }
 
 export async function deleteSyncedMemory(
@@ -166,24 +199,16 @@ export async function deleteSyncedMemory(
     requireUnpinned: true
   });
   if (!mutation) return null;
-  const deleted = mutation.memory;
-
-  const syncStatus = await removeVector(env, deleted);
-  await updateSyncStatus(env, namespace, id, syncStatus);
-
-  return getMemoryById(env.DB, { namespace, id });
+  return syncLifecycleMutation(env, mutation);
 }
 
 export async function syncMemoryVector(
   env: Env,
   memory: MemoryRecord
 ): Promise<VectorSyncStatus> {
-  if (memory.status !== "active") {
-    const status = await removeVector(env, memory);
-    await updateSyncStatus(env, memory.namespace, memory.id, status);
-    return status;
-  }
-  const status = await syncVector(env, memory);
+  const status = isFiveAxisMemoryEligible(memory)
+    ? await syncVector(env, memory)
+    : await removeVector(env, memory);
   await updateSyncStatus(env, memory.namespace, memory.id, status);
   return status;
 }

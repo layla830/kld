@@ -1,6 +1,6 @@
 import { env } from "cloudflare:workers";
 import { createExecutionContext } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/index";
 import { ADMIN_BOARD_ROUTES } from "../src/api/adminBoard/routes";
 import { handleMcp } from "../src/api/mcp";
@@ -20,6 +20,45 @@ const runtimeEnv = {
   DREAM_NAMESPACE: "default",
   ENABLE_FIVE_AXIS: "true"
 } as Env;
+
+function vectorRuntime(): {
+  runtime: Env;
+  deletedIds: string[];
+  upsertedIds: string[];
+  fetchSpy: ReturnType<typeof vi.spyOn>;
+} {
+  const deletedIds: string[] = [];
+  const upsertedIds: string[] = [];
+  const vectorize = {
+    deleteByIds: async (ids: string[]) => {
+      deletedIds.push(...ids);
+      return { mutationId: "delete-lifecycle" };
+    },
+    upsert: async (vectors: VectorizeVector[]) => {
+      upsertedIds.push(...vectors.map((vector) => vector.id));
+      return { mutationId: "upsert-lifecycle" };
+    }
+  };
+  const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
+    data: [{ embedding: [0.1, 0.2, 0.3] }]
+  }), { status: 200, headers: { "content-type": "application/json" } }));
+  return {
+    runtime: {
+      ...runtimeEnv,
+      EMBEDDING_MODEL: "lifecycle-test-embedding",
+      UPSTREAM_BASE_URL: "https://lifecycle-embedding.test/v1",
+      UPSTREAM_API_KEY: "lifecycle-embedding-key",
+      VECTORIZE: vectorize as Env["VECTORIZE"]
+    },
+    deletedIds,
+    upsertedIds,
+    fetchSpy
+  };
+}
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 async function createEligibleMemory(label: string): Promise<MemoryRecord> {
   return createMemory(env.DB, {
@@ -49,6 +88,21 @@ async function relationCount(memoryId: string): Promise<number> {
      WHERE namespace = 'default' AND (source_memory_id = ? OR target_memory_id = ?)`
   ).bind(memoryId, memoryId).first<{ count: number }>();
   return row?.count ?? 0;
+}
+
+async function vectorState(memoryId: string): Promise<{
+  vector_sync_status: string | null;
+  vector_synced: number;
+}> {
+  const row = await env.DB.prepare(
+    `SELECT vector_sync_status, vector_synced
+     FROM memories WHERE namespace = 'default' AND id = ?`
+  ).bind(memoryId).first<{
+    vector_sync_status: string | null;
+    vector_synced: number;
+  }>();
+  if (!row) throw new Error(`missing vector state for ${memoryId}`);
+  return row;
 }
 
 async function deprojection(memoryId: string): Promise<{
@@ -139,10 +193,11 @@ describe("inactive memory lifecycle callers", () => {
   it("routes eligibility-changing Memory API PATCH through deprojection", async () => {
     const memory = await createEligibleMemory("api type patch");
     await seedRelation(memory, "api type patch");
+    const vectors = vectorRuntime();
 
     const response = await worker.fetch(
       apiRequest(`/v1/memories/${memory.id}`, "PATCH", { type: "diary" }),
-      runtimeEnv,
+      vectors.runtime,
       createExecutionContext()
     );
 
@@ -155,6 +210,99 @@ describe("inactive memory lifecycle callers", () => {
       source: "memory_api",
       reason: "memory_api_patch",
       invariants_verified: 1
+    });
+    expect(vectors.deletedIds).toContain(memory.vector_id);
+    expect(vectors.upsertedIds).not.toContain(memory.vector_id);
+    expect(vectors.fetchSpy).not.toHaveBeenCalled();
+    await expect(vectorState(memory.id)).resolves.toEqual({
+      vector_sync_status: "deleted",
+      vector_synced: 0
+    });
+  });
+
+  it("deletes the vector when active_fact makes an active memory ineligible", async () => {
+    const memory = await createEligibleMemory("api active fact patch");
+    await seedRelation(memory, "api active fact patch");
+    const vectors = vectorRuntime();
+
+    const response = await worker.fetch(
+      apiRequest(`/v1/memories/${memory.id}`, "PATCH", { active_fact: false }),
+      vectors.runtime,
+      createExecutionContext()
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      data: { id: memory.id, status: "active", active_fact: false }
+    });
+    await expect(relationCount(memory.id)).resolves.toBe(0);
+    await expect(deprojection(memory.id)).resolves.toMatchObject({
+      source: "memory_api",
+      reason: "memory_api_patch",
+      invariants_verified: 1
+    });
+    expect(vectors.deletedIds).toContain(memory.vector_id);
+    expect(vectors.upsertedIds).not.toContain(memory.vector_id);
+    expect(vectors.fetchSpy).not.toHaveBeenCalled();
+    await expect(vectorState(memory.id)).resolves.toEqual({
+      vector_sync_status: "deleted",
+      vector_synced: 0
+    });
+  });
+
+  it("keeps ordinary eligible updates on the vector upsert path", async () => {
+    const memory = await createEligibleMemory("api content patch");
+    const vectors = vectorRuntime();
+    const updatedContent = `updated eligible content ${crypto.randomUUID()}`;
+
+    const response = await worker.fetch(
+      apiRequest(`/v1/memories/${memory.id}`, "PATCH", { content: updatedContent }),
+      vectors.runtime,
+      createExecutionContext()
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      data: { id: memory.id, content: updatedContent, status: "active", active_fact: true }
+    });
+    await expect(env.DB.prepare(
+      `SELECT COUNT(*) AS count FROM memory_deprojections
+       WHERE namespace = 'default' AND memory_id = ?`
+    ).bind(memory.id).first()).resolves.toMatchObject({ count: 0 });
+    expect(vectors.upsertedIds).toContain(memory.vector_id);
+    expect(vectors.deletedIds).not.toContain(memory.vector_id);
+    expect(vectors.fetchSpy).toHaveBeenCalledTimes(1);
+    await expect(vectorState(memory.id)).resolves.toEqual({
+      vector_sync_status: "synced",
+      vector_synced: 1
+    });
+  });
+
+  it("does not upsert an active dream_review during an ordinary lifecycle update", async () => {
+    const proposal = await createMemory(env.DB, {
+      namespace: "default",
+      type: "dream_review",
+      content: "Active review proposal before edit.",
+      status: "active",
+      source: "lifecycle-caller-test"
+    });
+    const vectors = vectorRuntime();
+
+    const response = await worker.fetch(
+      apiRequest(`/v1/memories/${proposal.id}`, "PATCH", {
+        content: "Active review proposal after edit."
+      }),
+      vectors.runtime,
+      createExecutionContext()
+    );
+
+    expect(response.status).toBe(200);
+    expect(vectors.deletedIds).toContain(proposal.vector_id);
+    expect(vectors.upsertedIds).not.toContain(proposal.vector_id);
+    expect(vectors.fetchSpy).not.toHaveBeenCalled();
+    await expect(vectorState(proposal.id)).resolves.toEqual({
+      vector_sync_status: "deleted",
+      vector_synced: 0
     });
   });
 
@@ -295,6 +443,7 @@ describe("inactive memory lifecycle callers", () => {
   it("atomically resolves a Dream update that makes the target ineligible", async () => {
     const memory = await createEligibleMemory("dream review type update");
     await seedRelation(memory, "dream review type update");
+    const vectors = vectorRuntime();
     const proposal = await createMemory(env.DB, {
       namespace: "default",
       type: "dream_review",
@@ -312,7 +461,7 @@ describe("inactive memory lifecycle callers", () => {
 
     const response = await worker.fetch(
       adminRequest(ADMIN_BOARD_ROUTES.approveDreamReview.path, { id: proposal.id }),
-      runtimeEnv,
+      vectors.runtime,
       createExecutionContext()
     );
 
@@ -329,6 +478,13 @@ describe("inactive memory lifecycle callers", () => {
       reason: "dream_review_update",
       candidate_id: null,
       invariants_verified: 1
+    });
+    expect(vectors.deletedIds).toContain(memory.vector_id);
+    expect(vectors.upsertedIds).not.toContain(memory.vector_id);
+    expect(vectors.fetchSpy).not.toHaveBeenCalled();
+    await expect(vectorState(memory.id)).resolves.toEqual({
+      vector_sync_status: "deleted",
+      vector_synced: 0
     });
   });
 
