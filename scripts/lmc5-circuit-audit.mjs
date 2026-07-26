@@ -67,6 +67,11 @@ const workerIndex = fs.readFileSync("src/index.ts", "utf8");
 const adminBoardRoutes = fs.readFileSync("src/api/adminBoard/routes.ts", "utf8");
 const candidateDb = fs.readFileSync("src/db/memoryCandidates.ts", "utf8");
 const memoryState = fs.readFileSync("src/memory/state.ts", "utf8");
+const memoryEmbedding = fs.readFileSync("src/memory/embedding.ts", "utf8");
+const memoryFiveAxisOutbox = fs.readFileSync("src/db/memoryFiveAxisOutbox.ts", "utf8");
+const memoryFiveAxisRuns = fs.readFileSync("src/db/memoryFiveAxisRuns.ts", "utf8");
+const inactiveFiveAxisAudit = fs.readFileSync("scripts/inactive-five-axis-audit.mjs", "utf8");
+const inactiveFiveAxisAuditCli = fs.readFileSync("scripts/audit-inactive-five-axis.mjs", "utf8");
 const memoryDeprojection = fs.readFileSync("src/memory/deprojection.ts", "utf8");
 const legacyRelations = fs.readFileSync("src/memory/legacyRelations.ts", "utf8");
 const diarySplit = fs.readFileSync("src/memory/diarySplit.ts", "utf8");
@@ -82,6 +87,27 @@ const candidateUpdateApproval = candidateActions.slice(
   candidateActions.indexOf("async function approveUpdateCandidate"),
   candidateActions.indexOf("async function approveDeleteCandidate")
 );
+const vectorReconciliation = memoryState.slice(
+  memoryState.indexOf("export async function reconcileMemoryVector"),
+  memoryState.indexOf("export async function retryPendingMemoryVectors")
+);
+const vectorRetry = memoryState.slice(
+  memoryState.indexOf("export async function retryPendingMemoryVectors")
+);
+const vectorRetrySelection = memoriesDb.slice(
+  memoriesDb.indexOf("export async function listPendingVectorReconciliations"),
+  memoriesDb.indexOf("export async function markMemoryVectorResult")
+);
+const vectorResultWrite = memoriesDb.slice(
+  memoriesDb.indexOf("export async function markMemoryVectorResult"),
+  memoriesDb.indexOf("export async function listGuidanceSeedMemories")
+);
+const outboxExecutionClaim = memoryFiveAxisOutbox.slice(
+  memoryFiveAxisOutbox.indexOf("export async function claimFiveAxisOutboxForExecution"),
+  memoryFiveAxisOutbox.indexOf("export async function completeFiveAxisOutboxExecution")
+);
+const queueClaimGuardIndex = queueConsumer.indexOf('executionResult.outcome === "rejected"');
+const queueProjectionIndex = queueConsumer.indexOf("const result = await projectMemoryIntoFiveAxes");
 const candidateActionContract = fs.readFileSync("src/memory/candidateActionContract.ts", "utf8");
 const candidateView = fs.readFileSync("src/api/adminBoard/candidateView.ts", "utf8");
 const adminBoard = fs.readFileSync("src/api/adminBoard.ts", "utf8");
@@ -389,7 +415,7 @@ const checks = [
       diarySplit.includes("old_review") &&
       diarySplit.includes("const createdIds: string[] = []") &&
       diarySplit.includes("env.DB.batch") &&
-      diarySplit.includes("removeMemoryVector") &&
+      diarySplit.includes("reconcileMemoryVector") &&
       diarySplit.includes("vector_sync_status = 'pending'"),
   ],
   [
@@ -401,22 +427,55 @@ const checks = [
       !workerTypes.includes('type: "diary_rescreen"'),
   ],
   [
-    "Vector sync: canonical and legacy status fields change together",
-    memoryState.includes("vector_sync_status = ?, vector_synced = ?") &&
-      memoryState.includes('status === "synced" ? 1 : 0'),
+    "Vector sync: one reconciliation owner derives direction from central eligibility",
+    vectorReconciliation.includes("isFiveAxisMemoryEligible(snapshot)") &&
+      vectorReconciliation.includes('expectedEligibility === "eligible" ? "upsert" : "delete"') &&
+      vectorReconciliation.includes("markMemoryVectorResult") &&
+      !memoryEmbedding.includes("UPDATE memories SET vector_synced"),
   ],
   [
     "Vector sync: queue jobs are bounded and idempotent",
     queueConsumer.includes('case "memory_vector_sync"') &&
-      queueConsumer.includes("message.memoryIds.slice(0, 3)") &&
+      queueConsumer.includes(".slice(0, 3)") &&
       queueConsumer.includes('eventType: "memory_vector_sync_complete"') &&
-      queueConsumer.includes("syncMemoryVector"),
+      queueConsumer.includes("reconcileMemoryVector"),
   ],
   [
-    "Vector sync: five-minute self-healing excludes diary records",
-    fs.readFileSync("src/index.ts", "utf8").includes("retryStaleVectorSyncs(env, namespace, 12)") &&
-      memoryState.includes("type NOT IN ('diary','layla_diary','auto_diary')") &&
+    "Vector sync: bounded retry covers eligible upserts and ineligible deletes",
+    workerIndex.includes("retryPendingMemoryVectors(env, namespace, 12)") &&
+      vectorRetry.includes("listPendingVectorReconciliations") &&
+      vectorRetrySelection.includes("vector_sync_status IN ('pending', 'failed')") &&
+      !vectorRetrySelection.includes("status = 'active'") &&
       fs.readFileSync("src/index.ts", "utf8").includes("scheduled five-minute maintenance"),
+  ],
+  [
+    "Vector sync: result writes are guarded by revision and eligibility",
+    vectorResultWrite.includes("memory.five_axis_revision = ?") &&
+      vectorResultWrite.includes("eligibilityGuard") &&
+      vectorReconciliation.includes('outcome: "stale"'),
+  ],
+  [
+    "Five-axis Queue: execution claim is one eligibility-aware D1 CAS",
+    outboxExecutionClaim.includes("fiveAxisMemoryEligibilityPredicate") &&
+      outboxExecutionClaim.includes("memory.five_axis_revision = outbox.memory_revision") &&
+      outboxExecutionClaim.includes("EXISTS (") &&
+      queueClaimGuardIndex >= 0 &&
+      queueProjectionIndex > queueClaimGuardIndex,
+  ],
+  [
+    "Five-axis runs: claim and completion require the current eligible revision",
+    memoryFiveAxisRuns.includes("fiveAxisMemoryEligibilityPredicate") &&
+      memoryFiveAxisRuns.includes("memory.five_axis_revision = ?") &&
+      memoryFiveAxisRuns.includes("currentMemoryGuard"),
+  ],
+  [
+    "Inactive five-axis audit: production command is explicit and read-only",
+    inactiveFiveAxisAuditCli.includes("--remote is required") &&
+      inactiveFiveAxisAuditCli.includes("assertReadOnlyAuditQueries") &&
+      !inactiveFiveAxisAuditCli.includes('arg === "--fix"') &&
+      !inactiveFiveAxisAuditCli.includes('arg === "--repair"') &&
+      !inactiveFiveAxisAuditCli.includes('arg === "--apply"') &&
+      inactiveFiveAxisAudit.includes("buildInactiveFiveAxisAuditQueries"),
   ],
   [
     "Coordinate backfill: scheduled use case is not duplicated in Queue",
@@ -527,8 +586,9 @@ const checks = [
     "Ingest: type transitions enqueue cleanup before excluded memories leave five-axis ownership",
     fiveAxisDependencyMigration.includes("OLD.type NOT IN") &&
       fiveAxisDependencyMigration.includes("OR NEW.type NOT IN") &&
-      queueConsumer.includes("isFiveAxisMemoryTypeEligible(memory.type)") &&
-      queueConsumer.includes('reason: !memory') &&
+      outboxExecutionClaim.includes("fiveAxisMemoryEligibilityPredicate") &&
+      outboxExecutionClaim.includes("memory.five_axis_revision = outbox.memory_revision") &&
+      queueConsumer.includes('executionResult.outcome === "rejected"') &&
       timelineRelations.includes("AND type NOT IN") &&
       timelineRelations.includes("isFiveAxisMemoryTypeEligible(memory.type)"),
   ],
@@ -764,7 +824,7 @@ const checks = [
       factTransitionActions.includes("candidateId: candidate.id") &&
       factTransitionActions.includes('source: "z_review"') &&
       factTransitionActions.includes('status: "active"') &&
-      factTransitionActions.includes("syncMemoryVector") &&
+      factTransitionActions.includes("reconcileMemoryVector") &&
       factTransitionActions.includes('eventType: "z_rollback"'),
   ],
   [
