@@ -1,11 +1,17 @@
 import { authenticate } from "../auth/apiKey";
-import { createMemory, listMemories, searchMemoriesByText, softDeleteMemory, updateMemory } from "../db/memories";
+import {
+  createMemory,
+  listMemories,
+  searchMemoriesByText,
+  type UpdateMemoryInput
+} from "../db/memories";
 import { recordRecallSignals } from "../db/recallSignals";
-import { deleteMemoryEmbedding, upsertMemoryEmbedding } from "../memory/embedding";
+import { upsertMemoryEmbedding } from "../memory/embedding";
 import { recordMemorySearchDegradation, searchMemories, toMemoryApiRecord } from "../memory/search";
 import { recordRecallSearchObservation } from "../memory/eAxisObservability";
 import { recallOperationIdForRequest, recallOperationIdForRpc } from "../memory/recallSignalOperation";
 import { buildStartupContext } from "../memory/startupContext";
+import { patchSyncedMemory } from "../memory/state";
 import { enqueueDiarySplitIfNeeded } from "../queue/producer";
 import {
   normalizeFactKey,
@@ -546,7 +552,7 @@ async function callTool(
     const id = readString(args.id) || readString(args.memory_id);
     if (!id) return toolError("id is required");
 
-    const patch: Parameters<typeof updateMemory>[1]["patch"] = {};
+    const patch: UpdateMemoryInput = {};
     const content = readOptionalString(args.content) ?? readOptionalString(args.memory);
     const type = readString(args.type) || readString(args.memory_type);
     const tags = readOptionalStringArray(args.tags);
@@ -583,9 +589,14 @@ async function callTool(
 
     if (Object.keys(patch).length === 0) return toolError("No update fields provided");
 
-    const updated = await updateMemory(env.DB, { namespace: resolveNamespace(profile, args.namespace), id, patch });
+    const updated = await patchSyncedMemory(
+      env,
+      resolveNamespace(profile, args.namespace),
+      id,
+      patch,
+      { source: "memory_api", reason: "mcp_memory_update" }
+    );
     if (!updated) return toolError("Memory not found");
-    if (patch.content !== undefined) waitForBackground(ctx, upsertMemoryEmbedding(env, updated));
     return textToolResult({ data: toMemoryApiRecord(updated) });
   }
 
@@ -605,9 +616,11 @@ async function callTool(
     const contentHash = readString(args.content_hash);
     if (!id && contentHash) id = (await findMemoryByContentHash(env.DB, namespace, contentHash))?.id;
     if (!id) return toolError("id or content_hash is required");
-    const deleted = await softDeleteMemory(env.DB, { namespace, id });
+    const deleted = await patchSyncedMemory(env, namespace, id, { status: "deleted" }, {
+      source: "memory_api",
+      reason: "mcp_memory_delete"
+    });
     if (!deleted) return toolError("Memory not found");
-    waitForBackground(ctx, deleteMemoryEmbedding(env, deleted));
     return textToolResult({ data: toMemoryApiRecord(deleted), success: true, message: "Memory deleted" });
   }
 

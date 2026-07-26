@@ -78,6 +78,13 @@ export function parseTagInput(value: string): string[] {
   return [...new Set(normalized.split(/[,，\n]/).map((tag) => tag.trim().replace(/^#/, "")).filter(Boolean))];
 }
 
+export function cleanPinTags(tags: string[]): string[] {
+  return [...new Set(tags.filter((tag) => {
+    const normalized = tag.trim().toLowerCase();
+    return normalized && !["pin", "pinned", "置顶"].includes(normalized);
+  }))];
+}
+
 export function moodOf(tagsValue: string | null): string {
   const tag = parseTags(tagsValue).find((item) => item.startsWith("mood:"));
   return tag ? tag.slice(5) : "";

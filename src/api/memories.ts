@@ -6,12 +6,10 @@ import {
   ensureMemoryVectorId,
   getMemoryById,
   listMemories,
-  listUnsyncedVectorMemories,
-  softDeleteMemory,
-  updateMemory
+  listUnsyncedVectorMemories
 } from "../db/memories";
 import { saveIngestMessages } from "../db/messages";
-import { deleteMemoryEmbedding, upsertMemoryEmbedding } from "../memory/embedding";
+import { upsertMemoryEmbedding } from "../memory/embedding";
 import {
   normalizeAuditState,
   normalizeResponsePosture,
@@ -23,6 +21,7 @@ import {
 import { splitDiaryMemories } from "../memory/diarySplit";
 import { filterAndCompressMemoriesWithMeta } from "../memory/filter";
 import { searchMemories, toMemoryApiRecord } from "../memory/search";
+import { patchSyncedMemory } from "../memory/state";
 import { enqueueDiarySplitIfNeeded, enqueueMemoryMaintenanceIfNeeded } from "../queue/producer";
 import type { Env, KeyProfile, MemoryApiRecord, OpenAIChatMessage } from "../types";
 import { json, openAiError } from "../utils/json";
@@ -363,7 +362,6 @@ async function handleSplitDiaryMemories(request: Request, env: Env, profile: Key
 async function handlePatchMemory(
   request: Request,
   env: Env,
-  ctx: ExecutionContext,
   profile: KeyProfile,
   id: string
 ): Promise<Response> {
@@ -394,48 +392,29 @@ async function handlePatchMemory(
     expiresAt: body.expires_at === undefined ? undefined : readOptionalString(body.expires_at)
   };
 
-  const updated = await updateMemory(env.DB, {
-    namespace,
-    id,
-    patch
+  const updated = await patchSyncedMemory(env, namespace, id, patch, {
+    source: "memory_api",
+    reason: "memory_api_patch"
   });
 
   if (!updated) return openAiError("Memory not found", 404);
-
-  const embeddable = updated.status === "active" ? await ensureMemoryVectorId(env.DB, { namespace, id }) : updated;
-  if (!embeddable) return openAiError("Memory not found", 404);
-
-  ctx.waitUntil(
-    (embeddable.status === "active" ? upsertMemoryEmbedding(env, embeddable) : deleteMemoryEmbedding(env, embeddable)).catch((error) => {
-      console.error("failed to sync memory embedding", error);
-    })
-  );
-
-  return json({ data: cleanMemoryForResponse(toMemoryApiRecord(embeddable)) });
+  return json({ data: cleanMemoryForResponse(toMemoryApiRecord(updated)) });
 }
 
 async function handleDeleteMemory(
   env: Env,
-  ctx: ExecutionContext,
   profile: KeyProfile,
   id: string
 ): Promise<Response> {
   const scopeError = requireScope(profile, "memory:write");
   if (scopeError) return scopeError;
 
-  const deleted = await softDeleteMemory(env.DB, {
-    namespace: profile.namespace,
-    id
+  const deleted = await patchSyncedMemory(env, profile.namespace, id, { status: "deleted" }, {
+    source: "memory_api",
+    reason: "memory_api_delete"
   });
 
   if (!deleted) return openAiError("Memory not found", 404);
-
-  ctx.waitUntil(
-    deleteMemoryEmbedding(env, deleted).catch((error) => {
-      console.error("failed to delete memory embedding", error);
-    })
-  );
-
   return json({ data: cleanMemoryForResponse(toMemoryApiRecord(deleted)) });
 }
 
@@ -493,8 +472,8 @@ export async function handleMemories(request: Request, env: Env, ctx: ExecutionC
     if (tail.length === 1) {
       const id = tail[0];
       if (request.method === "GET") return await handleGetMemory(env, auth.profile, id);
-      if (request.method === "PATCH") return await handlePatchMemory(request, env, ctx, auth.profile, id);
-      if (request.method === "DELETE") return await handleDeleteMemory(env, ctx, auth.profile, id);
+      if (request.method === "PATCH") return await handlePatchMemory(request, env, auth.profile, id);
+      if (request.method === "DELETE") return await handleDeleteMemory(env, auth.profile, id);
     }
 
     return openAiError("Not found", 404);

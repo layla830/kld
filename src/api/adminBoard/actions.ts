@@ -1,103 +1,21 @@
-import { createMemory, getMemoryById, updateMemory, type UpdateMemoryInput } from "../../db/memories";
+import {
+  createMemory,
+  getMemoryById
+} from "../../db/memories";
+import { patchSyncedMemory } from "../../memory/state";
 import type { Env, MemoryRecord } from "../../types";
-import { clampNumber, parseTagInput, parseTags, readFormText } from "./utils";
+import {
+  clampNumber,
+  cleanPinTags,
+  parseTagInput,
+  parseTags,
+  readFormText
+} from "./utils";
 
-interface DreamReviewPayload {
-  kind?: string;
-  action?: "update" | "delete" | "supersede";
-  target_id?: string;
-  patch?: Record<string, unknown>;
-  replacement?: Record<string, unknown>;
-  reason?: string;
-}
-
-export interface DreamReviewResult {
-  action: "update" | "delete" | "supersede" | "reject";
-  proposal: MemoryRecord;
-  target: MemoryRecord | null;
-  previousTarget?: MemoryRecord | null;
-}
-
-function cleanPinTags(tags: string[]): string[] {
-  return [...new Set(tags.filter((tag) => {
-    const normalized = tag.trim().toLowerCase();
-    return normalized && !["pin", "pinned", "置顶"].includes(normalized);
-  }))];
-}
-
-function parseDreamReview(record: MemoryRecord): DreamReviewPayload | null {
-  if (record.type !== "dream_review" || record.status !== "active" || !record.summary) return null;
-  try {
-    const parsed = JSON.parse(record.summary) as DreamReviewPayload;
-    if (parsed.kind !== "dream_review") return null;
-    if (parsed.action !== "update" && parsed.action !== "delete" && parsed.action !== "supersede") return null;
-    if (!parsed.target_id) return null;
-    return parsed;
-  } catch {
-    return null;
-  }
-}
-
-function stringValue(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim() ? value.trim() : undefined;
-}
-
-function nullableStringValue(value: unknown): string | null | undefined {
-  return typeof value === "string" ? value.trim() || null : undefined;
-}
-
-function numberValue(value: unknown): number | undefined {
-  const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value) : Number.NaN;
-  return Number.isFinite(parsed) ? Math.max(0, Math.min(1, parsed)) : undefined;
-}
-
-function reviewPatchToMemoryPatch(raw: Record<string, unknown> | undefined): UpdateMemoryInput {
-  const patch: UpdateMemoryInput = {};
-  if (!raw) return patch;
-
-  const content = stringValue(raw.content);
-  if (content) patch.content = content;
-  const type = stringValue(raw.type);
-  if (type) patch.type = type;
-  const summary = nullableStringValue(raw.summary);
-  if (summary !== undefined) patch.summary = summary;
-  const factKey = nullableStringValue(raw.fact_key ?? raw.factKey);
-  if (factKey !== undefined) patch.factKey = factKey;
-  const thread = nullableStringValue(raw.thread);
-  if (thread !== undefined) patch.thread = thread;
-  const riskLevel = nullableStringValue(raw.risk_level ?? raw.riskLevel);
-  if (riskLevel !== undefined) patch.riskLevel = riskLevel;
-  const urgencyLevel = nullableStringValue(raw.urgency_level ?? raw.urgencyLevel);
-  if (urgencyLevel !== undefined) patch.urgencyLevel = urgencyLevel;
-  const responsePosture = nullableStringValue(raw.response_posture ?? raw.responsePosture);
-  if (responsePosture !== undefined) patch.responsePosture = responsePosture;
-  const auditState = nullableStringValue(raw.audit_state ?? raw.auditState);
-  if (auditState !== undefined) patch.auditState = auditState;
-  const importance = numberValue(raw.importance);
-  if (importance !== undefined) patch.importance = importance;
-  const confidence = numberValue(raw.confidence);
-  if (confidence !== undefined) patch.confidence = confidence;
-  const tensionScore = numberValue(raw.tension_score ?? raw.tensionScore);
-  if (tensionScore !== undefined) patch.tensionScore = tensionScore;
-  if (Array.isArray(raw.tags)) patch.tags = cleanPinTags(raw.tags.map((item) => String(item).trim()).filter(Boolean));
-  return patch;
-}
-
-async function markReviewResolved(env: Env, proposal: MemoryRecord, resolution: "approved" | "rejected"): Promise<MemoryRecord | null> {
-  const tags = cleanPinTags(parseTags(proposal.tags).filter((tag) => tag !== "pending-review"));
-  tags.push(resolution);
-  return updateMemory(env.DB, {
-    namespace: "default",
-    id: proposal.id,
-    patch: {
-      status: "superseded",
-      pinned: false,
-      tags: cleanPinTags(tags)
-    }
-  });
-}
-
-export async function createBoardMemory(env: Env, form: FormData): Promise<MemoryRecord | null> {
+export async function createBoardMemory(
+  env: Env,
+  form: FormData
+): Promise<MemoryRecord | null> {
   const kind = readFormText(form, "kind");
   const content = readFormText(form, "content");
   if (!content) return null;
@@ -142,7 +60,10 @@ export async function createBoardMemory(env: Env, form: FormData): Promise<Memor
   });
 }
 
-export async function editBoardMemory(env: Env, form: FormData): Promise<MemoryRecord | null> {
+export async function editBoardMemory(
+  env: Env,
+  form: FormData
+): Promise<MemoryRecord | null> {
   const id = readFormText(form, "id");
   const content = readFormText(form, "content");
   if (!id || !content) return null;
@@ -153,120 +74,39 @@ export async function editBoardMemory(env: Env, form: FormData): Promise<MemoryR
   if (mood) tags.push(`mood:${mood}`);
   if (type === "message" && !tags.includes("留言")) tags.push("留言");
 
-  return updateMemory(env.DB, {
-    namespace: "default",
-    id,
-    patch: {
-      type,
-      content,
-      tags: cleanPinTags(tags),
-      importance: clampNumber(readFormText(form, "importance"), 0.65, 0, 1),
-      pinned: readFormText(form, "pinned") === "on"
-    }
+  return patchSyncedMemory(env, "default", id, {
+    type,
+    content,
+    tags: cleanPinTags(tags),
+    importance: clampNumber(readFormText(form, "importance"), 0.65, 0, 1),
+    pinned: readFormText(form, "pinned") === "on"
+  }, {
+    source: "admin_board",
+    reason: "admin_board_edit"
   });
 }
 
-export async function deleteBoardMemory(env: Env, form: FormData): Promise<MemoryRecord | null> {
+export async function deleteBoardMemory(
+  env: Env,
+  form: FormData
+): Promise<MemoryRecord | null> {
   const id = readFormText(form, "id");
   if (!id) return null;
 
-  const existing = await getMemoryById(env.DB, { namespace: "default", id });
+  const existing = await getMemoryById(env.DB, {
+    namespace: "default",
+    id
+  });
   if (!existing) return null;
 
-  return updateMemory(env.DB, {
-    namespace: "default",
-    id,
-    patch: {
-      status: "deleted",
-      pinned: false,
-      tags: cleanPinTags(parseTags(existing.tags))
-    }
+  return patchSyncedMemory(env, "default", id, {
+    status: "deleted",
+    pinned: false,
+    tags: cleanPinTags(parseTags(existing.tags))
+  }, {
+    source: "admin_board",
+    reason: "admin_board_delete",
+    expectedStatus: existing.status,
+    expectedRevision: existing.five_axis_revision ?? 1
   });
-}
-
-export async function approveDreamReview(env: Env, form: FormData): Promise<DreamReviewResult | null> {
-  const id = readFormText(form, "id");
-  if (!id) return null;
-  const proposal = await getMemoryById(env.DB, { namespace: "default", id });
-  if (!proposal) return null;
-  const review = parseDreamReview(proposal);
-  if (!review) return null;
-
-  const target = await getMemoryById(env.DB, { namespace: "default", id: review.target_id! });
-  if (!target) return null;
-
-  const action = review.action === "delete" ? "delete" : review.action === "supersede" ? "supersede" : "update";
-  let updatedTarget: MemoryRecord | null = null;
-  if (action === "delete") {
-    updatedTarget = await updateMemory(env.DB, {
-      namespace: "default",
-      id: target.id,
-      patch: {
-        status: "deleted",
-        pinned: false,
-        tags: cleanPinTags(parseTags(target.tags))
-      }
-    });
-  } else if (action === "update") {
-    const patch = reviewPatchToMemoryPatch(review.patch);
-    if (Object.keys(patch).length === 0) return null;
-    updatedTarget = await updateMemory(env.DB, { namespace: "default", id: target.id, patch });
-  } else {
-    if (target.status !== "active" || target.pinned) return null;
-    const replacement = review.replacement;
-    const content = stringValue(replacement?.content);
-    if (!content) return null;
-    const replacementTags = Array.isArray(replacement?.tags)
-      ? cleanPinTags(replacement.tags.map((item) => String(item).trim()).filter(Boolean))
-      : [];
-    const created = await createMemory(env.DB, {
-      namespace: "default",
-      type: stringValue(replacement?.type) ?? target.type,
-      content,
-      summary: nullableStringValue(replacement?.summary) ?? null,
-      importance: numberValue(replacement?.importance) ?? target.importance,
-      confidence: numberValue(replacement?.confidence) ?? target.confidence,
-      status: "active",
-      pinned: false,
-      tags: replacementTags,
-      source: stringValue(replacement?.source) ?? "merge-review-approved",
-      sourceMessageIds: Array.isArray(replacement?.source_message_ids)
-        ? replacement.source_message_ids.map(String).map((item) => item.trim()).filter(Boolean)
-        : [],
-      factKey: nullableStringValue(replacement?.fact_key),
-      expiresAt: null
-    });
-    const superseded = await updateMemory(env.DB, {
-      namespace: "default",
-      id: target.id,
-      expectedStatus: "active",
-      requireUnpinned: true,
-      patch: { status: "superseded", activeFact: false }
-    });
-    if (!superseded) {
-      await updateMemory(env.DB, {
-        namespace: "default",
-        id: created.id,
-        patch: { status: "deleted", activeFact: false }
-      });
-      return null;
-    }
-    updatedTarget = created;
-    const resolvedProposal = await markReviewResolved(env, proposal, "approved");
-    return { action, proposal: resolvedProposal ?? proposal, target: updatedTarget, previousTarget: superseded };
-  }
-
-  const resolvedProposal = await markReviewResolved(env, proposal, "approved");
-  return { action, proposal: resolvedProposal ?? proposal, target: updatedTarget };
-}
-
-export async function rejectDreamReview(env: Env, form: FormData): Promise<DreamReviewResult | null> {
-  const id = readFormText(form, "id");
-  if (!id) return null;
-  const proposal = await getMemoryById(env.DB, { namespace: "default", id });
-  if (!proposal) return null;
-  const review = parseDreamReview(proposal);
-  if (!review) return null;
-  const resolvedProposal = await markReviewResolved(env, proposal, "rejected");
-  return { action: "reject", proposal: resolvedProposal ?? proposal, target: null };
 }

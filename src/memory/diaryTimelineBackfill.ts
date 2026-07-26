@@ -2,7 +2,7 @@ import type { Env, MemoryRecord } from "../types";
 import { nowIso } from "../utils/time";
 import { DIARY_SPLIT_SOURCE_TYPE } from "./diaryPolicy";
 import { rebuildDiaryTimelineForMemory } from "./diaryTimeline";
-import { removeMemoryVector } from "./state";
+import { patchSyncedMemory } from "./state";
 
 const TIMELINE_SOURCE = "timeline_split";
 const DATE_TAG = /^date:(20\d{2}-\d{2}-\d{2})$/;
@@ -90,17 +90,19 @@ async function markLatestSkippedXRunsApplied(db: D1Database, namespace: string, 
 }
 
 async function retireLegacyDayNodes(env: Env, namespace: string, nodes: MemoryRecord[]): Promise<void> {
-  if (nodes.length === 0) return;
-  const ids = nodes.map((memory) => memory.id);
-  const placeholders = ids.map(() => "?").join(", ");
-  const now = nowIso();
-  await env.DB.prepare(
-    `UPDATE memories
-     SET status = 'deleted', active_fact = 0, pinned = 0,
-         vector_synced = 0, vector_sync_status = 'pending', updated_at = ?
-     WHERE namespace = ? AND id IN (${placeholders}) AND type = 'timeline_day'`
-  ).bind(now, namespace, ...ids).run();
-  for (const node of nodes) await removeMemoryVector(env, node);
+  for (const node of nodes) {
+    if (node.type !== "timeline_day") continue;
+    await patchSyncedMemory(env, namespace, node.id, {
+      status: "deleted",
+      activeFact: false,
+      pinned: false
+    }, {
+      source: "system",
+      reason: "retire_legacy_timeline_day",
+      expectedStatus: node.status,
+      expectedRevision: node.five_axis_revision ?? 1
+    });
+  }
 }
 
 export async function scanDiaryTimelineBackfill(

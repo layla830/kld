@@ -122,6 +122,20 @@ describe("Z-axis Worker circuit", () => {
       "SELECT id, status, action FROM memory_candidates WHERE id = ?",
       candidate!.id
     )).resolves.toMatchObject({ status: "approved" });
+    await expect(first<{
+      source: string;
+      candidate_id: string;
+      invariants_verified: number;
+    }>(
+      `SELECT source, candidate_id, invariants_verified
+       FROM memory_deprojections
+       WHERE namespace = 'default' AND memory_id = ?`,
+      weaker.id
+    )).resolves.toMatchObject({
+      source: "z_review",
+      candidate_id: candidate!.id,
+      invariants_verified: 1
+    });
     await expect(first<{ status: string }>(
       `SELECT status FROM memory_five_axis_runs
        WHERE namespace = 'default' AND memory_id = ? AND memory_revision = 1 AND axis = 'Z'`,
@@ -275,6 +289,20 @@ describe("M-axis Worker circuit", () => {
          AND json_extract(payload_json, '$.candidate_id') = ?`,
       candidate!.id
     )).resolves.toMatchObject({ event_type: "m_snapshot" });
+    await expect(first<{
+      source: string;
+      candidate_id: string;
+      invariants_verified: number;
+    }>(
+      `SELECT source, candidate_id, invariants_verified
+       FROM memory_deprojections
+       WHERE namespace = 'default' AND memory_id = ?`,
+      expired.id
+    )).resolves.toMatchObject({
+      source: "m_review",
+      candidate_id: candidate!.id,
+      invariants_verified: 1
+    });
 
     await expect(rollbackMetabolismCandidate(env, formFor(candidate!.id)))
       .resolves.toMatchObject({ action: "rollback", memory: { id: expired.id, status: "active" } });

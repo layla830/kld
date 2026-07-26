@@ -20,7 +20,12 @@ function digestAny(needle) {
   );
 }
 const merge = fs.readFileSync("src/memory/merge.ts", "utf8");
-const reviewActions = fs.readFileSync("src/api/adminBoard/actions.ts", "utf8");
+const adminActions = fs.readFileSync("src/api/adminBoard/actions.ts", "utf8");
+const dreamReviewActions = fs.readFileSync(
+  "src/api/adminBoard/dreamReviewActions.ts",
+  "utf8",
+);
+const mutationGuards = fs.readFileSync("src/db/mutationGuards.ts", "utf8");
 const reviewView = fs.readFileSync("src/api/adminBoard/reviewView.ts", "utf8");
 const postProcess = fs.readFileSync("src/memory/postProcess.ts", "utf8");
 const metabolismReview = fs.readFileSync(
@@ -62,6 +67,7 @@ const workerIndex = fs.readFileSync("src/index.ts", "utf8");
 const adminBoardRoutes = fs.readFileSync("src/api/adminBoard/routes.ts", "utf8");
 const candidateDb = fs.readFileSync("src/db/memoryCandidates.ts", "utf8");
 const memoryState = fs.readFileSync("src/memory/state.ts", "utf8");
+const memoryDeprojection = fs.readFileSync("src/memory/deprojection.ts", "utf8");
 const legacyRelations = fs.readFileSync("src/memory/legacyRelations.ts", "utf8");
 const diarySplit = fs.readFileSync("src/memory/diarySplit.ts", "utf8");
 const diarySplitParse = fs.readFileSync("src/memory/diarySplitParse.ts", "utf8");
@@ -72,6 +78,10 @@ function diarySplitAny(needle) {
 }
 const diarySplitState = fs.readFileSync("src/db/diarySplitState.ts", "utf8");
 const candidateActions = fs.readFileSync("src/api/adminBoard/candidateActions.ts", "utf8");
+const candidateUpdateApproval = candidateActions.slice(
+  candidateActions.indexOf("async function approveUpdateCandidate"),
+  candidateActions.indexOf("async function approveDeleteCandidate")
+);
 const candidateActionContract = fs.readFileSync("src/memory/candidateActionContract.ts", "utf8");
 const candidateView = fs.readFileSync("src/api/adminBoard/candidateView.ts", "utf8");
 const adminBoard = fs.readFileSync("src/api/adminBoard.ts", "utf8");
@@ -612,9 +622,11 @@ const checks = [
   ],
   [
     "Z: supersede review has approve and reject closure",
-    reviewActions.includes('parsed.action !== "supersede"') &&
-      reviewActions.includes("previousTarget: superseded") &&
-      reviewActions.includes('status: "superseded", activeFact: false'),
+    dreamReviewActions.includes('parsed.action !== "supersede"') &&
+      dreamReviewActions.includes("previousTarget: result.target") &&
+      dreamReviewActions.includes('status: "superseded"') &&
+      dreamReviewActions.includes("activeFact: false") &&
+      dreamReviewActions.includes('reason: "dream_review_supersede"'),
   ],
   [
     "Z: supersede review displays before and after content",
@@ -747,12 +759,57 @@ const checks = [
     factTransitionActions.includes("listFactKeyConflictsForReview") &&
       factTransitionActions.includes("fact_transition_candidate_is_stale") &&
       factTransitionActions.includes('eventType: "z_snapshot"') &&
-    factTransitionActions.includes("markMemorySupersededSynced") &&
-      memoryState.includes('expectedStatus: "active"') &&
-      memoryState.includes("requireUnpinned: true") &&
+      factTransitionActions.includes("prepareMemoryDeprojection") &&
+      factTransitionActions.includes("commitMemoryCandidateApproval") &&
+      factTransitionActions.includes("candidateId: candidate.id") &&
+      factTransitionActions.includes('source: "z_review"') &&
       factTransitionActions.includes('status: "active"') &&
       factTransitionActions.includes("syncMemoryVector") &&
       factTransitionActions.includes('eventType: "z_rollback"'),
+  ],
+  [
+    "Lifecycle: API, MCP, Dream, Z, and M inactive transitions share deprojection ownership",
+    memoryState.includes("classifyMemoryEligibilityTransition") &&
+      memoryState.includes('transition === "eligible_to_ineligible"') &&
+      memoryState.includes("deprojectMemoryFromFiveAxes") &&
+      memoryDeprojection.includes("prepareMemoryDeprojection") &&
+      memoriesApi.includes('reason: "memory_api_patch"') &&
+      memoriesApi.includes('reason: "memory_api_delete"') &&
+      !memoriesApi.includes("softDeleteMemory") &&
+      mcpApi.includes('reason: "mcp_memory_delete"') &&
+      !mcpApi.includes("softDeleteMemory") &&
+      adminActions.includes('reason: "admin_board_delete"') &&
+      dreamReviewActions.includes('reason: "dream_review_delete"') &&
+      candidateActions.includes('source: "dream_candidate"') &&
+      factTransitionActions.includes('source: "z_review"') &&
+      metabolismActions.includes('source: "m_review"'),
+  ],
+  [
+    "Architecture: Admin CRUD, Dream review, and mutation guards have single owners",
+    !adminActions.includes("approveDreamReview") &&
+      !adminActions.includes("rejectDreamReview") &&
+      dreamReviewActions.includes("export async function approveDreamReview") &&
+      dreamReviewActions.includes("export async function rejectDreamReview") &&
+      dreamReviewActions.includes("commitDreamReviewApproval") &&
+      mutationGuards.includes("export function combineMutationGuards") &&
+      mutationGuards.includes("export function memoryCandidateStatusGuard") &&
+      mutationGuards.includes("export function memoryEventsExistGuard") &&
+      [adminActions, dreamReviewActions, candidateActions, factTransitionActions, metabolismActions]
+        .every((source) => !source.includes("function combineGuards")) &&
+      [candidateActions, factTransitionActions, metabolismActions]
+        .every((source) => source.includes('from "../../db/mutationGuards"')),
+  ],
+  [
+    "Dream update candidates classify eligibility before choosing atomic mutation ownership",
+    candidateUpdateApproval.includes("candidateUpdatePatch(payload)") &&
+      candidateUpdateApproval.includes("classifyMemoryEligibilityTransition") &&
+      candidateUpdateApproval.includes('transition === "eligible_to_ineligible"') &&
+      candidateUpdateApproval.includes("prepareMemoryDeprojection") &&
+      candidateUpdateApproval.includes('reason: "dream_candidate_update"') &&
+      candidateUpdateApproval.includes("commitMemoryCandidateApproval") &&
+      candidateUpdateApproval.includes("deprojection.successGuard") &&
+      candidateUpdateApproval.includes("prepareMemoryUpdate") &&
+      candidateUpdateApproval.includes("expectedRevision"),
   ],
   [
     "Z: compatibility debug approval delegates to the same candidate use case",

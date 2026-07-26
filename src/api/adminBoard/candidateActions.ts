@@ -25,13 +25,24 @@ import { prepareMemoryRelationInsert } from "../../db/memoryRelations";
 import { syncMemoryVector } from "../../memory/state";
 import { assessCandidateQuality } from "../../memory/candidateQuality";
 import { canOverrideCandidateValidation } from "../../memory/candidateOverride";
-import { createMemoryEvent } from "../../db/memoryEvents";
+import { createMemoryEvent, prepareMemoryEventInsert } from "../../db/memoryEvents";
 import {
   DREAM_DELETE_CRITICAL_IMPORTANCE,
   DREAM_DELETE_PROTECTED_TYPES,
   isMemoryDreamDeleteProtected
 } from "../../memory/dreamCandidatePolicy";
 import { nowIso } from "../../utils/time";
+import { prepareMemoryDeprojection } from "../../memory/deprojection";
+import {
+  applyMemoryEligibilityPatch,
+  classifyMemoryEligibilityTransition
+} from "../../memory/fiveAxis/eligibility";
+import {
+  combineMutationGuards,
+  memoryCandidateStatusGuard,
+  memoryEventExistsGuard,
+  memoryExistsGuard
+} from "../../db/mutationGuards";
 
 function text(value: unknown): string | undefined { return typeof value === "string" && value.trim() ? value.trim() : undefined; }
 function number(value: unknown): number | undefined {
@@ -169,42 +180,12 @@ function assertNever(value: never): never {
   throw new Error(`unhandled_candidate_action:${String(value)}`);
 }
 
-function combineGuards(...guards: MemoryMutationGuard[]): MemoryMutationGuard {
-  return {
-    sql: guards.map((guard) => `(${guard.sql})`).join(" AND "),
-    binds: guards.flatMap((guard) => guard.binds)
-  };
-}
-
 function candidateApprovalGuard(candidate: MemoryCandidateRecord): MemoryMutationGuard {
-  return {
-    sql: `EXISTS (
-      SELECT 1 FROM memory_candidates
-      WHERE namespace = ? AND id = ? AND status = ?
-    )`,
-    binds: [candidate.namespace, candidate.id, candidate.status]
-  };
-}
-
-function memoryExistsGuard(namespace: string, memoryId: string): MemoryMutationGuard {
-  return {
-    sql: "EXISTS (SELECT 1 FROM memories WHERE namespace = ? AND id = ?)",
-    binds: [namespace, memoryId]
-  };
-}
-
-function memoryStatusGuard(namespace: string, memoryId: string, status: string): MemoryMutationGuard {
-  return {
-    sql: "EXISTS (SELECT 1 FROM memories WHERE namespace = ? AND id = ? AND status = ?)",
-    binds: [namespace, memoryId, status]
-  };
-}
-
-function memoryEventExistsGuard(namespace: string, eventId: string): MemoryMutationGuard {
-  return {
-    sql: "EXISTS (SELECT 1 FROM memory_events WHERE namespace = ? AND id = ?)",
-    binds: [namespace, eventId]
-  };
+  return memoryCandidateStatusGuard(
+    candidate.namespace,
+    candidate.id,
+    candidate.status
+  );
 }
 
 function dreamDeleteTargetAllowedGuard(namespace: string, memoryId: string): MemoryMutationGuard {
@@ -222,36 +203,6 @@ function dreamDeleteTargetAllowedGuard(namespace: string, memoryId: string): Mem
     )`,
     binds: [namespace, memoryId, ...protectedTypes, DREAM_DELETE_CRITICAL_IMPORTANCE]
   };
-}
-
-function prepareDeleteOwnershipEvent(
-  env: Env,
-  candidate: MemoryCandidateRecord,
-  targetId: string,
-  eventId: string,
-  createdAt: string,
-  targetGuard: MemoryMutationGuard
-): D1PreparedStatement {
-  return env.DB.prepare(
-    `INSERT OR IGNORE INTO memory_events
-      (id, namespace, event_type, memory_id, payload_json, created_at)
-     SELECT ?, ?, 'memory_candidate_delete_claimed', ?, ?, ?
-     WHERE (${targetGuard.sql})
-       AND EXISTS (
-         SELECT 1 FROM memory_candidates
-         WHERE namespace = ? AND id = ? AND status = ?
-       )`
-  ).bind(
-    eventId,
-    candidate.namespace,
-    targetId,
-    JSON.stringify({ candidate_id: candidate.id, target_id: targetId }),
-    createdAt,
-    ...targetGuard.binds,
-    candidate.namespace,
-    candidate.id,
-    candidate.status
-  );
 }
 
 async function rejectUnsafeTargetCandidate(
@@ -391,7 +342,7 @@ async function approveDiarySplitFact(
       candidate,
       existing.id,
       [],
-      combineGuards(memoryExistsGuard(candidate.namespace, existing.id), diaryGuard)
+      combineMutationGuards(memoryExistsGuard(candidate.namespace, existing.id), diaryGuard)
     );
   }
   const record = buildMemoryRecord({
@@ -418,8 +369,8 @@ async function approveDiarySplitFact(
     env,
     candidate,
     record.id,
-    [prepareMemoryInsert(env.DB, record, combineGuards(candidateApprovalGuard(candidate), diaryGuard))],
-    combineGuards(memoryExistsGuard(candidate.namespace, record.id), diaryGuard)
+    [prepareMemoryInsert(env.DB, record, combineMutationGuards(candidateApprovalGuard(candidate), diaryGuard))],
+    combineMutationGuards(memoryExistsGuard(candidate.namespace, record.id), diaryGuard)
   );
 }
 
@@ -438,20 +389,64 @@ async function approveUpdateCandidate(
       targetType: existing?.type
     });
   }
+  const patch = candidateUpdatePatch(payload);
+  if (!Object.values(patch).some((value) => value !== undefined)) return null;
+  const expectedRevision = existing.five_axis_revision ?? 1;
+  const transition = classifyMemoryEligibilityTransition(
+    existing,
+    applyMemoryEligibilityPatch(existing, patch)
+  );
+  if (transition === "eligible_to_ineligible") {
+    const deprojection = await prepareMemoryDeprojection(env.DB, {
+      namespace: candidate.namespace,
+      memoryId: existing.id,
+      patch,
+      expectedStatus: "active",
+      expectedRevision,
+      source: "dream_candidate",
+      reason: "dream_candidate_update",
+      candidateId: candidate.id,
+      operationId: `deproj_${candidate.id}`,
+      memory: existing,
+      guard: candidateApprovalGuard(candidate)
+    });
+    const committed = await commitMemoryCandidateApproval(env.DB, {
+      namespace: candidate.namespace,
+      id: candidate.id,
+      expectedStatus: candidate.status,
+      resultMemoryId: existing.id,
+      businessStatements: deprojection.statements,
+      successGuard: deprojection.successGuard
+    });
+    if (!committed) return null;
+    const updated = await getMemoryById(env.DB, {
+      namespace: candidate.namespace,
+      id: existing.id
+    });
+    if (!updated) throw new Error("dream_candidate_update_target_missing");
+    return updated;
+  }
+
+  const mutationAt = nowIso();
   const statement = prepareMemoryUpdate(env.DB, {
     namespace: candidate.namespace,
-    id: candidate.target_id,
-    patch: candidateUpdatePatch(payload),
+    id: existing.id,
+    patch,
     expectedStatus: "active",
+    expectedRevision,
     guard: candidateApprovalGuard(candidate),
-    markVectorUnsynced: true
+    markVectorUnsynced: true,
+    now: mutationAt
   });
   return commitApproval(
     env,
     candidate,
-    candidate.target_id,
+    existing.id,
     statement ? [statement] : [],
-    memoryStatusGuard(candidate.namespace, candidate.target_id, "active")
+    {
+      sql: "EXISTS (SELECT 1 FROM memories WHERE namespace = ? AND id = ? AND updated_at = ?)",
+      binds: [candidate.namespace, existing.id, mutationAt]
+    }
   );
 }
 
@@ -480,31 +475,38 @@ async function approveDeleteCandidate(
   const mutationAt = nowIso();
   const ownershipEventId = `ev_delete_${candidate.id}`;
   const targetGuard = dreamDeleteTargetAllowedGuard(candidate.namespace, candidate.target_id);
-  const ownershipEvent = prepareDeleteOwnershipEvent(
-    env,
-    candidate,
-    candidate.target_id,
-    ownershipEventId,
-    mutationAt,
-    targetGuard
-  );
-  const statement = prepareMemoryUpdate(env.DB, {
+  const deprojection = await prepareMemoryDeprojection(env.DB, {
     namespace: candidate.namespace,
-    id: candidate.target_id,
+    memoryId: candidate.target_id,
     patch: { status: "deleted" },
     expectedStatus: "active",
+    expectedRevision: existing.five_axis_revision ?? 1,
     requireUnpinned: true,
-    guard: combineGuards(candidateApprovalGuard(candidate), targetGuard),
-    markVectorUnsynced: true,
+    source: "dream_candidate",
+    reason: "dream_candidate_delete",
+    candidateId: candidate.id,
+    operationId: `deproj_${candidate.id}`,
+    memory: existing,
+    guard: combineMutationGuards(candidateApprovalGuard(candidate), targetGuard),
     now: mutationAt
+  });
+  const ownershipEvent = prepareMemoryEventInsert(env.DB, {
+    namespace: candidate.namespace,
+    eventType: "memory_candidate_delete_claimed",
+    memoryId: candidate.target_id,
+    payload: { candidate_id: candidate.id, target_id: candidate.target_id }
+  }, {
+    id: ownershipEventId,
+    now: mutationAt,
+    guard: combineMutationGuards(candidateApprovalGuard(candidate), targetGuard)
   });
   const deleted = await commitApproval(
     env,
     candidate,
     candidate.target_id,
-    statement ? [ownershipEvent, statement] : [],
-    combineGuards(
-      memoryStatusGuard(candidate.namespace, candidate.target_id, "deleted"),
+    [ownershipEvent, ...deprojection.statements],
+    combineMutationGuards(
+      deprojection.successGuard,
       memoryEventExistsGuard(candidate.namespace, ownershipEventId)
     )
   );
@@ -543,7 +545,7 @@ async function approveFactGroup(
     sql: `(SELECT COUNT(*) FROM memories WHERE namespace = ? AND id IN (${placeholders})) = ?`,
     binds: [candidate.namespace, ...ids, ids.length]
   };
-  const transactionGuard = combineGuards(candidateApprovalGuard(candidate), membersExistGuard);
+  const transactionGuard = combineMutationGuards(candidateApprovalGuard(candidate), membersExistGuard);
   const statements: D1PreparedStatement[] = ids.map((memoryId) => {
     const statement = prepareMemoryUpdate(env.DB, {
       namespace: candidate.namespace,
@@ -627,6 +629,7 @@ export async function approveCandidate(env: Env, form: FormData): Promise<Memory
   }
   const target = await approveByAction(env, candidate, payload, candidate.action, validationOverride);
   if (!target) return null;
+  if (candidate.action !== "fact_group") await syncMemoryVector(env, target);
   if (validationOverride) {
     await createMemoryEvent(env.DB, {
       namespace: "default",

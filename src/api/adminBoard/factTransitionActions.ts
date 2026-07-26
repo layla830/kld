@@ -1,11 +1,22 @@
-import { createMemoryEvent } from "../../db/memoryEvents";
+import { createMemoryEvent, prepareMemoryEventInsert } from "../../db/memoryEvents";
 import { loadDreamConfig } from "../../config/runtime";
-import { getMemoryCandidate, resolveMemoryCandidate, rollbackMemoryCandidate } from "../../db/memoryCandidates";
+import {
+  commitMemoryCandidateApproval,
+  getMemoryCandidate,
+  resolveMemoryCandidate,
+  rollbackMemoryCandidate
+} from "../../db/memoryCandidates";
 import { getMemoryById, updateMemory } from "../../db/memories";
 import { listFactKeyConflictsForReview } from "../../memory/fiveAxis/zFacts";
-import { markMemorySupersededSynced, syncMemoryVector } from "../../memory/state";
+import { prepareMemoryDeprojection } from "../../memory/deprojection";
+import { syncMemoryVector } from "../../memory/state";
 import type { Env, MemoryRecord } from "../../types";
 import { payloadOf, readFormText } from "./utils";
+import {
+  combineMutationGuards,
+  memoryCandidateStatusGuard,
+  memoryEventsExistGuard
+} from "../../db/mutationGuards";
 
 interface Snapshot {
   id: string;
@@ -75,21 +86,64 @@ export async function approveFactTransitionCandidate(env: Env, form: FormData): 
     throw new Error("fact_transition_candidate_is_stale");
   }
 
-  await createMemoryEvent(env.DB, {
+  const deprojection = await prepareMemoryDeprojection(env.DB, {
+    namespace: candidate.namespace,
+    memoryId: weaker.id,
+    patch: { status: "superseded" },
+    expectedStatus: "active",
+    expectedRevision: weaker.five_axis_revision ?? 1,
+    requireUnpinned: true,
+    source: "z_review",
+    reason: "z_review_supersede",
+    candidateId: candidate.id,
+    operationId: `deproj_${candidate.id}`,
+    memory: weaker,
+    guard: memoryCandidateStatusGuard(candidate.namespace, candidate.id, "pending")
+  });
+  const snapshotEventId = `ev_z_snapshot_${candidate.id}`;
+  const conflictEventId = `ev_z_conflict_${candidate.id}`;
+  const snapshotEvent = prepareMemoryEventInsert(env.DB, {
     namespace: candidate.namespace,
     eventType: "z_snapshot",
     memoryId: weaker.id,
     payload: { candidate_id: candidate.id, fact_key: factKey, best: bestSnapshot, weaker: weakerSnapshot }
+  }, {
+    id: snapshotEventId,
+    guard: deprojection.successGuard
   });
-  const superseded = await markMemorySupersededSynced(env, candidate.namespace, weaker.id, {
-    candidate_id: candidate.id,
-    fact_key: factKey,
-    best_id: best.id,
-    superseded_id: weaker.id,
-    action: "z_review_approve"
+  const conflictEvent = prepareMemoryEventInsert(env.DB, {
+    namespace: candidate.namespace,
+    eventType: "z_conflict",
+    memoryId: weaker.id,
+    payload: {
+      candidate_id: candidate.id,
+      fact_key: factKey,
+      best_id: best.id,
+      superseded_id: weaker.id,
+      action: "z_review_approve"
+    }
+  }, {
+    id: conflictEventId,
+    guard: deprojection.successGuard
   });
-  if (!superseded) return null;
-  await resolveMemoryCandidate(env.DB, candidate.namespace, candidate.id, "approved", best.id);
+  const committed = await commitMemoryCandidateApproval(env.DB, {
+    namespace: candidate.namespace,
+    id: candidate.id,
+    expectedStatus: "pending",
+    resultMemoryId: best.id,
+    businessStatements: [...deprojection.statements, snapshotEvent, conflictEvent],
+    successGuard: combineMutationGuards(
+      deprojection.successGuard,
+      memoryEventsExistGuard(candidate.namespace, [snapshotEventId, conflictEventId])
+    )
+  });
+  if (!committed) return null;
+  const superseded = await getMemoryById(env.DB, {
+    namespace: candidate.namespace,
+    id: weaker.id
+  });
+  if (!superseded) throw new Error("fact_transition_deprojection_target_missing");
+  await syncMemoryVector(env, superseded);
   return { axis: "Z", action: "supersede", memories: [superseded] };
 }
 

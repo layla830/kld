@@ -39,6 +39,18 @@ describe("candidate update patch", () => {
     expect(patch.thread).toBeUndefined();
   });
 
+  it("ignores lifecycle fields reserved for protected actions", () => {
+    const patch = candidateUpdatePatch({
+      type: "diary",
+      status: "deleted",
+      active_fact: false
+    });
+
+    expect(patch.type).toBe("diary");
+    expect(patch).not.toHaveProperty("status");
+    expect(patch).not.toHaveProperty("activeFact");
+  });
+
   it("ignores malformed present values instead of treating them as clears", () => {
     const patch = candidateUpdatePatch({
       fact_key: "",
