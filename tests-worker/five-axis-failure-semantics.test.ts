@@ -54,10 +54,11 @@ describe("five-axis failure semantics", () => {
     const delivery = await claimFiveAxisOutboxForDelivery(env.DB, outbox!);
     expect(delivery).toBeTruthy();
     const execution = await claimFiveAxisOutboxForExecution(env.DB, delivery!);
-    expect(execution).toBeTruthy();
-    await expect(completeFiveAxisOutboxExecution(env.DB, execution!, "completed", { ok: true }))
+    expect(execution.outcome).toBe("claimed");
+    if (execution.outcome !== "claimed") throw new Error("execution claim rejected");
+    await expect(completeFiveAxisOutboxExecution(env.DB, execution.claim, "completed", { ok: true }))
       .resolves.toBe(true);
-    await expect(failFiveAxisOutboxClaim(env.DB, execution!, new Error("late worker")))
+    await expect(failFiveAxisOutboxClaim(env.DB, execution.claim, new Error("late worker")))
       .resolves.toBe(false);
     await expect(env.DB.prepare(
       "SELECT status, last_error FROM memory_five_axis_outbox WHERE id = ?"
@@ -91,16 +92,24 @@ describe("five-axis failure semantics", () => {
     const executions = await Promise.all([
       claimFiveAxisOutboxForExecution(env.DB, {
         id: sent.outboxId,
+        namespace: sent.namespace,
+        memoryId: sent.memoryId,
+        memoryUpdatedAt: sent.memoryUpdatedAt,
+        memoryRevision: sent.memoryRevision ?? 1,
         attempt: sent.outboxAttempt,
         queuedAt: sent.outboxQueuedAt
       }),
       claimFiveAxisOutboxForExecution(env.DB, {
         id: sent.outboxId,
+        namespace: sent.namespace,
+        memoryId: sent.memoryId,
+        memoryUpdatedAt: sent.memoryUpdatedAt,
+        memoryRevision: sent.memoryRevision ?? 1,
         attempt: sent.outboxAttempt,
         queuedAt: sent.outboxQueuedAt
       })
     ]);
-    expect(executions.filter(Boolean)).toHaveLength(1);
+    expect(executions.filter((execution) => execution.outcome === "claimed")).toHaveLength(1);
     await expect(env.DB.prepare(
       "SELECT status, attempts FROM memory_five_axis_outbox WHERE id = ?"
     ).bind(outbox!.id).first()).resolves.toMatchObject({ status: "queued", attempts: 1 });
@@ -342,7 +351,15 @@ describe("five-axis failure semantics", () => {
 
     await failFiveAxisOutboxClaim(
       env.DB,
-      { id: outbox!.id, attempt: 5, queuedAt },
+      {
+        id: outbox!.id,
+        namespace: outbox!.namespace,
+        memoryId: outbox!.memory_id,
+        memoryUpdatedAt: outbox!.memory_updated_at,
+        memoryRevision: outbox!.memory_revision ?? 1,
+        attempt: 5,
+        queuedAt
+      },
       new Error("fifth delivery failed")
     );
     await expect(env.DB.prepare(
@@ -468,8 +485,8 @@ describe("five-axis failure semantics", () => {
       `SELECT status, result_json FROM memory_five_axis_outbox
        WHERE namespace = 'default' AND memory_id = ? AND memory_revision = 2`
     ).bind(memory.id).first()).resolves.toMatchObject({
-      status: "skipped",
-      result_json: JSON.stringify({ reason: "memory_revision_mismatch", expected: 2, current: 3 })
+      status: "queued",
+      result_json: null
     });
     await expect(env.DB.prepare(
       `SELECT status FROM memory_five_axis_outbox

@@ -109,9 +109,15 @@ describe("E-axis Worker runtime state", () => {
 
 describe("five-axis Worker guards", () => {
   it("stops claiming a permanently failing axis after the bounded attempt count", async () => {
+    const memory = await createMemory(env.DB, {
+      namespace: "default",
+      type: "lesson",
+      content: `Runtime attempt cap ${crypto.randomUUID()}`,
+      status: "active"
+    });
     const key: FiveAxisRunKey = {
       namespace: "default",
-      memoryId: "runtime-attempt-cap",
+      memoryId: memory.id,
       memoryRevision: 1,
       axis: "Y"
     };

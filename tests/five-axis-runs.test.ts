@@ -26,13 +26,13 @@ describe("five-axis run claims", () => {
             return {
               run: async () => {
                 if (sql.includes("INSERT INTO memory_five_axis_runs")) {
-                  const now = String(args[6]);
+                  const now = String(args[3]);
                   const claimable = row.status === null || row.status === "failed"
                     || (row.status === "running" && (!row.leaseExpiresAt || row.leaseExpiresAt <= now));
                   if (!claimable) return { meta: { changes: 0 } };
                   row.status = "running";
-                  row.claimToken = String(args[4]);
-                  row.leaseExpiresAt = String(args[5]);
+                  row.claimToken = String(args[1]);
+                  row.leaseExpiresAt = String(args[2]);
                   return { meta: { changes: 1 } };
                 }
                 if (sql.includes("SET status = ?")) {

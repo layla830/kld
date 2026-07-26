@@ -90,6 +90,10 @@ describe("candidate and five-axis run reconciliation", () => {
         namespace TEXT NOT NULL,
         id TEXT NOT NULL,
         fact_key TEXT,
+        status TEXT NOT NULL DEFAULT 'active',
+        active_fact INTEGER NOT NULL DEFAULT 1,
+        type TEXT NOT NULL DEFAULT 'lesson',
+        five_axis_revision INTEGER NOT NULL DEFAULT 1,
         PRIMARY KEY(namespace, id)
       );
       CREATE TABLE memory_five_axis_runs (
@@ -150,12 +154,21 @@ describe("candidate and five-axis run reconciliation", () => {
     ).run(runKey.namespace, runKey.memoryId, runKey.memoryRevision, runKey.axis, claimToken);
   }
 
+  function setCurrentMemoryRevision(memoryRevision: number) {
+    sqlite.prepare(
+      `INSERT INTO memories (namespace, id, fact_key, five_axis_revision)
+       VALUES ('default', 'mem_1', NULL, ?)
+       ON CONFLICT(namespace, id) DO UPDATE SET five_axis_revision = excluded.five_axis_revision`
+    ).run(memoryRevision);
+  }
+
   it("reconciles one-to-many and many-to-many candidate decisions across revisions", async () => {
     insertCandidate("cand_1", "candidate:1");
     insertCandidate("cand_2", "candidate:2");
     insertRunningRun(key(1), "claim-1");
     insertRunningRun(key(2), "claim-2");
 
+    setCurrentMemoryRevision(1);
     await expect(completeFiveAxisRun(
       db,
       key(1),
@@ -164,6 +177,7 @@ describe("candidate and five-axis run reconciliation", () => {
       { candidates: 2 },
       ["candidate:1", "candidate:2", "candidate:1"]
     )).resolves.toBe(true);
+    setCurrentMemoryRevision(2);
     await expect(completeFiveAxisRun(
       db,
       key(2),
@@ -237,6 +251,7 @@ describe("candidate and five-axis run reconciliation", () => {
   it("immediately reuses an already-approved de-duplicated candidate", async () => {
     insertCandidate("cand_approved", "candidate:approved", "approved");
     insertRunningRun(key(3, "Y"), "claim-3");
+    setCurrentMemoryRevision(3);
 
     await expect(completeFiveAxisRun(
       db,
@@ -253,6 +268,7 @@ describe("candidate and five-axis run reconciliation", () => {
     insertCandidate("cand_e", "candidate:e");
     insertRunningRun(key(4, "E"), "claim-4");
     insertRunningRun(key(5, "M"), "claim-5");
+    setCurrentMemoryRevision(4);
 
     await expect(completeFiveAxisRun(
       db,

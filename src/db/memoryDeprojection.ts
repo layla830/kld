@@ -401,6 +401,7 @@ function cleanupStatements(
        SET status = ?,
            last_error = NULL,
            result_json = json_object('reason', 'memory_deprojected', 'operation_id', ?),
+           queued_at = NULL,
            completed_at = ?,
            updated_at = ?
        WHERE namespace = ? AND memory_id = ?
