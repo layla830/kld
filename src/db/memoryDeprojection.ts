@@ -618,6 +618,23 @@ export async function prepareMemoryDeprojection(
   };
 }
 
+export function prepareMemoryDeprojectionCallerInvariant(
+  db: D1Database,
+  prepared: PreparedMemoryDeprojection,
+  callerInvariant: MemoryMutationGuard
+): D1PreparedStatement {
+  return db.prepare(
+    `UPDATE memory_deprojections
+     SET invariants_verified = CASE WHEN (${callerInvariant.sql}) THEN 1 ELSE 0 END
+     WHERE operation_id = ?
+       AND (${prepared.successGuard.sql})`
+  ).bind(
+    ...callerInvariant.binds,
+    prepared.operationId,
+    ...prepared.successGuard.binds
+  );
+}
+
 export async function getMemoryDeprojectionByOperationId(
   db: D1Database,
   operationId: string

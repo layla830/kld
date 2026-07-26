@@ -25,13 +25,14 @@ import { prepareMemoryRelationInsert } from "../../db/memoryRelations";
 import { syncMemoryVector } from "../../memory/state";
 import { assessCandidateQuality } from "../../memory/candidateQuality";
 import { canOverrideCandidateValidation } from "../../memory/candidateOverride";
-import { createMemoryEvent } from "../../db/memoryEvents";
+import { createMemoryEvent, prepareMemoryEventInsert } from "../../db/memoryEvents";
 import {
   DREAM_DELETE_CRITICAL_IMPORTANCE,
   DREAM_DELETE_PROTECTED_TYPES,
   isMemoryDreamDeleteProtected
 } from "../../memory/dreamCandidatePolicy";
 import { nowIso } from "../../utils/time";
+import { prepareMemoryDeprojection } from "../../memory/deprojection";
 
 function text(value: unknown): string | undefined { return typeof value === "string" && value.trim() ? value.trim() : undefined; }
 function number(value: unknown): number | undefined {
@@ -222,36 +223,6 @@ function dreamDeleteTargetAllowedGuard(namespace: string, memoryId: string): Mem
     )`,
     binds: [namespace, memoryId, ...protectedTypes, DREAM_DELETE_CRITICAL_IMPORTANCE]
   };
-}
-
-function prepareDeleteOwnershipEvent(
-  env: Env,
-  candidate: MemoryCandidateRecord,
-  targetId: string,
-  eventId: string,
-  createdAt: string,
-  targetGuard: MemoryMutationGuard
-): D1PreparedStatement {
-  return env.DB.prepare(
-    `INSERT OR IGNORE INTO memory_events
-      (id, namespace, event_type, memory_id, payload_json, created_at)
-     SELECT ?, ?, 'memory_candidate_delete_claimed', ?, ?, ?
-     WHERE (${targetGuard.sql})
-       AND EXISTS (
-         SELECT 1 FROM memory_candidates
-         WHERE namespace = ? AND id = ? AND status = ?
-       )`
-  ).bind(
-    eventId,
-    candidate.namespace,
-    targetId,
-    JSON.stringify({ candidate_id: candidate.id, target_id: targetId }),
-    createdAt,
-    ...targetGuard.binds,
-    candidate.namespace,
-    candidate.id,
-    candidate.status
-  );
 }
 
 async function rejectUnsafeTargetCandidate(
@@ -480,31 +451,38 @@ async function approveDeleteCandidate(
   const mutationAt = nowIso();
   const ownershipEventId = `ev_delete_${candidate.id}`;
   const targetGuard = dreamDeleteTargetAllowedGuard(candidate.namespace, candidate.target_id);
-  const ownershipEvent = prepareDeleteOwnershipEvent(
-    env,
-    candidate,
-    candidate.target_id,
-    ownershipEventId,
-    mutationAt,
-    targetGuard
-  );
-  const statement = prepareMemoryUpdate(env.DB, {
+  const deprojection = await prepareMemoryDeprojection(env.DB, {
     namespace: candidate.namespace,
-    id: candidate.target_id,
+    memoryId: candidate.target_id,
     patch: { status: "deleted" },
     expectedStatus: "active",
+    expectedRevision: existing.five_axis_revision ?? 1,
     requireUnpinned: true,
+    source: "dream_candidate",
+    reason: "dream_candidate_delete",
+    candidateId: candidate.id,
+    operationId: `deproj_${candidate.id}`,
+    memory: existing,
     guard: combineGuards(candidateApprovalGuard(candidate), targetGuard),
-    markVectorUnsynced: true,
     now: mutationAt
+  });
+  const ownershipEvent = prepareMemoryEventInsert(env.DB, {
+    namespace: candidate.namespace,
+    eventType: "memory_candidate_delete_claimed",
+    memoryId: candidate.target_id,
+    payload: { candidate_id: candidate.id, target_id: candidate.target_id }
+  }, {
+    id: ownershipEventId,
+    now: mutationAt,
+    guard: combineGuards(candidateApprovalGuard(candidate), targetGuard)
   });
   const deleted = await commitApproval(
     env,
     candidate,
     candidate.target_id,
-    statement ? [ownershipEvent, statement] : [],
+    [ownershipEvent, ...deprojection.statements],
     combineGuards(
-      memoryStatusGuard(candidate.namespace, candidate.target_id, "deleted"),
+      deprojection.successGuard,
       memoryEventExistsGuard(candidate.namespace, ownershipEventId)
     )
   );
@@ -627,6 +605,7 @@ export async function approveCandidate(env: Env, form: FormData): Promise<Memory
   }
   const target = await approveByAction(env, candidate, payload, candidate.action, validationOverride);
   if (!target) return null;
+  if (candidate.action !== "fact_group") await syncMemoryVector(env, target);
   if (validationOverride) {
     await createMemoryEvent(env.DB, {
       namespace: "default",

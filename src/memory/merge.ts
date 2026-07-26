@@ -1,10 +1,11 @@
-import { createMemory, getMemoryById, updateMemory } from "../db/memories";
+import { createMemory, getMemoryById } from "../db/memories";
 import { callOpenAICompat } from "../proxy/openaiAdapter";
 import type { Env, MemoryApiRecord, MemoryRecord, OpenAIChatRequest, OpenAIChatResponse } from "../types";
 import { extractJsonObject, parseJsonStringArray } from "../utils/jsonHelpers";
 import { upsertMemoryEmbedding } from "./embedding";
 import type { ExtractedMemory } from "./extract";
 import { searchMemories } from "./search";
+import { patchSyncedMemory } from "./state";
 
 const MERGE_CANDIDATE_TOP_K = 5;
 const MERGE_SCORE_THRESHOLD = 0.82;
@@ -248,23 +249,22 @@ export async function persistMemoryWithMerge(
   if (decision.action === "merge") {
     if (!decision.content) return createNewMemory(env, input);
 
-    const merged = await updateMemory(env.DB, {
-      namespace: input.namespace,
-      id: existing.id,
-      expectedStatus: "active",
-      requireUnpinned: true,
-      patch: {
+    const merged = await patchSyncedMemory(env, input.namespace, existing.id, {
         type: decision.type ?? input.memory.type ?? existing.type,
         content: decision.content,
         importance: Math.max(existing.importance, clampScore(decision.importance, input.memory.importance)),
         confidence: Math.max(existing.confidence, clampScore(decision.confidence, input.memory.confidence)),
         tags: uniqueStrings([...parseJsonStringArray(existing.tags), ...input.memory.tags, ...(decision.tags ?? [])]),
         sourceMessageIds: uniqueStrings([...parseJsonStringArray(existing.source_message_ids), ...input.sourceMessageIds])
-      }
+    }, {
+      source: "system",
+      reason: "memory_merge",
+      expectedStatus: "active",
+      expectedRevision: existing.five_axis_revision ?? 1,
+      requireUnpinned: true
     });
 
     if (!merged) return createNewMemory(env, input);
-    await upsertMemoryEmbedding(env, merged);
     return merged;
   }
 

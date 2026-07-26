@@ -2,6 +2,7 @@ import {
   findCompletedMemoryDeprojection,
   getMemoryDeprojectionByOperationId,
   prepareMemoryDeprojection,
+  prepareMemoryDeprojectionCallerInvariant,
   type MemoryDeprojectionRecord
 } from "../db/memoryDeprojection";
 import {
@@ -186,4 +187,4 @@ export async function deprojectMemoryFromFiveAxes(
   return completedResult(env, operation, (results[0]?.meta.changes ?? 0) === 0);
 }
 
-export { prepareMemoryDeprojection };
+export { prepareMemoryDeprojection, prepareMemoryDeprojectionCallerInvariant };

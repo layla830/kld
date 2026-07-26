@@ -44,7 +44,6 @@ export async function handleAdminBoard(request: Request, env: Env, ctx: Executio
     const ref = request.headers.get("referer") || `${url.origin}/admin/memories`;
     try {
       const updated = await editBoardMemory(env, await request.formData());
-      if (updated) scheduleVectorSync(updated);
       return Response.redirect(`${url.origin}${noticeUrl(ref, updated ? "edited" : "empty")}`, 303);
     } catch (error) {
       console.error("admin memory edit failed", error);
@@ -55,7 +54,6 @@ export async function handleAdminBoard(request: Request, env: Env, ctx: Executio
   if (request.method === "POST" && url.pathname === ADMIN_BOARD_ROUTES.delete.path) {
     const ref = request.headers.get("referer") || `${url.origin}/admin/memories`;
     const deleted = await deleteBoardMemory(env, await request.formData());
-    if (deleted) scheduleVectorSync(deleted);
     return Response.redirect(`${url.origin}${noticeUrl(ref, "deleted")}`, 303);
   }
 
@@ -63,9 +61,6 @@ export async function handleAdminBoard(request: Request, env: Env, ctx: Executio
     const ref = request.headers.get("referer") || `${url.origin}/admin/memories?tab=review`;
     try {
       const result = await approveDreamReview(env, await request.formData());
-      if (result?.target) scheduleVectorSync(result.target);
-      if (result?.previousTarget) scheduleVectorSync(result.previousTarget);
-      if (result?.proposal) scheduleVectorSync(result.proposal);
       return Response.redirect(`${url.origin}${noticeUrl(ref, result ? "approved" : "empty")}`, 303);
     } catch (error) {
       console.error("admin dream review approve failed", error);
@@ -77,7 +72,6 @@ export async function handleAdminBoard(request: Request, env: Env, ctx: Executio
     const ref = request.headers.get("referer") || `${url.origin}/admin/memories?tab=review`;
     try {
       const result = await rejectDreamReview(env, await request.formData());
-      if (result?.proposal) scheduleVectorSync(result.proposal);
       return Response.redirect(`${url.origin}${noticeUrl(ref, result ? "rejected" : "empty")}`, 303);
     } catch (error) {
       console.error("admin dream review reject failed", error);
@@ -89,7 +83,6 @@ export async function handleAdminBoard(request: Request, env: Env, ctx: Executio
     const ref = request.headers.get("referer") || `${url.origin}/admin/memories?tab=review`;
     try {
       const target = await approveCandidate(env, await request.formData());
-      if (target) scheduleVectorSync(target);
       return Response.redirect(`${url.origin}${noticeUrl(ref, target ? "approved" : "empty")}`, 303);
     } catch (error) {
       console.error("admin candidate approve failed", error);
@@ -185,9 +178,6 @@ export async function handleAdminBoard(request: Request, env: Env, ctx: Executio
     const ref = request.headers.get("referer") || `${url.origin}/admin/memories?tab=review`;
     try {
       const result = await batchReviewDiaryFactCandidates(env, await request.formData());
-      if (result?.targets.length) {
-        scheduleVectorSync(...result.targets);
-      }
       const notice = !result || result.processed === 0
         ? "empty"
         : result.decision === "approve" ? "approved" : "rejected";
@@ -212,7 +202,6 @@ export async function handleAdminBoard(request: Request, env: Env, ctx: Executio
     const ref = request.headers.get("referer") || `${url.origin}/admin/memories?tab=m-review`;
     try {
       const result = await approveOperationalReviewCandidate(env, await request.formData());
-      if (result?.memories.length) scheduleVectorSync(...result.memories);
       return Response.redirect(`${url.origin}${noticeUrl(ref, result ? "approved" : "empty")}`, 303);
     } catch (error) {
       console.error("admin metabolism approve failed", error);

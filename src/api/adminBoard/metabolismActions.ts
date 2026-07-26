@@ -1,4 +1,4 @@
-import { createMemoryEvent } from "../../db/memoryEvents";
+import { createMemoryEvent, prepareMemoryEventInsert } from "../../db/memoryEvents";
 import { loadDreamConfig } from "../../config/runtime";
 import {
   commitMemoryCandidateApproval,
@@ -6,7 +6,7 @@ import {
   resolveMemoryCandidate,
   rollbackMemoryCandidate
 } from "../../db/memoryCandidates";
-import { getMemoryById, updateMemory } from "../../db/memories";
+import { getMemoryById, updateMemory, type MemoryMutationGuard } from "../../db/memories";
 import type { Env, MemoryRecord } from "../../types";
 import {
   COLD_MEMORY_MAX_CONFIDENCE,
@@ -16,6 +16,8 @@ import {
 import { newId } from "../../utils/ids";
 import { nowIso } from "../../utils/time";
 import { payloadOf, readFormText } from "./utils";
+import { prepareMemoryDeprojection } from "../../memory/deprojection";
+import { syncMemoryVector } from "../../memory/state";
 
 export type MetabolismAction = "m_archive" | "m_relation_cleanup";
 type MetabolismResult = { memory: MemoryRecord | null; action: MetabolismAction | "rollback" };
@@ -34,18 +36,25 @@ function beforeOf(payload: Record<string, unknown>): Record<string, unknown> {
   return payload.before && typeof payload.before === "object" ? payload.before as Record<string, unknown> : {};
 }
 
-async function snapshot(
-  env: Env,
-  namespace: string,
-  candidateId: string,
-  action: MetabolismAction,
-  before: Record<string, unknown>
-): Promise<void> {
-  await createMemoryEvent(env.DB, {
-    namespace,
-    eventType: "m_snapshot",
-    payload: { candidate_id: candidateId, action, before }
-  });
+function combineGuards(...guards: MemoryMutationGuard[]): MemoryMutationGuard {
+  return {
+    sql: guards.map((guard) => `(${guard.sql})`).join(" AND "),
+    binds: guards.flatMap((guard) => guard.binds)
+  };
+}
+
+function pendingCandidateGuard(namespace: string, candidateId: string): MemoryMutationGuard {
+  return {
+    sql: "EXISTS (SELECT 1 FROM memory_candidates WHERE namespace = ? AND id = ? AND status = 'pending')",
+    binds: [namespace, candidateId]
+  };
+}
+
+function memoryEventExistsGuard(namespace: string, eventId: string): MemoryMutationGuard {
+  return {
+    sql: "EXISTS (SELECT 1 FROM memory_events WHERE namespace = ? AND id = ?)",
+    binds: [namespace, eventId]
+  };
 }
 
 function relationSnapshotStatement(
@@ -143,16 +152,51 @@ export async function approveMetabolismCandidate(
     } else {
       return null;
     }
-    await snapshot(env, namespace, candidate.id, action, before);
-    const archived = await updateMemory(env.DB, {
+    const mutationAt = nowIso();
+    const deprojection = await prepareMemoryDeprojection(env.DB, {
       namespace,
-      id: target.id,
+      memoryId: target.id,
       patch: { status: "archived", activeFact: false },
       expectedStatus: "active",
-      requireUnpinned: true
+      expectedRevision: target.five_axis_revision ?? 1,
+      requireUnpinned: true,
+      source: "m_review",
+      reason: "m_review_archive",
+      candidateId: candidate.id,
+      operationId: `deproj_${candidate.id}`,
+      memory: target,
+      guard: combineGuards(
+        pendingCandidateGuard(namespace, candidate.id),
+        { sql: "memory.updated_at = ?", binds: [target.updated_at] }
+      ),
+      now: mutationAt
     });
-    if (!archived) return null;
-    await resolveMemoryCandidate(env.DB, namespace, candidate.id, "approved", archived.id);
+    const snapshotEventId = `ev_m_snapshot_${candidate.id}`;
+    const snapshotEvent = prepareMemoryEventInsert(env.DB, {
+      namespace,
+      eventType: "m_snapshot",
+      memoryId: target.id,
+      payload: { candidate_id: candidate.id, action, before }
+    }, {
+      id: snapshotEventId,
+      now: mutationAt,
+      guard: deprojection.successGuard
+    });
+    const committed = await commitMemoryCandidateApproval(env.DB, {
+      namespace,
+      id: candidate.id,
+      expectedStatus: "pending",
+      resultMemoryId: target.id,
+      businessStatements: [...deprojection.statements, snapshotEvent],
+      successGuard: combineGuards(
+        deprojection.successGuard,
+        memoryEventExistsGuard(namespace, snapshotEventId)
+      )
+    });
+    if (!committed) return null;
+    const archived = await getMemoryById(env.DB, { namespace, id: target.id });
+    if (!archived) throw new Error("metabolism_deprojection_target_missing");
+    await syncMemoryVector(env, archived);
     return { memory: archived, action };
   }
 

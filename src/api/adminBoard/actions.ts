@@ -1,4 +1,19 @@
-import { createMemory, getMemoryById, updateMemory, type UpdateMemoryInput } from "../../db/memories";
+import {
+  buildMemoryRecord,
+  createMemory,
+  getMemoryById,
+  prepareMemoryInsert,
+  prepareMemoryUpdate,
+  type MemoryMutationGuard,
+  type UpdateMemoryInput
+} from "../../db/memories";
+import {
+  applyMemoryEligibilityPatch,
+  classifyMemoryEligibilityTransition,
+  prepareMemoryDeprojection,
+  prepareMemoryDeprojectionCallerInvariant
+} from "../../memory/deprojection";
+import { patchSyncedMemory, syncMemoryVector } from "../../memory/state";
 import type { Env, MemoryRecord } from "../../types";
 import { clampNumber, parseTagInput, parseTags, readFormText } from "./utils";
 
@@ -83,18 +98,136 @@ function reviewPatchToMemoryPatch(raw: Record<string, unknown> | undefined): Upd
   return patch;
 }
 
-async function markReviewResolved(env: Env, proposal: MemoryRecord, resolution: "approved" | "rejected"): Promise<MemoryRecord | null> {
+function combineGuards(...guards: MemoryMutationGuard[]): MemoryMutationGuard {
+  return {
+    sql: guards.map((guard) => `(${guard.sql})`).join(" AND "),
+    binds: guards.flatMap((guard) => guard.binds)
+  };
+}
+
+function dreamProposalGuard(proposal: MemoryRecord): MemoryMutationGuard {
+  return {
+    sql: `EXISTS (
+      SELECT 1 FROM memories
+      WHERE namespace = ? AND id = ? AND type = 'dream_review'
+        AND status = 'active' AND summary = ? AND five_axis_revision = ?
+    )`,
+    binds: [
+      proposal.namespace,
+      proposal.id,
+      proposal.summary,
+      proposal.five_axis_revision ?? 1
+    ]
+  };
+}
+
+function memoryStatusGuard(namespace: string, memoryId: string, status: string): MemoryMutationGuard {
+  return {
+    sql: "EXISTS (SELECT 1 FROM memories WHERE namespace = ? AND id = ? AND status = ?)",
+    binds: [namespace, memoryId, status]
+  };
+}
+
+function memoryExistsGuard(namespace: string, memoryId: string): MemoryMutationGuard {
+  return {
+    sql: "EXISTS (SELECT 1 FROM memories WHERE namespace = ? AND id = ?)",
+    binds: [namespace, memoryId]
+  };
+}
+
+function reviewResolutionPatch(
+  proposal: MemoryRecord,
+  resolution: "approved" | "rejected"
+): UpdateMemoryInput {
   const tags = cleanPinTags(parseTags(proposal.tags).filter((tag) => tag !== "pending-review"));
   tags.push(resolution);
-  return updateMemory(env.DB, {
-    namespace: "default",
-    id: proposal.id,
-    patch: {
-      status: "superseded",
-      pinned: false,
-      tags: cleanPinTags(tags)
-    }
+  return {
+    status: "superseded",
+    pinned: false,
+    tags: cleanPinTags(tags)
+  };
+}
+
+async function markReviewResolved(env: Env, proposal: MemoryRecord, resolution: "approved" | "rejected"): Promise<MemoryRecord | null> {
+  return patchSyncedMemory(env, "default", proposal.id, reviewResolutionPatch(proposal, resolution), {
+    source: "dream_review",
+    reason: `dream_review_${resolution}`
   });
+}
+
+async function commitDreamReviewDeprojection(
+  env: Env,
+  input: {
+    proposal: MemoryRecord;
+    target: MemoryRecord;
+    patch: UpdateMemoryInput;
+    reason: string;
+    requireUnpinned?: boolean;
+    replacement?: MemoryRecord;
+  }
+): Promise<{
+  proposal: MemoryRecord;
+  target: MemoryRecord;
+  replacement: MemoryRecord | null;
+} | null> {
+  const prepared = await prepareMemoryDeprojection(env.DB, {
+    namespace: input.target.namespace,
+    memoryId: input.target.id,
+    patch: input.patch,
+    expectedStatus: input.target.status,
+    expectedRevision: input.target.five_axis_revision ?? 1,
+    requireUnpinned: input.requireUnpinned,
+    source: "dream_review",
+    reason: input.reason,
+    operationId: `deproj_dream_review_${input.proposal.id}`,
+    memory: input.target,
+    guard: dreamProposalGuard(input.proposal)
+  });
+  const proposalUpdate = prepareMemoryUpdate(env.DB, {
+    namespace: input.proposal.namespace,
+    id: input.proposal.id,
+    patch: reviewResolutionPatch(input.proposal, "approved"),
+    expectedStatus: "active",
+    expectedRevision: input.proposal.five_axis_revision ?? 1,
+    guard: prepared.successGuard,
+    markVectorUnsynced: true
+  });
+  if (!proposalUpdate) throw new Error("dream_review_resolution_statement_missing");
+
+  const callerInvariant = combineGuards(
+    memoryStatusGuard(input.proposal.namespace, input.proposal.id, "superseded"),
+    ...(input.replacement
+      ? [memoryExistsGuard(input.replacement.namespace, input.replacement.id)]
+      : [])
+  );
+  await env.DB.batch([
+    ...prepared.statements,
+    ...(input.replacement
+      ? [prepareMemoryInsert(env.DB, input.replacement, prepared.successGuard)]
+      : []),
+    proposalUpdate,
+    prepareMemoryDeprojectionCallerInvariant(env.DB, prepared, callerInvariant)
+  ]);
+
+  const [proposal, target, replacement] = await Promise.all([
+    getMemoryById(env.DB, { namespace: input.proposal.namespace, id: input.proposal.id }),
+    getMemoryById(env.DB, { namespace: input.target.namespace, id: input.target.id }),
+    input.replacement
+      ? getMemoryById(env.DB, {
+          namespace: input.replacement.namespace,
+          id: input.replacement.id
+        })
+      : Promise.resolve(null)
+  ]);
+  if (!proposal || proposal.status !== "superseded" || !target
+    || (input.replacement && !replacement)) return null;
+
+  await Promise.all([
+    syncMemoryVector(env, proposal),
+    syncMemoryVector(env, target),
+    ...(replacement ? [syncMemoryVector(env, replacement)] : [])
+  ]);
+  return { proposal, target, replacement };
 }
 
 export async function createBoardMemory(env: Env, form: FormData): Promise<MemoryRecord | null> {
@@ -153,16 +286,15 @@ export async function editBoardMemory(env: Env, form: FormData): Promise<MemoryR
   if (mood) tags.push(`mood:${mood}`);
   if (type === "message" && !tags.includes("留言")) tags.push("留言");
 
-  return updateMemory(env.DB, {
-    namespace: "default",
-    id,
-    patch: {
+  return patchSyncedMemory(env, "default", id, {
       type,
       content,
       tags: cleanPinTags(tags),
       importance: clampNumber(readFormText(form, "importance"), 0.65, 0, 1),
       pinned: readFormText(form, "pinned") === "on"
-    }
+  }, {
+    source: "admin_board",
+    reason: "admin_board_edit"
   });
 }
 
@@ -173,14 +305,15 @@ export async function deleteBoardMemory(env: Env, form: FormData): Promise<Memor
   const existing = await getMemoryById(env.DB, { namespace: "default", id });
   if (!existing) return null;
 
-  return updateMemory(env.DB, {
-    namespace: "default",
-    id,
-    patch: {
+  return patchSyncedMemory(env, "default", id, {
       status: "deleted",
       pinned: false,
       tags: cleanPinTags(parseTags(existing.tags))
-    }
+  }, {
+    source: "admin_board",
+    reason: "admin_board_delete",
+    expectedStatus: existing.status,
+    expectedRevision: existing.five_axis_revision ?? 1
   });
 }
 
@@ -198,19 +331,49 @@ export async function approveDreamReview(env: Env, form: FormData): Promise<Drea
   const action = review.action === "delete" ? "delete" : review.action === "supersede" ? "supersede" : "update";
   let updatedTarget: MemoryRecord | null = null;
   if (action === "delete") {
-    updatedTarget = await updateMemory(env.DB, {
-      namespace: "default",
-      id: target.id,
+    const result = await commitDreamReviewDeprojection(env, {
+      proposal,
+      target,
       patch: {
         status: "deleted",
         pinned: false,
         tags: cleanPinTags(parseTags(target.tags))
-      }
+      },
+      reason: "dream_review_delete"
     });
+    if (!result) return null;
+    return {
+      action,
+      proposal: result.proposal,
+      target: result.target
+    };
   } else if (action === "update") {
     const patch = reviewPatchToMemoryPatch(review.patch);
     if (Object.keys(patch).length === 0) return null;
-    updatedTarget = await updateMemory(env.DB, { namespace: "default", id: target.id, patch });
+    const transition = classifyMemoryEligibilityTransition(
+      target,
+      applyMemoryEligibilityPatch(target, patch)
+    );
+    if (transition === "eligible_to_ineligible") {
+      const result = await commitDreamReviewDeprojection(env, {
+        proposal,
+        target,
+        patch,
+        reason: "dream_review_update"
+      });
+      if (!result) return null;
+      return {
+        action,
+        proposal: result.proposal,
+        target: result.target
+      };
+    }
+    updatedTarget = await patchSyncedMemory(env, "default", target.id, patch, {
+      source: "dream_review",
+      reason: "dream_review_update",
+      expectedStatus: target.status,
+      expectedRevision: target.five_axis_revision ?? 1
+    });
   } else {
     if (target.status !== "active" || target.pinned) return null;
     const replacement = review.replacement;
@@ -219,7 +382,7 @@ export async function approveDreamReview(env: Env, form: FormData): Promise<Drea
     const replacementTags = Array.isArray(replacement?.tags)
       ? cleanPinTags(replacement.tags.map((item) => String(item).trim()).filter(Boolean))
       : [];
-    const created = await createMemory(env.DB, {
+    const replacementRecord = buildMemoryRecord({
       namespace: "default",
       type: stringValue(replacement?.type) ?? target.type,
       content,
@@ -236,26 +399,24 @@ export async function approveDreamReview(env: Env, form: FormData): Promise<Drea
       factKey: nullableStringValue(replacement?.fact_key),
       expiresAt: null
     });
-    const superseded = await updateMemory(env.DB, {
-      namespace: "default",
-      id: target.id,
-      expectedStatus: "active",
+    const result = await commitDreamReviewDeprojection(env, {
+      proposal,
+      target,
+      patch: { status: "superseded", activeFact: false },
+      reason: "dream_review_supersede",
       requireUnpinned: true,
-      patch: { status: "superseded", activeFact: false }
+      replacement: replacementRecord
     });
-    if (!superseded) {
-      await updateMemory(env.DB, {
-        namespace: "default",
-        id: created.id,
-        patch: { status: "deleted", activeFact: false }
-      });
-      return null;
-    }
-    updatedTarget = created;
-    const resolvedProposal = await markReviewResolved(env, proposal, "approved");
-    return { action, proposal: resolvedProposal ?? proposal, target: updatedTarget, previousTarget: superseded };
+    if (!result?.replacement) return null;
+    return {
+      action,
+      proposal: result.proposal,
+      target: result.replacement,
+      previousTarget: result.target
+    };
   }
 
+  if (!updatedTarget) return null;
   const resolvedProposal = await markReviewResolved(env, proposal, "approved");
   return { action, proposal: resolvedProposal ?? proposal, target: updatedTarget };
 }

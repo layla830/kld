@@ -1,16 +1,35 @@
 import {
   createMemory,
   getMemoryById,
-  softDeleteMemory,
   updateMemory,
   type CreateMemoryInput,
   type UpdateMemoryInput,
 } from "../db/memories";
-import { createMemoryEvent } from "../db/memoryEvents";
 import { deleteMemoryEmbedding, upsertMemoryEmbedding } from "./embedding";
+import {
+  applyMemoryEligibilityPatch,
+  classifyMemoryEligibilityTransition,
+  deprojectMemoryFromFiveAxes,
+  type MemoryDeprojectionSource,
+  type MemoryEligibilityTransition,
+} from "./deprojection";
 import type { Env, MemoryRecord } from "../types";
 
 export type VectorSyncStatus = "synced" | "failed" | "pending" | "deleted";
+
+export interface MemoryLifecycleMutationOptions {
+  source: MemoryDeprojectionSource;
+  reason: string;
+  expectedStatus?: string;
+  expectedRevision?: number;
+  requireUnpinned?: boolean;
+  operationId?: string;
+}
+
+export interface MemoryLifecycleMutationResult {
+  transition: MemoryEligibilityTransition;
+  memory: MemoryRecord;
+}
 
 async function syncVector(env: Env, memory: MemoryRecord): Promise<VectorSyncStatus> {
   if (memory.status !== "active") return "deleted";
@@ -58,14 +77,63 @@ export async function createSyncedMemory(
   return (await getMemoryById(env.DB, { namespace: record.namespace, id: record.id })) ?? record;
 }
 
+export async function mutateMemoryLifecycle(
+  env: Env,
+  namespace: string,
+  id: string,
+  patch: UpdateMemoryInput,
+  options: MemoryLifecycleMutationOptions
+): Promise<MemoryLifecycleMutationResult | null> {
+  const existing = await getMemoryById(env.DB, { namespace, id });
+  if (!existing) return null;
+  if (options.expectedStatus && existing.status !== options.expectedStatus) return null;
+  if (options.expectedRevision !== undefined
+    && (existing.five_axis_revision ?? 1) !== options.expectedRevision) return null;
+  if (options.requireUnpinned && existing.pinned) return null;
+
+  const transition = classifyMemoryEligibilityTransition(
+    existing,
+    applyMemoryEligibilityPatch(existing, patch)
+  );
+  if (transition === "eligible_to_ineligible") {
+    const result = await deprojectMemoryFromFiveAxes(env, {
+      namespace,
+      memoryId: id,
+      patch,
+      expectedStatus: options.expectedStatus ?? existing.status,
+      expectedRevision: options.expectedRevision ?? existing.five_axis_revision ?? 1,
+      requireUnpinned: options.requireUnpinned,
+      source: options.source,
+      reason: options.reason,
+      operationId: options.operationId
+    });
+    return { transition, memory: result.memory };
+  }
+
+  const updated = await updateMemory(env.DB, {
+    namespace,
+    id,
+    patch,
+    expectedStatus: options.expectedStatus ?? existing.status,
+    expectedRevision: options.expectedRevision ?? existing.five_axis_revision ?? 1,
+    requireUnpinned: options.requireUnpinned
+  });
+  return updated ? { transition, memory: updated } : null;
+}
+
 export async function patchSyncedMemory(
   env: Env,
   namespace: string,
   id: string,
-  patch: UpdateMemoryInput
+  patch: UpdateMemoryInput,
+  options: MemoryLifecycleMutationOptions = {
+    source: "system",
+    reason: "patch_synced_memory"
+  }
 ): Promise<MemoryRecord | null> {
-  const updated = await updateMemory(env.DB, { namespace, id, patch });
-  if (!updated) return null;
+  const mutation = await mutateMemoryLifecycle(env, namespace, id, patch, options);
+  if (!mutation) return null;
+  const updated = mutation.memory;
 
   if (updated.status === "active") {
     const syncStatus = await syncVector(env, updated);
@@ -81,112 +149,29 @@ export async function patchSyncedMemory(
 export async function deleteSyncedMemory(
   env: Env,
   namespace: string,
-  id: string
+  id: string,
+  options: Omit<MemoryLifecycleMutationOptions, "requireUnpinned"> = {
+    source: "system",
+    reason: "delete_synced_memory"
+  }
 ): Promise<MemoryRecord | null> {
   const existing = await getMemoryById(env.DB, { namespace, id });
   if (!existing) return null;
   if (existing.pinned) return existing;
 
-  const deleted = await softDeleteMemory(env.DB, { namespace, id });
-  if (!deleted) return null;
+  const mutation = await mutateMemoryLifecycle(env, namespace, id, { status: "deleted" }, {
+    ...options,
+    expectedStatus: options.expectedStatus ?? existing.status,
+    expectedRevision: options.expectedRevision ?? existing.five_axis_revision ?? 1,
+    requireUnpinned: true
+  });
+  if (!mutation) return null;
+  const deleted = mutation.memory;
 
   const syncStatus = await removeVector(env, deleted);
   await updateSyncStatus(env, namespace, id, syncStatus);
 
   return getMemoryById(env.DB, { namespace, id });
-}
-
-export async function markMemoryReviewSynced(
-  env: Env,
-  namespace: string,
-  id: string,
-  auditState?: string
-): Promise<MemoryRecord | null> {
-  const existing = await getMemoryById(env.DB, { namespace, id });
-  if (!existing) return null;
-  if (existing.pinned) return existing;
-
-  const patch: UpdateMemoryInput = { status: "review" };
-  if (auditState) patch.auditState = auditState;
-
-  const updated = await updateMemory(env.DB, { namespace, id, patch });
-  if (!updated) return null;
-
-  const syncStatus = await removeVector(env, updated);
-  await updateSyncStatus(env, namespace, id, syncStatus);
-
-  return getMemoryById(env.DB, { namespace, id });
-}
-
-export async function markMemorySupersededSynced(
-  env: Env,
-  namespace: string,
-  id: string,
-  eventPayload?: Record<string, unknown>
-): Promise<MemoryRecord | null> {
-  const existing = await getMemoryById(env.DB, { namespace, id });
-  if (!existing) return null;
-  if (existing.pinned) return existing;
-
-  const superseded = await updateMemory(env.DB, {
-    namespace,
-    id,
-    patch: { status: "superseded" },
-    expectedStatus: "active",
-    requireUnpinned: true,
-  });
-  if (!superseded) return null;
-
-  const syncStatus = await removeVector(env, superseded);
-  await updateSyncStatus(env, namespace, id, syncStatus);
-
-  if (eventPayload) {
-    await createMemoryEvent(env.DB, {
-      namespace,
-      eventType: "z_conflict",
-      memoryId: id,
-      payload: eventPayload,
-    });
-  }
-
-  return getMemoryById(env.DB, { namespace, id });
-}
-
-export async function supersedeSyncedMemory(
-  env: Env,
-  namespace: string,
-  oldId: string,
-  newMemoryInput: CreateMemoryInput,
-  eventPayload?: Record<string, unknown>
-): Promise<{ old: MemoryRecord | null; created: MemoryRecord }> {
-  const oldExisting = await getMemoryById(env.DB, { namespace, id: oldId });
-
-  if (oldExisting && !oldExisting.pinned) {
-    const superseded = await updateMemory(env.DB, {
-      namespace,
-      id: oldId,
-      patch: { status: "superseded" },
-    });
-    if (superseded) {
-      const syncStatus = await removeVector(env, superseded);
-      await updateSyncStatus(env, namespace, oldId, syncStatus);
-    }
-
-    if (eventPayload) {
-      await createMemoryEvent(env.DB, {
-        namespace,
-        eventType: "z_conflict",
-        memoryId: oldId,
-        payload: eventPayload,
-      });
-    }
-  }
-
-  const created = await createSyncedMemory(env, newMemoryInput);
-  return {
-    old: oldExisting?.pinned ? oldExisting : (await getMemoryById(env.DB, { namespace, id: oldId })),
-    created,
-  };
 }
 
 export async function syncMemoryVector(

@@ -86,6 +86,7 @@ export interface PrepareMemoryUpdateInput {
   id: string;
   patch: UpdateMemoryInput;
   expectedStatus?: string;
+  expectedRevision?: number;
   requireUnpinned?: boolean;
   guard?: MemoryMutationGuard;
   markVectorUnsynced?: boolean;
@@ -454,6 +455,10 @@ export function prepareMemoryUpdate(
     where.push("status = ?");
     whereBinds.push(input.expectedStatus);
   }
+  if (input.expectedRevision !== undefined) {
+    where.push("five_axis_revision = ?");
+    whereBinds.push(input.expectedRevision);
+  }
   if (input.requireUnpinned) {
     where.push("pinned = 0");
   }
@@ -474,6 +479,7 @@ export async function updateMemory(
     id: string;
     patch: UpdateMemoryInput;
     expectedStatus?: string;
+    expectedRevision?: number;
     requireUnpinned?: boolean;
   }
 ): Promise<MemoryRecord | null> {
@@ -485,13 +491,6 @@ export async function updateMemory(
   if ((result.meta.changes ?? 0) === 0) return null;
   if (input.patch.vectorSyncStatus === undefined) await markMemoryVectorUnsynced(db, input);
   return getMemoryById(db, input);
-}
-
-export async function softDeleteMemory(
-  db: D1Database,
-  input: { namespace: string; id: string }
-): Promise<MemoryRecord | null> {
-  return updateMemory(db, { namespace: input.namespace, id: input.id, patch: { status: "deleted" } });
 }
 
 function escapeLike(value: string): string {

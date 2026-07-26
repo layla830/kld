@@ -62,6 +62,7 @@ const workerIndex = fs.readFileSync("src/index.ts", "utf8");
 const adminBoardRoutes = fs.readFileSync("src/api/adminBoard/routes.ts", "utf8");
 const candidateDb = fs.readFileSync("src/db/memoryCandidates.ts", "utf8");
 const memoryState = fs.readFileSync("src/memory/state.ts", "utf8");
+const memoryDeprojection = fs.readFileSync("src/memory/deprojection.ts", "utf8");
 const legacyRelations = fs.readFileSync("src/memory/legacyRelations.ts", "utf8");
 const diarySplit = fs.readFileSync("src/memory/diarySplit.ts", "utf8");
 const diarySplitParse = fs.readFileSync("src/memory/diarySplitParse.ts", "utf8");
@@ -613,8 +614,10 @@ const checks = [
   [
     "Z: supersede review has approve and reject closure",
     reviewActions.includes('parsed.action !== "supersede"') &&
-      reviewActions.includes("previousTarget: superseded") &&
-      reviewActions.includes('status: "superseded", activeFact: false'),
+      reviewActions.includes("previousTarget: result.target") &&
+      reviewActions.includes('status: "superseded"') &&
+      reviewActions.includes("activeFact: false") &&
+      reviewActions.includes('reason: "dream_review_supersede"'),
   ],
   [
     "Z: supersede review displays before and after content",
@@ -747,12 +750,30 @@ const checks = [
     factTransitionActions.includes("listFactKeyConflictsForReview") &&
       factTransitionActions.includes("fact_transition_candidate_is_stale") &&
       factTransitionActions.includes('eventType: "z_snapshot"') &&
-    factTransitionActions.includes("markMemorySupersededSynced") &&
-      memoryState.includes('expectedStatus: "active"') &&
-      memoryState.includes("requireUnpinned: true") &&
+      factTransitionActions.includes("prepareMemoryDeprojection") &&
+      factTransitionActions.includes("commitMemoryCandidateApproval") &&
+      factTransitionActions.includes("candidateId: candidate.id") &&
+      factTransitionActions.includes('source: "z_review"') &&
       factTransitionActions.includes('status: "active"') &&
       factTransitionActions.includes("syncMemoryVector") &&
       factTransitionActions.includes('eventType: "z_rollback"'),
+  ],
+  [
+    "Lifecycle: API, MCP, Dream, Z, and M inactive transitions share deprojection ownership",
+    memoryState.includes("classifyMemoryEligibilityTransition") &&
+      memoryState.includes('transition === "eligible_to_ineligible"') &&
+      memoryState.includes("deprojectMemoryFromFiveAxes") &&
+      memoryDeprojection.includes("prepareMemoryDeprojection") &&
+      memoriesApi.includes('reason: "memory_api_patch"') &&
+      memoriesApi.includes('reason: "memory_api_delete"') &&
+      !memoriesApi.includes("softDeleteMemory") &&
+      mcpApi.includes('reason: "mcp_memory_delete"') &&
+      !mcpApi.includes("softDeleteMemory") &&
+      reviewActions.includes('reason: "admin_board_delete"') &&
+      reviewActions.includes('reason: "dream_review_delete"') &&
+      candidateActions.includes('source: "dream_candidate"') &&
+      factTransitionActions.includes('source: "z_review"') &&
+      metabolismActions.includes('source: "m_review"'),
   ],
   [
     "Z: compatibility debug approval delegates to the same candidate use case",
