@@ -1,4 +1,6 @@
-import { EXCLUDED_FIVE_AXIS_MEMORY_TYPES } from "../src/memory/fiveAxis/eligibilityContract.js";
+import {
+  fiveAxisMemoryEligibilityPredicate
+} from "../src/memory/fiveAxis/eligibilityContract.js";
 
 export const AUDIT_ACTIVE_OUTBOX_STATUSES = Object.freeze(["pending", "queued", "failed"]);
 export const AUDIT_NON_TERMINAL_RUN_STATUSES = Object.freeze(["running", "failed", "pending_review"]);
@@ -21,11 +23,87 @@ function sqlList(values) {
   return values.map(sqlString).join(", ");
 }
 
+function bindSqlPredicate(predicate) {
+  let bindIndex = 0;
+  const sql = predicate.sql.replaceAll("?", () => sqlString(predicate.binds[bindIndex++]));
+  if (bindIndex !== predicate.binds.length) throw new Error("eligibility_predicate_bind_mismatch");
+  return sql;
+}
+
+export function eligibleMemoryPredicate(alias) {
+  return bindSqlPredicate(fiveAxisMemoryEligibilityPredicate(alias));
+}
+
 export function inactiveMemoryPredicate(alias) {
-  return `NOT (
-    ${alias}.status = 'active'
-    AND ${alias}.active_fact != 0
-    AND LOWER(TRIM(${alias}.type)) NOT IN (${sqlList(EXCLUDED_FIVE_AXIS_MEMORY_TYPES)})
+  return `NOT (${eligibleMemoryPredicate(alias)})`;
+}
+
+function historicalVectorNeedsUpsertStatePredicate(alias) {
+  return `(
+    ${eligibleMemoryPredicate(alias)}
+    AND ${alias}.vector_sync_status = 'synced'
+    AND ${alias}.vector_synced = 0
+  )`;
+}
+
+function historicalVectorNeedsDeleteStatePredicate(alias) {
+  return `(
+    ${inactiveMemoryPredicate(alias)}
+    AND (
+      (
+        ${alias}.vector_sync_status = 'synced'
+        AND ${alias}.vector_synced IN (0, 1)
+      )
+      OR
+      (
+        (${alias}.vector_sync_status IS NULL OR TRIM(${alias}.vector_sync_status) = '')
+        AND ${alias}.vector_synced = 1
+      )
+    )
+  )`;
+}
+
+export function historicalVectorNeedsUpsertPredicate(alias) {
+  return `(
+    ${alias}.vector_id IS NOT NULL
+    AND TRIM(${alias}.vector_id) != ''
+    AND ${historicalVectorNeedsUpsertStatePredicate(alias)}
+  )`;
+}
+
+export function historicalVectorNeedsDeletePredicate(alias) {
+  return `(
+    ${alias}.vector_id IS NOT NULL
+    AND TRIM(${alias}.vector_id) != ''
+    AND ${historicalVectorNeedsDeleteStatePredicate(alias)}
+  )`;
+}
+
+export function historicalVectorRepairPredicate(alias) {
+  return `(
+    ${historicalVectorNeedsUpsertPredicate(alias)}
+    OR ${historicalVectorNeedsDeletePredicate(alias)}
+  )`;
+}
+
+export function historicalVectorMissingIdPredicate(alias) {
+  return `(
+    (${alias}.vector_id IS NULL OR TRIM(${alias}.vector_id) = '')
+    AND (
+      ${historicalVectorNeedsUpsertStatePredicate(alias)}
+      OR ${historicalVectorNeedsDeleteStatePredicate(alias)}
+    )
+  )`;
+}
+
+export function nonScannerManagedVectorStatePredicate(alias) {
+  return `(
+    ${alias}.vector_synced != 0
+    AND (
+      ${alias}.vector_sync_status IN ('pending', 'failed')
+      OR ${alias}.vector_sync_status IS NULL
+      OR TRIM(${alias}.vector_sync_status) = ''
+    )
   )`;
 }
 
@@ -37,6 +115,41 @@ export function buildInactiveFiveAxisAuditQueries(input) {
   const namespace = sqlString(input.namespace);
   const staleHours = Math.min(Math.max(Math.floor(input.staleHours ?? 24), 1), 24 * 365);
   const inactive = (alias) => inactiveMemoryPredicate(alias);
+  const vectorNeedsUpsert = historicalVectorNeedsUpsertPredicate("memory");
+  const vectorNeedsDelete = historicalVectorNeedsDeletePredicate("memory");
+  const vectorRepair = historicalVectorRepairPredicate("memory");
+  const nonScannerManagedVectorState = nonScannerManagedVectorStatePredicate("memory");
+  const vectorDrift = `(
+    ${vectorRepair}
+    OR ${historicalVectorMissingIdPredicate("memory")}
+    OR ${nonScannerManagedVectorState}
+    OR (
+      NOT (${inactive("memory")})
+      AND memory.vector_sync_status = 'deleted'
+    )
+    OR (
+      ${inactive("memory")}
+      AND (
+        memory.vector_sync_status = 'synced'
+        OR memory.vector_synced != 0
+      )
+    )
+    OR memory.vector_sync_status = 'failed'
+    OR (
+      memory.vector_synced = 0
+      AND (
+        memory.vector_sync_status = 'pending'
+        OR memory.vector_sync_status IS NULL
+        OR TRIM(memory.vector_sync_status) = ''
+      )
+      AND julianday(memory.updated_at) < julianday('now', '-${staleHours} hours')
+    )
+    OR (
+      memory.vector_sync_status IS NOT NULL
+      AND TRIM(memory.vector_sync_status) != ''
+      AND memory.vector_sync_status NOT IN ('pending', 'failed', 'synced', 'deleted')
+    )
+  )`;
   const nonTerminalRun = `run.status IN (${sqlList(AUDIT_NON_TERMINAL_RUN_STATUSES)})`;
   const staleRun = "run.memory_revision < memory.five_axis_revision";
   const futureRun = "run.memory_revision > memory.five_axis_revision";
@@ -316,15 +429,16 @@ export function buildInactiveFiveAxisAuditQueries(input) {
     },
     {
       name: "vector_state",
-      driftFields: [
-        "eligible_marked_deleted",
-        "eligible_invalid_unsynced_state",
-        "ineligible_marked_synced",
-        "ineligible_vector_synced",
-        "failed_vector_states",
-        "stale_pending_or_failed"
-      ],
+      driftFields: ["vector_drift_rows"],
       sql: `SELECT
+        COALESCE(SUM(CASE WHEN ${vectorNeedsUpsert} THEN 1 ELSE 0 END), 0)
+          AS needs_upsert,
+        COALESCE(SUM(CASE WHEN ${vectorNeedsDelete} THEN 1 ELSE 0 END), 0)
+          AS needs_delete,
+        COALESCE(SUM(CASE WHEN ${vectorRepair} THEN 1 ELSE 0 END), 0)
+          AS unique_vector_drift_memories,
+        COALESCE(SUM(CASE WHEN ${vectorDrift} THEN 1 ELSE 0 END), 0)
+          AS vector_drift_rows,
         COALESCE(SUM(CASE
           WHEN NOT (${inactive("memory")}) AND memory.vector_sync_status = 'deleted'
           THEN 1 ELSE 0 END
@@ -351,7 +465,26 @@ export function buildInactiveFiveAxisAuditQueries(input) {
           WHEN memory.vector_sync_status IN ('pending', 'failed')
            AND julianday(memory.updated_at) < julianday('now', '-${staleHours} hours')
           THEN 1 ELSE 0 END
-        ), 0) AS stale_pending_or_failed
+        ), 0) AS stale_pending_or_failed,
+        COALESCE(SUM(CASE
+          WHEN memory.vector_synced = 0
+           AND (
+             memory.vector_sync_status IN ('pending', 'failed')
+             OR memory.vector_sync_status IS NULL
+             OR TRIM(memory.vector_sync_status) = ''
+           )
+          THEN 1 ELSE 0 END
+        ), 0) AS scanner_managed_rows,
+        COALESCE(SUM(CASE WHEN ${nonScannerManagedVectorState}
+          THEN 1 ELSE 0 END), 0) AS non_scanner_managed_rows,
+        COALESCE(SUM(CASE WHEN ${historicalVectorMissingIdPredicate("memory")}
+          THEN 1 ELSE 0 END), 0) AS missing_vector_id_rows,
+        COALESCE(SUM(CASE
+          WHEN memory.vector_sync_status IS NOT NULL
+           AND TRIM(memory.vector_sync_status) != ''
+           AND memory.vector_sync_status NOT IN ('pending', 'failed', 'synced', 'deleted')
+          THEN 1 ELSE 0 END
+        ), 0) AS unknown_status_rows
       FROM memories AS memory
       WHERE memory.namespace = ${namespace}`
     },

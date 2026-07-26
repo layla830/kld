@@ -9,7 +9,13 @@ export const AUDIT_NON_TERMINAL_RUN_STATUSES: readonly string[];
 export const AUDIT_PENDING_CANDIDATE_STATUSES: readonly string[];
 export const ORIGINAL_DIARY_MEMORY_TYPES: readonly ["diary", "layla_diary", "auto_diary"];
 export function sqlString(value: unknown): string;
+export function eligibleMemoryPredicate(alias: string): string;
 export function inactiveMemoryPredicate(alias: string): string;
+export function historicalVectorNeedsUpsertPredicate(alias: string): string;
+export function historicalVectorNeedsDeletePredicate(alias: string): string;
+export function historicalVectorRepairPredicate(alias: string): string;
+export function historicalVectorMissingIdPredicate(alias: string): string;
+export function nonScannerManagedVectorStatePredicate(alias: string): string;
 export function originalDiaryTypePredicate(alias: string): string;
 export function buildInactiveFiveAxisAuditQueries(input: {
   namespace: string;
