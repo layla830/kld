@@ -126,6 +126,70 @@ describe("Y relation candidate boundary", () => {
     expect(result.scanned).toBe(1);
   });
 
+  it("stores builder provenance on safe edges and keeps the LLM reason in the run result", async () => {
+    const source = {
+      id: "mem_source",
+      namespace: "default",
+      status: "active",
+      type: "lesson",
+      active_fact: 1,
+      five_axis_revision: 7
+    } as MemoryRecord;
+    const target = {
+      id: "mem_target",
+      namespace: "default",
+      status: "active",
+      type: "lesson",
+      active_fact: 1,
+      five_axis_revision: 3
+    } as MemoryRecord;
+    const db = {
+      prepare() {
+        return {
+          bind() {
+            return { all: async () => ({ results: [source] }) };
+          }
+        };
+      }
+    } as unknown as D1Database;
+    const createRelation = vi.fn(async () => true);
+
+    const result = await runRelationBuild(
+      { DB: db } as Env,
+      "default",
+      { dryRun: false, memoryIds: [source.id], memoryRevision: 6 },
+      {
+        findCandidates: async () => [{
+          pairId: "pair",
+          source,
+          target,
+          vectorScore: 0.9
+        }],
+        proposeRelations: async () => ({
+          hints: [{
+            pair_id: "pair",
+            relation_type: "same_topic",
+            strength: 0.8,
+            reason: "LLM evidence"
+          }]
+        }),
+        createRelation,
+        queueReviewCandidate: async () => "unused"
+      }
+    );
+
+    expect(createRelation).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      reason: "y:auto:mem_source:6"
+    }));
+    expect(result.insertedRelations).toEqual([{
+      sourceMemoryId: "mem_source",
+      targetMemoryId: "mem_target",
+      relationType: "same_topic",
+      strength: 0.8,
+      reason: "LLM evidence"
+    }]);
+  });
+
   it("retries invalid JSON and accepts array-form assistant content", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(new Response(JSON.stringify({

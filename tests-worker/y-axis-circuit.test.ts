@@ -180,6 +180,27 @@ describe("Y-axis Worker circuit", () => {
       y: { inserted: 1, review: 2, proposed: 0, candidates: 3 }
     });
 
+    await expect(env.DB.prepare(
+      `SELECT reason FROM memory_relations
+       WHERE namespace = 'default' AND relation_type = 'same_topic'
+         AND ((source_memory_id = ? AND target_memory_id = ?)
+           OR (source_memory_id = ? AND target_memory_id = ?))`
+    ).bind(a.id, b.id, b.id, a.id).first()).resolves.toMatchObject({
+      reason: `y:auto:${a.id}:1`
+    });
+    const yRun = await env.DB.prepare(
+      `SELECT result_json FROM memory_five_axis_runs
+       WHERE namespace = 'default' AND memory_id = ? AND memory_revision = 1 AND axis = 'Y'`
+    ).bind(a.id).first<{ result_json: string }>();
+    expect(JSON.parse(yRun!.result_json)).toMatchObject({
+      insertedRelations: [{
+        sourceMemoryId: a.id,
+        targetMemoryId: b.id,
+        relationType: "same_topic",
+        reason: "safe runtime edge"
+      }]
+    });
+
     const pending = await env.DB.prepare(
       `SELECT id, status, payload_json FROM memory_candidates
        WHERE namespace = 'default' AND action = 'y_relation_review' AND status = 'pending'`

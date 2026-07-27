@@ -257,6 +257,9 @@ describe("Y relation review actions", () => {
     expect(approved).toMatchObject({ axis: "Y", action: "approve", changed: true });
     expect(state.candidate.status).toBe("approved");
     expect(state.relations.size).toBe(1);
+    expect([...state.relations.values()][0]?.reason).toBe(
+      `y-review:approved:${state.candidate.external_key}`
+    );
     const approvedPayload = state.candidate.payload_json;
 
     await queueRelationReviewCandidate(state.env, "default", {

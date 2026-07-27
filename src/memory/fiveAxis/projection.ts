@@ -293,6 +293,7 @@ export async function projectMemoryIntoFiveAxes(
       const result = await dependencies.projectRelations(env, input.namespace, {
         dryRun: false,
         memoryIds: [input.memoryId],
+        memoryRevision,
         projectionKey: input.projectionKey
       });
       if (result.error) throw new Error(`y_relation_projection_failed:${result.error}`);

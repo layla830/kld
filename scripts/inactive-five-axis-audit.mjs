@@ -111,10 +111,47 @@ export function originalDiaryTypePredicate(alias) {
   return `LOWER(TRIM(${alias}.type)) IN (${sqlList(ORIGINAL_DIARY_MEMORY_TYPES)})`;
 }
 
+function relationReasonPrefixPredicate(alias, prefixes) {
+  return `(${prefixes.map((prefix) =>
+    `SUBSTR(COALESCE(${alias}.reason, ''), 1, ${prefix.length}) = ${sqlString(prefix)}`
+  ).join(" OR ")})`;
+}
+
 export function buildInactiveFiveAxisAuditQueries(input) {
   const namespace = sqlString(input.namespace);
   const staleHours = Math.min(Math.max(Math.floor(input.staleHours ?? 24), 1), 24 * 365);
   const inactive = (alias) => inactiveMemoryPredicate(alias);
+  const staleRelation = `(
+    ${inactive("source_memory")}
+    OR ${inactive("target_memory")}
+  )`;
+  const deterministicRelation = relationReasonPrefixPredicate("relation", [
+    "diary_day:",
+    "diary_timeline:",
+    "timeline_approved:"
+  ]);
+  const humanReviewedRelation = relationReasonPrefixPredicate("relation", [
+    "y-review:approved:",
+    "fact-group:approved:"
+  ]);
+  const builderBackedRelation = relationReasonPrefixPredicate("relation", [
+    "y:auto:",
+    "dream:auto:"
+  ]);
+  const apiWrittenRelation = relationReasonPrefixPredicate("relation", [
+    "api:memory-write:"
+  ]);
+  const legacyBackfillRelation = relationReasonPrefixPredicate("relation", [
+    "legacy-backfill:"
+  ]);
+  const provenRelation = `(
+    ${deterministicRelation}
+    OR ${humanReviewedRelation}
+    OR ${builderBackedRelation}
+    OR ${apiWrittenRelation}
+    OR ${legacyBackfillRelation}
+  )`;
+  const unprovenRelation = `NOT (${provenRelation})`;
   const vectorNeedsUpsert = historicalVectorNeedsUpsertPredicate("memory");
   const vectorNeedsDelete = historicalVectorNeedsDeletePredicate("memory");
   const vectorRepair = historicalVectorRepairPredicate("memory");
@@ -255,6 +292,40 @@ export function buildInactiveFiveAxisAuditQueries(input) {
        AND target_memory.id = relation.target_memory_id
       WHERE relation.namespace = ${namespace}
         AND (${inactive("source_memory")} OR ${inactive("target_memory")})`
+    },
+    {
+      name: "relation_provenance",
+      driftFields: ["eligible_unproven_source"],
+      sql: `SELECT
+        COUNT(*) AS relation_rows,
+        COALESCE(SUM(CASE WHEN ${deterministicRelation} THEN 1 ELSE 0 END), 0)
+          AS deterministic_rebuildable,
+        COALESCE(SUM(CASE WHEN ${humanReviewedRelation} THEN 1 ELSE 0 END), 0)
+          AS human_reviewed,
+        COALESCE(SUM(CASE WHEN ${builderBackedRelation} THEN 1 ELSE 0 END), 0)
+          AS builder_backed,
+        COALESCE(SUM(CASE WHEN ${apiWrittenRelation} THEN 1 ELSE 0 END), 0)
+          AS api_written,
+        COALESCE(SUM(CASE WHEN ${legacyBackfillRelation} THEN 1 ELSE 0 END), 0)
+          AS legacy_backfill,
+        COALESCE(SUM(CASE WHEN ${unprovenRelation} THEN 1 ELSE 0 END), 0)
+          AS unproven_source,
+        COALESCE(SUM(CASE WHEN ${staleRelation} THEN 1 ELSE 0 END), 0)
+          AS stale_rows,
+        COALESCE(SUM(CASE
+          WHEN ${staleRelation} AND ${unprovenRelation} THEN 1 ELSE 0 END
+        ), 0) AS stale_unproven_source,
+        COALESCE(SUM(CASE
+          WHEN NOT (${staleRelation}) AND ${unprovenRelation} THEN 1 ELSE 0 END
+        ), 0) AS eligible_unproven_source
+      FROM memory_relations AS relation
+      JOIN memories AS source_memory
+        ON source_memory.namespace = relation.namespace
+       AND source_memory.id = relation.source_memory_id
+      JOIN memories AS target_memory
+        ON target_memory.namespace = relation.namespace
+       AND target_memory.id = relation.target_memory_id
+      WHERE relation.namespace = ${namespace}`
     },
     {
       name: "timeline",

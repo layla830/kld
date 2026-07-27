@@ -37,6 +37,7 @@ describe("inactive five-axis audit command", () => {
     expect(() => assertReadOnlyAuditQueries(queries)).not.toThrow();
     expect(queries.map((query) => query.name)).toEqual([
       "relations",
+      "relation_provenance",
       "timeline",
       "outbox",
       "axis_runs",
@@ -56,6 +57,8 @@ describe("inactive five-axis audit command", () => {
     expect(sql).toContain("scanner_managed_rows");
     expect(sql).toContain("non_scanner_managed_rows");
     expect(sql).toContain("relation_rows");
+    expect(sql).toContain("eligible_unproven_source");
+    expect(sql).toContain("stale_unproven_source");
     expect(sql).toContain("origin_diary_provenance_rows");
     expect(sql).toContain("axis_run_drift_rows");
     expect(sql).toContain("stale_revision_runs");

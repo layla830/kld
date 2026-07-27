@@ -451,6 +451,7 @@ describe("digest writes, candidates, and events", () => {
     expect(relInput.sourceMemoryId).toBe("mem_new_0");
     expect(relInput.targetMemoryId).toBe("mem_new_1");
     expect(relInput.relationType).toBe("same_topic");
+    expect(relInput.reason).toBe("dream:auto:2026-07-19");
   });
 
   it("routes safe relations directly and review relations to the review queue", async () => {
