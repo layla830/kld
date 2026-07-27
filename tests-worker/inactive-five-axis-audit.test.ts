@@ -327,7 +327,7 @@ async function executeRepairQuery(query: { sql: string }) {
 }
 
 describe("bounded inactive five-axis D1 repair", () => {
-  it("repairs stale failed and strictly expired running Y runs", async () => {
+  it("repairs stale failed and strictly expired running runs across axes", async () => {
     const namespace = `inactive-repair-runs-${crypto.randomUUID()}`;
     const now = new Date().toISOString();
     const expired = new Date(Date.now() - 60_000).toISOString();
@@ -384,14 +384,14 @@ describe("bounded inactive five-axis D1 repair", () => {
            namespace, memory_id, memory_revision, axis, status, attempts,
            result_json, last_error, claim_token, lease_expires_at,
            started_at, completed_at, updated_at
-         ) VALUES (?, ?, 1, 'Y', 'failed', 1, NULL, 'old failure', NULL, NULL, ?, ?, ?)`
+         ) VALUES (?, ?, 1, 'X', 'failed', 1, NULL, 'old failure', NULL, NULL, ?, ?, ?)`
       ).bind(namespace, failedMemory.id, now, now, now),
       env.DB.prepare(
         `INSERT INTO memory_five_axis_runs (
            namespace, memory_id, memory_revision, axis, status, attempts,
            result_json, last_error, claim_token, lease_expires_at,
            started_at, completed_at, updated_at
-         ) VALUES (?, ?, 1, 'Y', 'running', 1, NULL, NULL, 'expired-claim', ?, ?, NULL, ?)`
+         ) VALUES (?, ?, 1, 'E', 'running', 1, NULL, NULL, 'expired-claim', ?, ?, NULL, ?)`
       ).bind(namespace, expiredMemory.id, expired, now, now),
       env.DB.prepare(
         `INSERT INTO memory_five_axis_runs (
@@ -491,7 +491,7 @@ describe("bounded inactive five-axis D1 repair", () => {
     const rows = await env.DB.prepare(
       `SELECT memory_id, status, result_json, claim_token, lease_expires_at
        FROM memory_five_axis_runs
-       WHERE namespace = ? AND axis = 'Y' ORDER BY memory_id`
+       WHERE namespace = ? AND memory_revision = 1 ORDER BY memory_id`
     ).bind(namespace).all<Record<string, unknown>>();
     const byMemory = new Map((rows.results ?? []).map((row) => [row.memory_id, row]));
     expect(byMemory.get(failedMemory.id)).toMatchObject({

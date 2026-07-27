@@ -289,7 +289,7 @@ describe("memory deprojection Workers contract", () => {
       "pending_review",
       { candidates: 1 },
       [candidateKey]
-    )).resolves.toBe(true);
+    )).resolves.toBe("completed");
 
     const result = await deprojectMemoryFromFiveAxes(env as Env, {
       namespace: NAMESPACE,
@@ -357,7 +357,7 @@ describe("memory deprojection Workers contract", () => {
       "pending_review",
       { candidates: 1 },
       [candidateKey]
-    )).resolves.toBe(true);
+    )).resolves.toBe("completed");
 
     await upsertMemoryCandidate(env.DB, NAMESPACE, {
       ...candidateInput,
@@ -419,7 +419,7 @@ describe("memory deprojection Workers contract", () => {
       "pending_review",
       { candidates: 1 },
       [candidateKey]
-    )).resolves.toBe(true);
+    )).resolves.toBe("completed");
 
     const result = await deprojectMemoryFromFiveAxes(env as Env, {
       namespace: NAMESPACE,
@@ -489,7 +489,7 @@ describe("memory deprojection Workers contract", () => {
       "pending_review",
       { candidates: 2 },
       [rejectedKey, remainingKey]
-    )).resolves.toBe(true);
+    )).resolves.toBe("completed");
 
     const result = await deprojectMemoryFromFiveAxes(env as Env, {
       namespace: NAMESPACE,

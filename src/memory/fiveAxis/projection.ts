@@ -4,6 +4,8 @@ import {
   claimFiveAxisRun,
   failFiveAxisRun,
   getFiveAxisRun,
+  type CompleteFiveAxisRunOutcome,
+  type FailFiveAxisRunOutcome,
   type FiveAxisName,
   type FiveAxisRunKey,
   type FiveAxisRunStatus,
@@ -60,8 +62,13 @@ interface AxisRunStore {
     status: AxisTerminalStatus,
     result: unknown,
     candidateExternalKeys?: string[]
-  ): Promise<boolean>;
-  fail(env: Env, key: FiveAxisRunKey, claimToken: string, error: unknown): Promise<boolean>;
+  ): Promise<CompleteFiveAxisRunOutcome>;
+  fail(
+    env: Env,
+    key: FiveAxisRunKey,
+    claimToken: string,
+    error: unknown
+  ): Promise<FailFiveAxisRunOutcome>;
 }
 
 export interface MemoryFiveAxisProjectionDependencies {
@@ -157,15 +164,22 @@ async function runAxisStage<T>(
     const value = await run();
     const status = statusOf(value);
     if (store && claimToken) {
-      if (!await store.complete(
+      const completion = await store.complete(
         env,
         key,
         claimToken,
         status,
         value,
         candidateExternalKeysOf(value)
-      )) {
+      );
+      if (completion === "superseded") {
+        return { value, outcome: { status: "superseded", reused: false } };
+      }
+      if (completion === "not_owned") {
         return { value, outcome: { status: "deferred", reused: false } };
+      }
+      if (completion === "invalid_input") {
+        throw new Error("pending_review_requires_candidate");
       }
       if (status === "pending_review") {
         const completed = await store.get(env, key);
@@ -176,7 +190,15 @@ async function runAxisStage<T>(
     }
     return { value, outcome: { status, reused: false } };
   } catch (error) {
-    if (store && claimToken) await store.fail(env, key, claimToken, error);
+    if (store && claimToken) {
+      const failure = await store.fail(env, key, claimToken, error);
+      if (failure === "superseded") {
+        return { outcome: { status: "superseded", reused: false } };
+      }
+      if (failure === "not_owned") {
+        return { outcome: { status: "deferred", reused: false } };
+      }
+    }
     return {
       outcome: {
         status: "failed",
@@ -237,7 +259,7 @@ export async function projectMemoryIntoFiveAxes(
 
   const currentRevision = current.five_axis_revision ?? 1;
   if (!eBlocksX && currentRevision !== initialRevision) {
-    const superseded = { status: "superseded", reused: false, error: `superseded_by_revision:${currentRevision}` } as const;
+    const superseded = { status: "superseded", reused: false } as const;
     return {
       memoryId: input.memoryId,
       memoryRevision,

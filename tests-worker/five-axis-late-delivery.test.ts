@@ -59,6 +59,76 @@ function queueMessage(
 }
 
 describe("five-axis late delivery guards", () => {
+  it("skips the outbox without an incomplete-stage error when E supersedes its revision", async () => {
+    const memory = await createMemory(env.DB, {
+      namespace: "default",
+      type: "project_state",
+      content: `consumer supersession ${crypto.randomUUID()}`,
+      status: "active"
+    });
+    const outbox = await outboxFor(memory);
+    const delivery = await claimFiveAxisOutboxForDelivery(env.DB, outbox);
+    if (!delivery) throw new Error("delivery claim failed");
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
+      choices: [{
+        message: {
+          content: JSON.stringify({
+            updates: [{
+              id: memory.id,
+              fact_key: null,
+              thread: "consumer_supersession",
+              risk_level: "normal",
+              urgency_level: "normal",
+              tension_score: 0,
+              response_posture: "Keep the response clear.",
+              valence: 0,
+              arousal: 0
+            }]
+          })
+        }
+      }]
+    }), { status: 200 }));
+    const runtime = {
+      DB: env.DB,
+      ENABLE_FIVE_AXIS: "true",
+      UPSTREAM_BASE_URL: "https://runtime.test/v1",
+      UPSTREAM_API_KEY: "runtime-test-key",
+      MEMORY_MODEL: "runtime-test-model",
+      EMBEDDING_MODEL: "runtime-test-embedding",
+      AI: { run: vi.fn(async () => ({ data: [[0.1, 0.2, 0.3]] })) },
+      VECTORIZE: {
+        upsert: vi.fn(async () => undefined),
+        deleteByIds: vi.fn(async () => undefined)
+      }
+    } as unknown as Env;
+
+    try {
+      await expect(handleQueueMessage(queueMessage(outbox, delivery), runtime)).resolves.toBeUndefined();
+    } finally {
+      fetchSpy.mockRestore();
+    }
+
+    const oldOutbox = await env.DB.prepare(
+      "SELECT status, last_error, result_json FROM memory_five_axis_outbox WHERE id = ?"
+    ).bind(outbox.id).first<{ status: string; last_error: string | null; result_json: string | null }>();
+    expect(oldOutbox).toMatchObject({ status: "skipped", last_error: null });
+    expect(oldOutbox?.result_json).not.toContain("five_axis_stages_incomplete");
+    await expect(env.DB.prepare(
+      `SELECT status, claim_token, lease_expires_at
+       FROM memory_five_axis_runs
+       WHERE namespace = ? AND memory_id = ? AND memory_revision = ? AND axis = 'E'`
+    ).bind(memory.namespace, memory.id, memory.five_axis_revision ?? 1).first()).resolves.toMatchObject({
+      status: "skipped",
+      claim_token: null,
+      lease_expires_at: null
+    });
+    await expect(env.DB.prepare(
+      `SELECT status FROM memory_five_axis_outbox
+       WHERE namespace = ? AND memory_id = ? AND memory_revision = ?`
+    ).bind(memory.namespace, memory.id, (memory.five_axis_revision ?? 1) + 1).first())
+      .resolves.toMatchObject({ status: "pending" });
+  });
+
   it("rejects a queued delivery after the memory becomes ineligible", async () => {
     const memory = await createMemory(env.DB, {
       namespace: "default",
@@ -141,7 +211,7 @@ describe("five-axis late delivery guards", () => {
       runClaim,
       "applied",
       { stale: true }
-    )).resolves.toBe(false);
+    )).resolves.toBe("not_owned");
     await expect(getFiveAxisRun(env.DB, runKey)).resolves.toMatchObject({
       status: "skipped",
       claim_token: null,

@@ -35,8 +35,8 @@ Options:
   --json                Emit machine-readable JSON.
   --help                Show this help.
 
-Without --apply this command executes SELECT only. It targets stale failed Y runs and
-strictly expired stale running Y runs. It does not repair relations or loop automatically.`;
+Without --apply this command executes SELECT only. It targets stale failed axis runs and
+strictly expired stale running axis runs. It does not repair relations or loop automatically.`;
 }
 
 export function parseRepairArgs(argv) {
