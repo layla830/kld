@@ -1,6 +1,7 @@
 import type { MemoryRecord } from "../types";
+import { DIARY_SPLIT_SOURCE_TYPE } from "./diaryPolicyContract.js";
 
-export const DIARY_SPLIT_SOURCE_TYPE = "diary";
+export { DIARY_SPLIT_SOURCE_TYPE };
 
 export function isActiveDiarySplitSource(
   memory: Pick<MemoryRecord, "status" | "type">

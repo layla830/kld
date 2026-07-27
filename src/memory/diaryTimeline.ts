@@ -24,6 +24,11 @@ interface DiaryTimelineDescriptor {
   eventDate: string;
 }
 
+interface DiaryTimelineOriginGroup {
+  event_date: string;
+  timeline_key: string;
+}
+
 interface DiaryTimelineGroupResult {
   originDiaryId: string;
   eventDate: string;
@@ -242,6 +247,32 @@ async function rebuildDiaryTimelineSequence(
     edges
   });
   return { memories: dayNodes.length, ...result };
+}
+
+export async function clearDiaryTimelineGroupsForOrigin(
+  db: D1Database,
+  input: { namespace: string; originDiaryId: string }
+): Promise<void> {
+  const rows = await db.prepare(
+    `SELECT DISTINCT event_date, timeline_key
+     FROM memory_diary_timeline_memberships
+     WHERE namespace = ? AND origin_diary_id = ?
+     ORDER BY event_date, timeline_key`
+  ).bind(input.namespace, input.originDiaryId).all<DiaryTimelineOriginGroup>();
+  const groups = rows.results ?? [];
+
+  for (const group of groups) {
+    await clearDiaryDayGroup(db, {
+      namespace: input.namespace,
+      originDiaryId: input.originDiaryId,
+      eventDate: group.event_date
+    });
+  }
+
+  const timelineKeys = new Set(groups.map((group) => group.timeline_key));
+  for (const timelineKey of timelineKeys) {
+    await rebuildDiaryTimelineSequence(db, input.namespace, timelineKey);
+  }
 }
 
 export async function rebuildDiaryTimelineForMemory(

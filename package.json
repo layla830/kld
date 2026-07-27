@@ -14,6 +14,7 @@
     "memory:lmc5-coordinates": "node scripts/lmc5-coordinate-audit.mjs",
     "audit:inactive-five-axis": "node scripts/audit-inactive-five-axis.mjs",
     "repair:inactive-five-axis-d1": "node scripts/repair-inactive-five-axis-d1.mjs",
+    "repair:diary-origin-timeline": "node scripts/repair-diary-origin-timeline.mjs",
     "repair:inactive-vector-state": "node scripts/repair-inactive-vector-state.mjs",
     "test": "npm run test:unit && npm run test:worker",
     "test:unit": "vitest run --config vitest.config.ts",

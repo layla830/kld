@@ -1,6 +1,9 @@
 import {
   fiveAxisMemoryEligibilityPredicate
 } from "../src/memory/fiveAxis/eligibilityContract.js";
+import {
+  activeDiarySplitSourcePredicate
+} from "../src/memory/diaryPolicyContract.js";
 
 export const AUDIT_ACTIVE_OUTBOX_STATUSES = Object.freeze(["pending", "queued", "failed"]);
 export const AUDIT_NON_TERMINAL_RUN_STATUSES = Object.freeze(["running", "failed", "pending_review"]);
@@ -109,6 +112,10 @@ export function nonScannerManagedVectorStatePredicate(alias) {
 
 export function originalDiaryTypePredicate(alias) {
   return `LOWER(TRIM(${alias}.type)) IN (${sqlList(ORIGINAL_DIARY_MEMORY_TYPES)})`;
+}
+
+export function activeDiarySplitOriginPredicate(alias) {
+  return bindSqlPredicate(activeDiarySplitSourcePredicate(alias));
 }
 
 function relationReasonPrefixPredicate(alias, prefixes) {
@@ -355,7 +362,7 @@ export function buildInactiveFiveAxisAuditQueries(input) {
             AND (
               member.id IS NULL OR ${inactive("member")}
               OR day.id IS NULL OR ${inactive("day")}
-              OR origin.id IS NULL OR NOT (${originalDiaryTypePredicate("origin")})
+              OR origin.id IS NULL OR NOT (${activeDiarySplitOriginPredicate("origin")})
             )
         ) AS diary_drift_rows,
         (
@@ -383,7 +390,7 @@ export function buildInactiveFiveAxisAuditQueries(input) {
             ON origin.namespace = membership.namespace
            AND origin.id = membership.origin_diary_id
           WHERE membership.namespace = ${namespace}
-            AND (origin.id IS NULL OR NOT (${originalDiaryTypePredicate("origin")}))
+            AND (origin.id IS NULL OR NOT (${activeDiarySplitOriginPredicate("origin")}))
         ) AS invalid_origin_diary_rows,
         (
           SELECT COUNT(*)
