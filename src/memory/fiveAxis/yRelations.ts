@@ -57,6 +57,7 @@ export async function createFiveAxisMemoryRelation(
     relationType: string;
     strength?: number;
     reason?: string | null;
+    expectedSourceRevision: number;
   }
 ): Promise<boolean> {
   const source = fiveAxisMemoryEligibilityPredicate("source_memory");
@@ -64,7 +65,9 @@ export async function createFiveAxisMemoryRelation(
   const guard: MemoryMutationGuard = {
     sql: `EXISTS (
         SELECT 1 FROM memories AS source_memory
-        WHERE source_memory.namespace = ? AND source_memory.id = ? AND ${source.sql}
+        WHERE source_memory.namespace = ? AND source_memory.id = ?
+          AND source_memory.five_axis_revision = ?
+          AND ${source.sql}
       )
       AND EXISTS (
         SELECT 1 FROM memories AS target_memory
@@ -73,6 +76,7 @@ export async function createFiveAxisMemoryRelation(
     binds: [
       input.namespace,
       input.sourceMemoryId,
+      input.expectedSourceRevision,
       ...source.binds,
       input.namespace,
       input.targetMemoryId,
@@ -267,7 +271,7 @@ export async function runRelationBuild(
     sinceIso?: string;
     dryRun?: boolean;
     memoryIds?: string[];
-    memoryRevision?: number;
+    expectedRevision?: number;
     projectionKey?: string;
   } = {},
   dependencies: RelationBuildDependencies = defaultRelationBuildDependencies
@@ -347,9 +351,10 @@ export async function runRelationBuild(
         targetMemoryId: candidate.target.id,
         relationType,
         strength: hint.strength,
+        expectedSourceRevision: options.expectedRevision ?? candidate.source.five_axis_revision ?? 1,
         reason: relationProvenance.yAuto(
           candidate.source.id,
-          options.memoryRevision ?? candidate.source.five_axis_revision ?? 1
+          options.expectedRevision ?? candidate.source.five_axis_revision ?? 1
         )
       })) {
         inserted += 1;

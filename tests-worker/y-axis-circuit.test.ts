@@ -114,13 +114,15 @@ describe("Y-axis Worker circuit", () => {
       namespace: "default",
       sourceMemoryId: diary.id,
       targetMemoryId: target.id,
-      relationType: "same_topic"
+      relationType: "same_topic",
+      expectedSourceRevision: diary.five_axis_revision ?? 1
     })).resolves.toBe(false);
     await expect(createFiveAxisMemoryRelation(env.DB, {
       namespace: "default",
       sourceMemoryId: splitMemory.id,
       targetMemoryId: target.id,
-      relationType: "same_topic"
+      relationType: "same_topic",
+      expectedSourceRevision: splitMemory.five_axis_revision ?? 1
     })).resolves.toBe(true);
 
     const relations = await env.DB.prepare(

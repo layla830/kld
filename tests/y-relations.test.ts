@@ -157,7 +157,7 @@ describe("Y relation candidate boundary", () => {
     const result = await runRelationBuild(
       { DB: db } as Env,
       "default",
-      { dryRun: false, memoryIds: [source.id], memoryRevision: 6 },
+      { dryRun: false, memoryIds: [source.id], expectedRevision: 6 },
       {
         findCandidates: async () => [{
           pairId: "pair",
@@ -179,6 +179,7 @@ describe("Y relation candidate boundary", () => {
     );
 
     expect(createRelation).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      expectedSourceRevision: 6,
       reason: "y:auto:mem_source:6"
     }));
     expect(result.insertedRelations).toEqual([{
