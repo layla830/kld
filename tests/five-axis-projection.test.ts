@@ -234,7 +234,7 @@ describe("per-memory five-axis projection", () => {
             result_json: JSON.stringify(value),
             completed_at: "2026-07-15T00:00:01.000Z"
           }));
-          return true;
+          return "completed";
         },
         fail: async (_env, key, _claimToken, error) => {
           records.set(key.axis, recordFor(key, {
@@ -242,7 +242,7 @@ describe("per-memory five-axis projection", () => {
             last_error: error instanceof Error ? error.message : String(error),
             completed_at: "2026-07-15T00:00:01.000Z"
           }));
-          return true;
+          return "failed";
         }
       }
     };
@@ -329,7 +329,7 @@ describe("per-memory five-axis projection", () => {
             result_json: JSON.stringify(value),
             completed_at: "2026-07-15T00:00:01.000Z"
           }));
-          return true;
+          return "completed";
         },
         fail: async (_env, key, _claimToken, error) => {
           records.set(key.axis, keyRecord(key, {
@@ -337,7 +337,7 @@ describe("per-memory five-axis projection", () => {
             last_error: error instanceof Error ? error.message : String(error),
             completed_at: "2026-07-15T00:00:01.000Z"
           }));
-          return true;
+          return "failed";
         }
       }
     };
@@ -420,6 +420,69 @@ describe("per-memory five-axis projection", () => {
     expect(downstreamCalls).toEqual([]);
   });
 
+  it("maps a store-level E supersession without reporting a deferred axis", async () => {
+    const initial = memory({ five_axis_revision: 4 });
+    const updated = memory({ five_axis_revision: 5, thread: "kld", risk_level: "low" });
+    let reads = 0;
+    const downstreamCalls: string[] = [];
+    const dependencies: MemoryFiveAxisProjectionDependencies = {
+      getMemory: async () => (++reads === 1 ? initial : updated),
+      projectTimeline: async () => {
+        downstreamCalls.push("X");
+        return { scanned: 1, outcome: "already_dated", dates: [], queued: 0 };
+      },
+      projectCoordinates: async () => ({
+        ok: true,
+        mode: "auto_apply_with_exception_review",
+        scanned: 1,
+        needBackfill: 1,
+        offset: 0,
+        nextOffset: null,
+        processed: 1,
+        applied: 1,
+        queued: 0
+      }),
+      syncVector: async () => "synced",
+      projectRelations: async () => {
+        downstreamCalls.push("Y");
+        return { scanned: 1, inserted: 0, review: 0, proposed: 0, candidates: 0 };
+      },
+      projectFacts: async () => {
+        downstreamCalls.push("Z");
+        return { conflicts: 0, candidates: 0 };
+      },
+      projectMetabolism: async () => {
+        downstreamCalls.push("M");
+        return { archive: 0, relations: 0 };
+      },
+      axisRuns: {
+        get: async () => null,
+        claim: async () => "claim-E",
+        complete: async () => "superseded",
+        fail: async () => "not_owned"
+      }
+    };
+
+    const result = await projectMemoryIntoFiveAxes({} as Env, {
+      namespace: "default",
+      memoryId: initial.id,
+      memoryRevision: 4,
+      projectionKey: "five-axis:e-store-superseded:r4"
+    }, dependencies);
+
+    expect(result?.supersededByRevision).toBe(5);
+    expect(result?.axes).toMatchObject({
+      E: { status: "superseded" },
+      X: { status: "superseded" },
+      Y: { status: "superseded" },
+      Z: { status: "superseded" },
+      M: { status: "superseded" }
+    });
+    expect(result?.failedAxes).toEqual([]);
+    expect(result?.deferredAxes).toEqual([]);
+    expect(downstreamCalls).toEqual([]);
+  });
+
   it("links every review-producing axis to its candidate external keys", async () => {
     const initial = memory({ thread: "kld", valence: 0.2, five_axis_revision: 9 });
     const records = new Map<FiveAxisName, MemoryFiveAxisRunRecord>();
@@ -473,9 +536,9 @@ describe("per-memory five-axis projection", () => {
             completed_at: "2026-07-16T00:00:01.000Z",
             updated_at: "2026-07-16T00:00:01.000Z"
           });
-          return true;
+          return "completed";
         },
-        fail: async () => true
+        fail: async () => "failed"
       }
     };
 

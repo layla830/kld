@@ -12,7 +12,6 @@ function staleAxisRunSelection(namespace) {
       ON memory.namespace = run.namespace
      AND memory.id = run.memory_id
     WHERE run.namespace = ${namespace}
-      AND run.axis = 'Y'
       AND run.memory_revision < memory.five_axis_revision
       AND NOT (${inactiveMemory})
       AND NOT EXISTS (

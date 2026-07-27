@@ -57,6 +57,7 @@ describe("inactive five-axis repair command", () => {
     expect(runWrite).toContain("run.lease_expires_at IS NULL");
     expect(runWrite).toContain("run.lease_expires_at IS NOT NULL");
     expect(runWrite).toContain("run.lease_expires_at <=");
+    expect(runWrite).not.toContain("run.axis = 'Y'");
     expect(runWrite).not.toContain("DELETE FROM memory_relations");
     expect(runWrite).not.toContain("'repair'");
     expect(runWrite).not.toContain("UPDATE memories");

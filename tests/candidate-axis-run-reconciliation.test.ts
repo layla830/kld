@@ -176,7 +176,7 @@ describe("candidate and five-axis run reconciliation", () => {
       "pending_review",
       { candidates: 2 },
       ["candidate:1", "candidate:2", "candidate:1"]
-    )).resolves.toBe(true);
+    )).resolves.toBe("completed");
     setCurrentMemoryRevision(2);
     await expect(completeFiveAxisRun(
       db,
@@ -185,7 +185,7 @@ describe("candidate and five-axis run reconciliation", () => {
       "pending_review",
       { candidates: 1 },
       ["candidate:1"]
-    )).resolves.toBe(true);
+    )).resolves.toBe("completed");
     expect((await getFiveAxisRun(db, key(1)))?.status).toBe("pending_review");
     expect((await getFiveAxisRun(db, key(2)))?.status).toBe("pending_review");
     expect(sqlite.prepare(
@@ -260,7 +260,7 @@ describe("candidate and five-axis run reconciliation", () => {
       "pending_review",
       { candidates: 1 },
       ["candidate:approved"]
-    )).resolves.toBe(true);
+    )).resolves.toBe("completed");
     expect((await getFiveAxisRun(db, key(3, "Y")))?.status).toBe("applied");
   });
 
@@ -277,7 +277,7 @@ describe("candidate and five-axis run reconciliation", () => {
       "pending_review",
       { queued: 1 },
       ["candidate:e"]
-    )).resolves.toBe(true);
+    )).resolves.toBe("completed");
     await expect(dismissPendingMemoryCandidateByExternalKey(db, "default", "candidate:e"))
       .resolves.toBe(true);
     expect((await getFiveAxisRun(db, key(4, "E")))?.status).toBe("skipped");
@@ -288,7 +288,7 @@ describe("candidate and five-axis run reconciliation", () => {
       "claim-5",
       "pending_review",
       { candidates: 1 }
-    )).resolves.toBe(false);
+    )).resolves.toBe("invalid_input");
     expect((await getFiveAxisRun(db, key(5, "M")))?.status).toBe("running");
   });
 

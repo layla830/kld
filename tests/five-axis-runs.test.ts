@@ -20,6 +20,11 @@ describe("five-axis run claims", () => {
       leaseExpiresAt: string | null;
     } = { status: null, claimToken: null, leaseExpiresAt: null };
     const db = {
+      async batch(statements: D1PreparedStatement[]) {
+        const results = [];
+        for (const statement of statements) results.push(await statement.run());
+        return results;
+      },
       prepare(sql: string) {
         return {
           bind(...args: unknown[]) {
@@ -64,9 +69,9 @@ describe("five-axis run claims", () => {
     expect(replacement).not.toBe(first);
 
     await expect(completeFiveAxisRun(db, key, first!, "applied", { owner: "stale" }))
-      .resolves.toBe(false);
+      .resolves.toBe("not_owned");
     await expect(completeFiveAxisRun(db, key, replacement!, "applied", { owner: "current" }))
-      .resolves.toBe(true);
+      .resolves.toBe("completed");
     await expect(claimFiveAxisRun(db, key)).resolves.toBeNull();
   });
 });

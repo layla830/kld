@@ -32,6 +32,16 @@ export interface FiveAxisRunKey {
   axis: FiveAxisName;
 }
 
+export type CompleteFiveAxisRunOutcome =
+  | "completed"
+  | "superseded"
+  | "not_owned"
+  | "invalid_input";
+
+export type FailFiveAxisRunOutcome = "failed" | "superseded" | "not_owned";
+
+const SUPERSEDED_BY_NEWER_MEMORY_REVISION = "superseded_by_newer_memory_revision";
+
 export function prepareCandidateAxisRunReconciliation(
   db: D1Database,
   namespace: string,
@@ -113,12 +123,141 @@ export async function getFiveAxisRun(
 const AXIS_RUN_LEASE_MS = 15 * 60 * 1000;
 export const MAX_FIVE_AXIS_RUN_ATTEMPTS = 5;
 
+function prepareSupersedeOlderAxisRuns(
+  db: D1Database,
+  key: FiveAxisRunKey,
+  now: string
+): D1PreparedStatement {
+  const eligibility = fiveAxisMemoryEligibilityPredicate("memory");
+  return db.prepare(
+    `UPDATE memory_five_axis_runs AS runs
+     SET status = 'skipped',
+         result_json = json_object(
+           'reason', ?,
+           'previous_revision', runs.memory_revision,
+           'current_revision', ?
+         ),
+         last_error = NULL,
+         claim_token = NULL,
+         lease_expires_at = NULL,
+         completed_at = ?,
+         updated_at = ?
+     WHERE runs.namespace = ?
+       AND runs.memory_id = ?
+       AND runs.axis = ?
+       AND runs.memory_revision < ?
+       AND (
+         (
+           runs.status = 'running'
+           AND runs.claim_token IS NOT NULL
+           AND runs.lease_expires_at IS NOT NULL
+         )
+         OR
+         (
+           runs.status = 'failed'
+           AND runs.claim_token IS NULL
+           AND runs.lease_expires_at IS NULL
+         )
+       )
+       AND NOT EXISTS (
+         SELECT 1
+         FROM memory_candidate_axis_runs AS link
+         WHERE link.namespace = runs.namespace
+           AND link.memory_id = runs.memory_id
+           AND link.memory_revision = runs.memory_revision
+           AND link.axis = runs.axis
+       )
+       AND EXISTS (
+         SELECT 1
+         FROM memories AS memory
+         WHERE memory.namespace = ?
+           AND memory.id = ?
+           AND memory.five_axis_revision = ?
+           AND (${eligibility.sql})
+       )`
+  ).bind(
+    SUPERSEDED_BY_NEWER_MEMORY_REVISION,
+    key.memoryRevision,
+    now,
+    now,
+    key.namespace,
+    key.memoryId,
+    key.axis,
+    key.memoryRevision,
+    key.namespace,
+    key.memoryId,
+    key.memoryRevision,
+    ...eligibility.binds
+  );
+}
+
+async function supersedeClaimedAxisRun(
+  db: D1Database,
+  key: FiveAxisRunKey,
+  claimToken: string,
+  now: string
+): Promise<boolean> {
+  const eligibility = fiveAxisMemoryEligibilityPredicate("memory");
+  const write = await db.prepare(
+    `UPDATE memory_five_axis_runs AS runs
+     SET status = 'skipped',
+         result_json = json_object(
+           'reason', ?,
+           'previous_revision', runs.memory_revision,
+           'current_revision', (
+             SELECT memory.five_axis_revision
+             FROM memories AS memory
+             WHERE memory.namespace = runs.namespace
+               AND memory.id = runs.memory_id
+           )
+         ),
+         last_error = NULL,
+         claim_token = NULL,
+         lease_expires_at = NULL,
+         completed_at = ?,
+         updated_at = ?
+     WHERE runs.namespace = ?
+       AND runs.memory_id = ?
+       AND runs.memory_revision = ?
+       AND runs.axis = ?
+       AND runs.status = 'running'
+       AND runs.claim_token = ?
+       AND NOT EXISTS (
+         SELECT 1
+         FROM memory_candidate_axis_runs AS link
+         WHERE link.namespace = runs.namespace
+           AND link.memory_id = runs.memory_id
+           AND link.memory_revision = runs.memory_revision
+           AND link.axis = runs.axis
+       )
+       AND EXISTS (
+         SELECT 1
+         FROM memories AS memory
+         WHERE memory.namespace = runs.namespace
+           AND memory.id = runs.memory_id
+           AND memory.five_axis_revision > runs.memory_revision
+           AND (${eligibility.sql})
+       )`
+  ).bind(
+    SUPERSEDED_BY_NEWER_MEMORY_REVISION,
+    now,
+    now,
+    key.namespace,
+    key.memoryId,
+    key.memoryRevision,
+    key.axis,
+    claimToken,
+    ...eligibility.binds
+  ).run();
+  return (write.meta.changes ?? 0) === 1;
+}
+
 export async function claimFiveAxisRun(db: D1Database, key: FiveAxisRunKey): Promise<string | null> {
   const now = nowIso();
   const claimToken = newId("axisrun");
   const leaseExpiresAt = new Date(Date.now() + AXIS_RUN_LEASE_MS).toISOString();
   const eligibility = fiveAxisMemoryEligibilityPredicate("memory");
-  const result = await db.prepare(
+  const claimStatement = db.prepare(
     `INSERT INTO memory_five_axis_runs (
        namespace, memory_id, memory_revision, axis, status, attempts,
        result_json, last_error, claim_token, lease_expires_at,
@@ -154,8 +293,12 @@ export async function claimFiveAxisRun(db: D1Database, key: FiveAxisRunKey): Pro
     key.memoryRevision,
     ...eligibility.binds,
     MAX_FIVE_AXIS_RUN_ATTEMPTS
-  ).run();
-  return (result.meta.changes ?? 0) === 1 ? claimToken : null;
+  );
+  const writes = await db.batch([
+    prepareSupersedeOlderAxisRuns(db, key, now),
+    claimStatement
+  ]);
+  return (writes[1]?.meta.changes ?? 0) === 1 ? claimToken : null;
 }
 
 export async function completeFiveAxisRun(
@@ -165,10 +308,10 @@ export async function completeFiveAxisRun(
   status: Exclude<FiveAxisRunStatus, "running" | "failed">,
   result: unknown,
   candidateExternalKeys: string[] = []
-): Promise<boolean> {
+): Promise<CompleteFiveAxisRunOutcome> {
   const now = nowIso();
   const uniqueCandidateKeys = [...new Set(candidateExternalKeys.map((value) => value.trim()).filter(Boolean))];
-  if (status === "pending_review" && uniqueCandidateKeys.length === 0) return false;
+  if (status === "pending_review" && uniqueCandidateKeys.length === 0) return "invalid_input";
   const eligibility = fiveAxisMemoryEligibilityPredicate("memory");
   const currentMemoryGuard = `EXISTS (
     SELECT 1 FROM memories AS memory
@@ -198,7 +341,10 @@ export async function completeFiveAxisRun(
   );
   if (status !== "pending_review") {
     const write = await writeStatement.run();
-    return (write.meta.changes ?? 0) === 1;
+    if ((write.meta.changes ?? 0) === 1) return "completed";
+    return await supersedeClaimedAxisRun(db, key, claimToken, now)
+      ? "superseded"
+      : "not_owned";
   }
 
   const linkStatements = uniqueCandidateKeys.map((candidateExternalKey) => db.prepare(
@@ -258,7 +404,10 @@ export async function completeFiveAxisRun(
     writeStatement,
     prepareAxisRunReconciliation(db, key, now)
   ]);
-  return (writes[updateIndex]?.meta.changes ?? 0) === 1;
+  if ((writes[updateIndex]?.meta.changes ?? 0) === 1) return "completed";
+  return await supersedeClaimedAxisRun(db, key, claimToken, now)
+    ? "superseded"
+    : "not_owned";
 }
 
 export async function failFiveAxisRun(
@@ -266,15 +415,23 @@ export async function failFiveAxisRun(
   key: FiveAxisRunKey,
   claimToken: string,
   error: unknown
-): Promise<boolean> {
+): Promise<FailFiveAxisRunOutcome> {
   const now = nowIso();
   const message = error instanceof Error ? error.message : String(error);
+  const eligibility = fiveAxisMemoryEligibilityPredicate("memory");
   const write = await db.prepare(
     `UPDATE memory_five_axis_runs
      SET status = 'failed', result_json = NULL, last_error = ?, claim_token = NULL,
          lease_expires_at = NULL, completed_at = ?, updated_at = ?
      WHERE namespace = ? AND memory_id = ? AND memory_revision = ? AND axis = ?
-       AND status = 'running' AND claim_token = ?`
+       AND status = 'running' AND claim_token = ?
+       AND EXISTS (
+         SELECT 1 FROM memories AS memory
+         WHERE memory.namespace = memory_five_axis_runs.namespace
+           AND memory.id = memory_five_axis_runs.memory_id
+           AND memory.five_axis_revision = memory_five_axis_runs.memory_revision
+           AND (${eligibility.sql})
+       )`
   ).bind(
     message.slice(0, 1000),
     now,
@@ -283,7 +440,11 @@ export async function failFiveAxisRun(
     key.memoryId,
     key.memoryRevision,
     key.axis,
-    claimToken
+    claimToken,
+    ...eligibility.binds
   ).run();
-  return (write.meta.changes ?? 0) === 1;
+  if ((write.meta.changes ?? 0) === 1) return "failed";
+  return await supersedeClaimedAxisRun(db, key, claimToken, now)
+    ? "superseded"
+    : "not_owned";
 }

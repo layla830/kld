@@ -172,8 +172,7 @@ export function buildInactiveFiveAxisAuditQueries(input) {
     )
   )`;
   const staleFailedRepairable = `(
-    run.axis = 'Y'
-    AND ${staleRun}
+    ${staleRun}
     AND ${eligibleRunMemory}
     AND NOT (${candidateLinkedRun})
     AND run.status = 'failed'
@@ -181,8 +180,7 @@ export function buildInactiveFiveAxisAuditQueries(input) {
     AND run.lease_expires_at IS NULL
   )`;
   const staleExpiredRunningRepairable = `(
-    run.axis = 'Y'
-    AND ${staleRun}
+    ${staleRun}
     AND ${eligibleRunMemory}
     AND NOT (${candidateLinkedRun})
     AND run.status = 'running'

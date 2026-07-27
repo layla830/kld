@@ -4,11 +4,13 @@ import { approveOperationalReviewCandidate } from "../src/api/adminBoard/operati
 import { putCacheEntry } from "../src/db/cacheEntries";
 import {
   claimFiveAxisRun,
+  completeFiveAxisRun,
   failFiveAxisRun,
+  getFiveAxisRun,
   MAX_FIVE_AXIS_RUN_ATTEMPTS,
   type FiveAxisRunKey
 } from "../src/db/memoryFiveAxisRuns";
-import { createMemory } from "../src/db/memories";
+import { createMemory, updateMemory } from "../src/db/memories";
 import { E_AXIS_STATE_KEY, readShadowState, shouldApplyEAxisToRanking } from "../src/memory/eAxis";
 import type { ScoredMemoryRecord } from "../src/memory/vectorStore";
 import { mergeSearchResults } from "../src/recall/fusion";
@@ -108,6 +110,278 @@ describe("E-axis Worker runtime state", () => {
 });
 
 describe("five-axis Worker guards", () => {
+  it("terminalizes a claimed run when its completion arrives after a newer revision", async () => {
+    const memory = await createMemory(env.DB, {
+      namespace: "default",
+      type: "lesson",
+      content: `Runtime completion supersession ${crypto.randomUUID()}`,
+      status: "active"
+    });
+    const oldKey: FiveAxisRunKey = {
+      namespace: memory.namespace,
+      memoryId: memory.id,
+      memoryRevision: memory.five_axis_revision ?? 1,
+      axis: "E"
+    };
+    const oldToken = await claimFiveAxisRun(env.DB, oldKey);
+    expect(oldToken).toBeTruthy();
+    const updated = await updateMemory(env.DB, {
+      namespace: memory.namespace,
+      id: memory.id,
+      patch: { thread: `runtime.supersession.${crypto.randomUUID()}` },
+      expectedRevision: oldKey.memoryRevision
+    });
+    expect(updated?.five_axis_revision).toBe(oldKey.memoryRevision + 1);
+
+    await expect(completeFiveAxisRun(
+      env.DB,
+      oldKey,
+      oldToken!,
+      "applied",
+      { applied: 1 }
+    )).resolves.toBe("superseded");
+    const oldRun = await getFiveAxisRun(env.DB, oldKey);
+    expect(oldRun).toMatchObject({
+      status: "skipped",
+      claim_token: null,
+      lease_expires_at: null
+    });
+    expect(JSON.parse(String(oldRun?.result_json))).toEqual({
+      reason: "superseded_by_newer_memory_revision",
+      previous_revision: oldKey.memoryRevision,
+      current_revision: oldKey.memoryRevision + 1
+    });
+  });
+
+  it("terminalizes an abandoned older run when the same axis claims the current revision", async () => {
+    const memory = await createMemory(env.DB, {
+      namespace: "default",
+      type: "lesson",
+      content: `Runtime claim supersession ${crypto.randomUUID()}`,
+      status: "active"
+    });
+    const oldKey: FiveAxisRunKey = {
+      namespace: memory.namespace,
+      memoryId: memory.id,
+      memoryRevision: memory.five_axis_revision ?? 1,
+      axis: "E"
+    };
+    const abandonedToken = await claimFiveAxisRun(env.DB, oldKey);
+    expect(abandonedToken).toBeTruthy();
+    const updated = await updateMemory(env.DB, {
+      namespace: memory.namespace,
+      id: memory.id,
+      patch: { thread: `runtime.claim-cleanup.${crypto.randomUUID()}` },
+      expectedRevision: oldKey.memoryRevision
+    });
+    const currentRevision = updated?.five_axis_revision ?? 0;
+    const currentKey = { ...oldKey, memoryRevision: currentRevision };
+
+    const currentToken = await claimFiveAxisRun(env.DB, currentKey);
+    expect(currentToken).toBeTruthy();
+    await expect(getFiveAxisRun(env.DB, oldKey)).resolves.toMatchObject({
+      status: "skipped",
+      claim_token: null,
+      lease_expires_at: null
+    });
+    const oldResult = await getFiveAxisRun(env.DB, oldKey);
+    expect(JSON.parse(String(oldResult?.result_json))).toEqual({
+      reason: "superseded_by_newer_memory_revision",
+      previous_revision: oldKey.memoryRevision,
+      current_revision: currentRevision
+    });
+    await expect(failFiveAxisRun(
+      env.DB,
+      currentKey,
+      currentToken!,
+      new Error("test cleanup")
+    )).resolves.toBe("failed");
+  });
+
+  it("terminalizes a clean failed older run when the same axis claims the current revision", async () => {
+    const memory = await createMemory(env.DB, {
+      namespace: "default",
+      type: "lesson",
+      content: `Runtime failed claim supersession ${crypto.randomUUID()}`,
+      status: "active"
+    });
+    const oldKey: FiveAxisRunKey = {
+      namespace: memory.namespace,
+      memoryId: memory.id,
+      memoryRevision: memory.five_axis_revision ?? 1,
+      axis: "E"
+    };
+    const oldToken = await claimFiveAxisRun(env.DB, oldKey);
+    expect(oldToken).toBeTruthy();
+    await expect(failFiveAxisRun(
+      env.DB,
+      oldKey,
+      oldToken!,
+      new Error("old revision failure")
+    )).resolves.toBe("failed");
+    const updated = await updateMemory(env.DB, {
+      namespace: memory.namespace,
+      id: memory.id,
+      patch: { thread: `runtime.failed-claim-cleanup.${crypto.randomUUID()}` },
+      expectedRevision: oldKey.memoryRevision
+    });
+    const currentKey = {
+      ...oldKey,
+      memoryRevision: updated?.five_axis_revision ?? 0
+    };
+
+    const currentToken = await claimFiveAxisRun(env.DB, currentKey);
+    expect(currentToken).toBeTruthy();
+    await expect(getFiveAxisRun(env.DB, oldKey)).resolves.toMatchObject({
+      status: "skipped",
+      last_error: null,
+      claim_token: null,
+      lease_expires_at: null
+    });
+    await expect(failFiveAxisRun(
+      env.DB,
+      currentKey,
+      currentToken!,
+      new Error("test cleanup")
+    )).resolves.toBe("failed");
+  });
+
+  it("does not swallow malformed ownership while claiming the current revision", async () => {
+    const memory = await createMemory(env.DB, {
+      namespace: "default",
+      type: "lesson",
+      content: `Runtime malformed ownership ${crypto.randomUUID()}`,
+      status: "active"
+    });
+    const oldKey: FiveAxisRunKey = {
+      namespace: memory.namespace,
+      memoryId: memory.id,
+      memoryRevision: memory.five_axis_revision ?? 1,
+      axis: "E"
+    };
+    const oldToken = await claimFiveAxisRun(env.DB, oldKey);
+    expect(oldToken).toBeTruthy();
+    await env.DB.prepare(
+      `UPDATE memory_five_axis_runs
+       SET lease_expires_at = NULL
+       WHERE namespace = ? AND memory_id = ? AND memory_revision = ? AND axis = ?`
+    ).bind(oldKey.namespace, oldKey.memoryId, oldKey.memoryRevision, oldKey.axis).run();
+    const updated = await updateMemory(env.DB, {
+      namespace: memory.namespace,
+      id: memory.id,
+      patch: { thread: `runtime.malformed-ownership.${crypto.randomUUID()}` },
+      expectedRevision: oldKey.memoryRevision
+    });
+    const currentKey = {
+      ...oldKey,
+      memoryRevision: updated?.five_axis_revision ?? 0
+    };
+
+    const currentToken = await claimFiveAxisRun(env.DB, currentKey);
+    expect(currentToken).toBeTruthy();
+    await expect(getFiveAxisRun(env.DB, oldKey)).resolves.toMatchObject({
+      status: "running",
+      claim_token: oldToken,
+      lease_expires_at: null
+    });
+    await expect(failFiveAxisRun(
+      env.DB,
+      currentKey,
+      currentToken!,
+      new Error("test cleanup")
+    )).resolves.toBe("failed");
+  });
+
+  it("terminalizes a late failure when the memory revision has advanced", async () => {
+    const memory = await createMemory(env.DB, {
+      namespace: "default",
+      type: "lesson",
+      content: `Runtime failure supersession ${crypto.randomUUID()}`,
+      status: "active"
+    });
+    const oldKey: FiveAxisRunKey = {
+      namespace: memory.namespace,
+      memoryId: memory.id,
+      memoryRevision: memory.five_axis_revision ?? 1,
+      axis: "E"
+    };
+    const oldToken = await claimFiveAxisRun(env.DB, oldKey);
+    expect(oldToken).toBeTruthy();
+    await updateMemory(env.DB, {
+      namespace: memory.namespace,
+      id: memory.id,
+      patch: { thread: `runtime.failure-cleanup.${crypto.randomUUID()}` },
+      expectedRevision: oldKey.memoryRevision
+    });
+
+    await expect(failFiveAxisRun(
+      env.DB,
+      oldKey,
+      oldToken!,
+      new Error("late failure")
+    )).resolves.toBe("superseded");
+    await expect(getFiveAxisRun(env.DB, oldKey)).resolves.toMatchObject({
+      status: "skipped",
+      last_error: null,
+      claim_token: null,
+      lease_expires_at: null
+    });
+  });
+
+  it("does not terminalize a future-revision run", async () => {
+    const memory = await createMemory(env.DB, {
+      namespace: "default",
+      type: "lesson",
+      content: `Runtime future revision ${crypto.randomUUID()}`,
+      status: "active"
+    });
+    const futureKey: FiveAxisRunKey = {
+      namespace: memory.namespace,
+      memoryId: memory.id,
+      memoryRevision: (memory.five_axis_revision ?? 1) + 1,
+      axis: "E"
+    };
+    const now = new Date().toISOString();
+    const leaseExpiresAt = new Date(Date.now() + 60_000).toISOString();
+    await env.DB.prepare(
+      `INSERT INTO memory_five_axis_runs (
+         namespace, memory_id, memory_revision, axis, status, attempts,
+         result_json, last_error, claim_token, lease_expires_at,
+         started_at, completed_at, updated_at
+       ) VALUES (?, ?, ?, ?, 'running', 1, NULL, NULL, ?, ?, ?, NULL, ?)`
+    ).bind(
+      futureKey.namespace,
+      futureKey.memoryId,
+      futureKey.memoryRevision,
+      futureKey.axis,
+      "future-claim",
+      leaseExpiresAt,
+      now,
+      now
+    ).run();
+
+    await expect(completeFiveAxisRun(
+      env.DB,
+      futureKey,
+      "future-claim",
+      "applied",
+      { future: true }
+    )).resolves.toBe("not_owned");
+    await expect(failFiveAxisRun(
+      env.DB,
+      futureKey,
+      "future-claim",
+      new Error("future failure")
+    )).resolves.toBe("not_owned");
+    await expect(getFiveAxisRun(env.DB, futureKey)).resolves.toMatchObject({
+      status: "running",
+      claim_token: "future-claim",
+      lease_expires_at: leaseExpiresAt,
+      result_json: null,
+      last_error: null
+    });
+  });
+
   it("stops claiming a permanently failing axis after the bounded attempt count", async () => {
     const memory = await createMemory(env.DB, {
       namespace: "default",
@@ -124,7 +398,8 @@ describe("five-axis Worker guards", () => {
     for (let attempt = 1; attempt <= MAX_FIVE_AXIS_RUN_ATTEMPTS; attempt += 1) {
       const token = await claimFiveAxisRun(env.DB, key);
       expect(token).toBeTruthy();
-      await expect(failFiveAxisRun(env.DB, key, token!, new Error(`failure-${attempt}`))).resolves.toBe(true);
+      await expect(failFiveAxisRun(env.DB, key, token!, new Error(`failure-${attempt}`)))
+        .resolves.toBe("failed");
     }
     await expect(claimFiveAxisRun(env.DB, key)).resolves.toBeNull();
     await expect(env.DB.prepare(
