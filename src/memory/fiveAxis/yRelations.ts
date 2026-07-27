@@ -4,6 +4,7 @@ import {
   REVIEW_RELATION_TYPES,
   SAFE_RELATION_TYPES
 } from "../../db/memoryRelations";
+import { relationProvenance } from "../../db/relationProvenance";
 import type { MemoryMutationGuard } from "../../db/memories";
 import { fetchMemoriesByIds, listMemoriesSince } from "../../db/memories";
 import { callOpenAICompat } from "../../proxy/openaiAdapter";
@@ -262,7 +263,13 @@ const defaultRelationBuildDependencies: RelationBuildDependencies = {
 export async function runRelationBuild(
   env: Env,
   namespace: string,
-  options: { sinceIso?: string; dryRun?: boolean; memoryIds?: string[]; projectionKey?: string } = {},
+  options: {
+    sinceIso?: string;
+    dryRun?: boolean;
+    memoryIds?: string[];
+    memoryRevision?: number;
+    projectionKey?: string;
+  } = {},
   dependencies: RelationBuildDependencies = defaultRelationBuildDependencies
 ): Promise<{
   scanned: number;
@@ -271,6 +278,13 @@ export async function runRelationBuild(
   proposed: number;
   candidates: number;
   candidateExternalKeys?: string[];
+  insertedRelations?: Array<{
+    sourceMemoryId: string;
+    targetMemoryId: string;
+    relationType: string;
+    strength: number;
+    reason?: string;
+  }>;
   error?: string;
 }> {
   const dryRun = options.dryRun ?? true;
@@ -286,6 +300,13 @@ export async function runRelationBuild(
   let review = 0;
   let proposed = 0;
   const candidateExternalKeys: string[] = [];
+  const insertedRelations: Array<{
+    sourceMemoryId: string;
+    targetMemoryId: string;
+    relationType: string;
+    strength: number;
+    reason?: string;
+  }> = [];
 
   let candidates: RelationCandidate[];
   try {
@@ -326,9 +347,19 @@ export async function runRelationBuild(
         targetMemoryId: candidate.target.id,
         relationType,
         strength: hint.strength,
-        reason: hint.reason ?? null
+        reason: relationProvenance.yAuto(
+          candidate.source.id,
+          options.memoryRevision ?? candidate.source.five_axis_revision ?? 1
+        )
       })) {
         inserted += 1;
+        insertedRelations.push({
+          sourceMemoryId: candidate.source.id,
+          targetMemoryId: candidate.target.id,
+          relationType,
+          strength: hint.strength,
+          ...(hint.reason ? { reason: hint.reason } : {})
+        });
       }
     } else if (REVIEW_RELATION_TYPES.has(relationType)) {
       if (dryRun) {
@@ -355,6 +386,7 @@ export async function runRelationBuild(
     proposed,
     candidates: candidates.length,
     ...(candidateExternalKeys.length > 0 ? { candidateExternalKeys } : {}),
+    ...(insertedRelations.length > 0 ? { insertedRelations } : {}),
     error
   };
 }

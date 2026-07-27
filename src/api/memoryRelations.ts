@@ -1,6 +1,7 @@
 import { authenticate } from "../auth/apiKey";
 import { requireScope } from "../auth/scopes";
 import { createMemoryRelation, SAFE_RELATION_TYPES } from "../db/memoryRelations";
+import { relationProvenance } from "../db/relationProvenance";
 import { fetchMemoriesByIds } from "../db/memories";
 import type { Env, KeyProfile } from "../types";
 import { json, openAiError } from "../utils/json";
@@ -72,7 +73,7 @@ async function createRelations(env: Env, profile: KeyProfile, body: Record<strin
       targetMemoryId: relation.target_memory_id,
       relationType: relation.relation_type,
       strength: relation.strength,
-      reason: relation.reason
+      reason: relationProvenance.apiMemoryWrite(profile.source)
     });
     results.push({ ...relation, ok: created, reason: created ? "created" : "already_exists_or_ignored" });
   }

@@ -22,6 +22,7 @@ import {
 } from "../../memory/candidateActionContract";
 import { payloadOf, readFormText } from "./utils";
 import { prepareMemoryRelationInsert } from "../../db/memoryRelations";
+import { relationProvenance } from "../../db/relationProvenance";
 import { reconcileMemoryVector } from "../../memory/state";
 import { assessCandidateQuality } from "../../memory/candidateQuality";
 import { canOverrideCandidateValidation } from "../../memory/candidateOverride";
@@ -564,7 +565,7 @@ async function approveFactGroup(
       targetMemoryId: memoryId,
       relationType: "same_fact_key",
       strength: 0.92,
-      reason: "approved fact group"
+      reason: relationProvenance.factGroupApproved(candidate.external_key)
     }, transactionGuard);
     if (!statement) throw new Error("fact_group_relation_statement_missing");
     statements.push(statement);

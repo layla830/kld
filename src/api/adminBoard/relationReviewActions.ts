@@ -6,6 +6,7 @@ import {
   REVIEW_RELATION_TYPES,
   type MemoryRelationRecord
 } from "../../db/memoryRelations";
+import { relationProvenance } from "../../db/relationProvenance";
 import { getMemoryById } from "../../db/memories";
 import { prepareCandidateAxisRunReconciliation } from "../../db/memoryFiveAxisRuns";
 import {
@@ -142,7 +143,7 @@ async function commitApproval(
       proposal.targetId,
       proposal.relationType,
       proposal.strength,
-      proposal.reason,
+      relationProvenance.yReviewApproved(candidate.external_key),
       now,
       candidate.namespace,
       candidate.id,

@@ -11,6 +11,7 @@ import {
   buildRepairDryRunQuery
 } from "../scripts/inactive-five-axis-repair.mjs";
 import { createMemory } from "../src/db/memories";
+import type { MemoryRecord } from "../src/types";
 
 async function runAudit(namespace: string) {
   const queries = buildInactiveFiveAxisAuditQueries({ namespace, staleHours: 24 });
@@ -232,6 +233,74 @@ describe("read-only inactive five-axis audit", () => {
       revision_anomalies: 0,
       duplicate_successes: 0
     });
+  });
+
+  it("classifies relation provenance without double-counting stale unproven rows", async () => {
+    const namespace = `relation-provenance-${crypto.randomUUID()}`;
+    const now = new Date().toISOString();
+    const eligibleSource = await createMemory(env.DB, {
+      namespace,
+      type: "note",
+      content: "eligible source",
+      status: "active"
+    });
+    const ineligibleSource = await createMemory(env.DB, {
+      namespace,
+      type: "diary",
+      content: "ineligible source",
+      status: "active"
+    });
+    const reasons: Array<string | null> = [
+      "diary_day:origin:2026-07-27",
+      "y-review:approved:candidate:key",
+      "fact-group:approved:candidate:key",
+      "y:auto:mem_source:7",
+      "dream:auto:2026-07-27",
+      "api:memory-write:chatbox",
+      "legacy-backfill:thread old",
+      null,
+      "",
+      "free-text explanation"
+    ];
+    const targets: MemoryRecord[] = [];
+    for (let index = 0; index < reasons.length; index += 1) {
+      targets.push(await createMemory(env.DB, {
+        namespace,
+        type: "note",
+        content: `target ${index}`,
+        status: "active"
+      }));
+    }
+    await env.DB.batch(reasons.map((reason, index) => env.DB.prepare(
+      `INSERT INTO memory_relations (
+         id, namespace, source_memory_id, target_memory_id,
+         relation_type, strength, reason, created_at
+       ) VALUES (?, ?, ?, ?, 'same_topic', 0.8, ?, ?)`
+    ).bind(
+      `rel_${crypto.randomUUID()}`,
+      namespace,
+      index === 7 ? ineligibleSource.id : eligibleSource.id,
+      targets[index].id,
+      reason,
+      now
+    )));
+
+    const report = await runAudit(namespace);
+
+    expect(report.sections.relations[0]).toMatchObject({ relation_rows: 1 });
+    expect(report.sections.relation_provenance[0]).toMatchObject({
+      relation_rows: 10,
+      deterministic_rebuildable: 1,
+      human_reviewed: 2,
+      builder_backed: 2,
+      api_written: 1,
+      legacy_backfill: 1,
+      unproven_source: 3,
+      stale_rows: 1,
+      stale_unproven_source: 1,
+      eligible_unproven_source: 2
+    });
+    expect(report.drift_count).toBe(3);
   });
 
   it("counts only an excluded original diary as valid provenance", async () => {

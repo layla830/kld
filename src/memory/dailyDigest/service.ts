@@ -8,6 +8,7 @@ import {
   REVIEW_RELATION_TYPES,
   SAFE_RELATION_TYPES
 } from "../../db/memoryRelations";
+import { relationProvenance } from "../../db/relationProvenance";
 import { loadDreamConfig, systemClock, type AppClock } from "../../config/runtime";
 import { queueRelationReviewCandidate } from "../relationReview";
 import { createSyncedMemory } from "../state";
@@ -217,7 +218,7 @@ export async function runDailyMemoryDigest(
         targetMemoryId: targetId,
         relationType,
         strength: hint.strength ?? 0.6,
-        reason: hint.reason ?? null
+        reason: relationProvenance.dreamAuto(dateLabel)
       })) {
         relationsInserted += 1;
       }

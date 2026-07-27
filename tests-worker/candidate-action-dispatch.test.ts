@@ -178,12 +178,13 @@ const fixtures = {
       verify: async (target) => {
         expect(target).toMatchObject({ id: first.id, fact_key: "dispatch.fact.group" });
         await expect(env.DB.prepare(
-          `SELECT relation_type FROM memory_relations
+          `SELECT relation_type, reason FROM memory_relations
            WHERE namespace = 'default' AND relation_type = 'same_fact_key'
              AND ((source_memory_id = ? AND target_memory_id = ?)
                OR (source_memory_id = ? AND target_memory_id = ?))`
         ).bind(first.id, second.id, second.id, first.id).first()).resolves.toMatchObject({
-          relation_type: "same_fact_key"
+          relation_type: "same_fact_key",
+          reason: `fact-group:approved:candidate-dispatch:${runId}:fact-group`
         });
       }
     };
