@@ -122,6 +122,18 @@ async function syncLifecycleMutation(
   ) ?? result.memory;
 }
 
+export async function runDiaryOriginTransitionCleanup(
+  env: Pick<Env, "DB">,
+  before: MemoryRecord,
+  after: MemoryRecord
+): Promise<void> {
+  if (!isActiveDiarySplitSource(before) || isActiveDiarySplitSource(after)) return;
+  await clearDiaryTimelineGroupsForOrigin(env.DB, {
+    namespace: before.namespace,
+    originDiaryId: before.id
+  });
+}
+
 export async function createSyncedMemory(
   env: Env,
   input: CreateMemoryInput
@@ -178,12 +190,7 @@ export async function mutateMemoryLifecycle(
   });
   if (!updated) return null;
 
-  if (isActiveDiarySplitSource(existing) && !isActiveDiarySplitSource(updated)) {
-    await clearDiaryTimelineGroupsForOrigin(env.DB, {
-      namespace,
-      originDiaryId: id
-    });
-  }
+  await runDiaryOriginTransitionCleanup(env, existing, updated);
 
   return {
     transition,

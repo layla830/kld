@@ -1,7 +1,7 @@
 import {
   findCompletedMemoryDeprojection,
   getMemoryDeprojectionByOperationId,
-  prepareMemoryDeprojection,
+  prepareMemoryDeprojection as prepareDbMemoryDeprojection,
   prepareMemoryDeprojectionCallerInvariant,
   type MemoryDeprojectionRecord
 } from "../db/memoryDeprojection";
@@ -17,6 +17,11 @@ import {
   isFiveAxisMemoryEligible,
 } from "./fiveAxis/eligibility";
 import { memoryDeprojectionIntentFingerprint } from "./deprojectionIntent";
+import {
+  listDiaryTimelineGroupsForMemory,
+  rebuildDiaryTimelineGroupsAfterTransition,
+  type DiaryTimelineGroup
+} from "./diaryTimeline";
 
 export type { MemoryEligibilityState, MemoryEligibilityTransition } from "./fiveAxis/eligibility";
 export {
@@ -53,7 +58,7 @@ export interface PrepareMemoryDeprojectionInput extends MemoryDeprojectionInput 
   now?: string;
 }
 
-export interface PreparedMemoryDeprojection {
+export interface PreparedMemoryDeprojectionCore {
   statements: D1PreparedStatement[];
   successGuard: MemoryMutationGuard;
   operationId: string;
@@ -61,6 +66,10 @@ export interface PreparedMemoryDeprojection {
   transition: "eligible_to_ineligible";
   previousRevision: number;
   currentRevision: number;
+}
+
+export interface PreparedMemoryDeprojection extends PreparedMemoryDeprojectionCore {
+  diaryTimelineGroups: DiaryTimelineGroup[];
 }
 
 export interface MemoryDeprojectionResult {
@@ -101,6 +110,36 @@ function resultFromRecord(
   };
 }
 
+function diaryTimelineGroupsFromRecord(operation: MemoryDeprojectionRecord): DiaryTimelineGroup[] {
+  try {
+    const snapshot = JSON.parse(operation.timeline_snapshot_json) as {
+      memory_diary_timeline_memberships?: unknown;
+    };
+    if (!Array.isArray(snapshot.memory_diary_timeline_memberships)) return [];
+    const groups = new Map<string, DiaryTimelineGroup>();
+    for (const value of snapshot.memory_diary_timeline_memberships) {
+      if (!value || typeof value !== "object") continue;
+      const row = value as Record<string, unknown>;
+      if (typeof row.origin_diary_id !== "string"
+        || typeof row.event_date !== "string"
+        || typeof row.timeline_key !== "string") continue;
+      const group: DiaryTimelineGroup = {
+        namespace: operation.namespace,
+        originDiaryId: row.origin_diary_id,
+        eventDate: row.event_date,
+        timelineKey: row.timeline_key
+      };
+      groups.set(
+        `${group.originDiaryId}\n${group.eventDate}\n${group.timelineKey}`,
+        group
+      );
+    }
+    return [...groups.values()];
+  } catch {
+    return [];
+  }
+}
+
 async function completedResult(
   env: Env,
   operation: MemoryDeprojectionRecord,
@@ -122,6 +161,10 @@ async function completedResult(
   ) {
     throw new Error("memory_deprojection_operation_stale");
   }
+  await rebuildDiaryTimelineGroupsAfterTransition(
+    env.DB,
+    diaryTimelineGroupsFromRecord(operation)
+  );
   return resultFromRecord(operation, memory, reused);
 }
 
@@ -187,4 +230,23 @@ export async function deprojectMemoryFromFiveAxes(
   return completedResult(env, operation, (results[0]?.meta.changes ?? 0) === 0);
 }
 
-export { prepareMemoryDeprojection, prepareMemoryDeprojectionCallerInvariant };
+export async function prepareMemoryDeprojection(
+  db: D1Database,
+  input: PrepareMemoryDeprojectionInput
+): Promise<PreparedMemoryDeprojection> {
+  const diaryTimelineGroups = await listDiaryTimelineGroupsForMemory(db, {
+    namespace: input.namespace,
+    memoryId: input.memoryId
+  });
+  const prepared = await prepareDbMemoryDeprojection(db, input);
+  return { ...prepared, diaryTimelineGroups };
+}
+
+export async function finishPreparedMemoryDeprojection(
+  env: Pick<Env, "DB">,
+  prepared: PreparedMemoryDeprojection
+): Promise<void> {
+  await rebuildDiaryTimelineGroupsAfterTransition(env.DB, prepared.diaryTimelineGroups);
+}
+
+export { prepareMemoryDeprojectionCallerInvariant };

@@ -14,6 +14,7 @@ import {
 import {
   applyMemoryEligibilityPatch,
   classifyMemoryEligibilityTransition,
+  finishPreparedMemoryDeprojection,
   prepareMemoryDeprojection,
   prepareMemoryDeprojectionCallerInvariant
 } from "../../memory/deprojection";
@@ -218,6 +219,7 @@ async function commitDreamReviewApproval(
   if (!proposal || proposal.status !== "superseded" || !target
     || (plan.replacement && !replacement)) return null;
 
+  await finishPreparedMemoryDeprojection(env, prepared);
   await Promise.all([
     reconcileMemoryVector(env, { namespace: proposal.namespace, memoryId: proposal.id }),
     reconcileMemoryVector(env, { namespace: target.namespace, memoryId: target.id }),

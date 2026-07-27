@@ -8,7 +8,10 @@ import {
 } from "../../db/memoryCandidates";
 import { getMemoryById, updateMemory } from "../../db/memories";
 import { listFactKeyConflictsForReview } from "../../memory/fiveAxis/zFacts";
-import { prepareMemoryDeprojection } from "../../memory/deprojection";
+import {
+  finishPreparedMemoryDeprojection,
+  prepareMemoryDeprojection
+} from "../../memory/deprojection";
 import { reconcileMemoryVector } from "../../memory/state";
 import type { Env, MemoryRecord } from "../../types";
 import { payloadOf, readFormText } from "./utils";
@@ -143,6 +146,7 @@ export async function approveFactTransitionCandidate(env: Env, form: FormData): 
     id: weaker.id
   });
   if (!superseded) throw new Error("fact_transition_deprojection_target_missing");
+  await finishPreparedMemoryDeprojection(env, deprojection);
   await reconcileMemoryVector(env, {
     namespace: superseded.namespace,
     memoryId: superseded.id

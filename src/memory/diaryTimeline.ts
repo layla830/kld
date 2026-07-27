@@ -29,6 +29,13 @@ interface DiaryTimelineOriginGroup {
   timeline_key: string;
 }
 
+export interface DiaryTimelineGroup {
+  namespace: string;
+  originDiaryId: string;
+  eventDate: string;
+  timelineKey: string;
+}
+
 interface DiaryTimelineGroupResult {
   originDiaryId: string;
   eventDate: string;
@@ -247,6 +254,67 @@ async function rebuildDiaryTimelineSequence(
     edges
   });
   return { memories: dayNodes.length, ...result };
+}
+
+export async function listDiaryTimelineGroupsForMemory(
+  db: D1Database,
+  input: { namespace: string; memoryId: string }
+): Promise<DiaryTimelineGroup[]> {
+  const rows = await db.prepare(
+    `SELECT DISTINCT origin_diary_id, event_date, timeline_key
+     FROM memory_diary_timeline_memberships
+     WHERE namespace = ?
+       AND (memory_id = ? OR origin_diary_id = ? OR day_memory_id = ?)
+     ORDER BY origin_diary_id, event_date, timeline_key`
+  ).bind(
+    input.namespace,
+    input.memoryId,
+    input.memoryId,
+    input.memoryId
+  ).all<{
+    origin_diary_id: string;
+    event_date: string;
+    timeline_key: string;
+  }>();
+  return (rows.results ?? []).map((row) => ({
+    namespace: input.namespace,
+    originDiaryId: row.origin_diary_id,
+    eventDate: row.event_date,
+    timelineKey: row.timeline_key
+  }));
+}
+
+export async function rebuildDiaryTimelineGroupsAfterTransition(
+  db: D1Database,
+  groups: readonly DiaryTimelineGroup[]
+): Promise<void> {
+  const uniqueGroups = new Map<string, DiaryTimelineGroup>();
+  for (const group of groups) {
+    uniqueGroups.set(
+      `${group.namespace}\n${group.originDiaryId}\n${group.eventDate}\n${group.timelineKey}`,
+      group
+    );
+  }
+
+  for (const group of uniqueGroups.values()) {
+    await reconcileDiaryDayGroup(db, {
+      namespace: group.namespace,
+      originDiaryId: group.originDiaryId,
+      eventDate: group.eventDate,
+      timelineKey: group.timelineKey
+    });
+  }
+
+  const timelines = new Map<string, { namespace: string; timelineKey: string }>();
+  for (const group of uniqueGroups.values()) {
+    timelines.set(
+      `${group.namespace}\n${group.timelineKey}`,
+      { namespace: group.namespace, timelineKey: group.timelineKey }
+    );
+  }
+  for (const timeline of timelines.values()) {
+    await rebuildDiaryTimelineSequence(db, timeline.namespace, timeline.timelineKey);
+  }
 }
 
 export async function clearDiaryTimelineGroupsForOrigin(

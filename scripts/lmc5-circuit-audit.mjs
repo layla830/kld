@@ -416,9 +416,11 @@ const checks = [
       diarySplit.includes('reason: "already_rescreened"') &&
       diarySplit.includes("old_review") &&
       diarySplit.includes("const createdIds: string[] = []") &&
-      diarySplit.includes("env.DB.batch") &&
+      diarySplit.includes("mutateMemoryLifecycle") &&
+      diarySplit.includes('reason: "diary_rescreen_activate"') &&
+      diarySplit.includes('reason: "diary_rescreen_replace"') &&
       diarySplit.includes("reconcileMemoryVector") &&
-      diarySplit.includes("vector_sync_status = 'pending'"),
+      diarySplit.includes("expectedRevision"),
   ],
   [
     "Diary rescreen: authenticated bounded API replaces the producerless Queue variant",
