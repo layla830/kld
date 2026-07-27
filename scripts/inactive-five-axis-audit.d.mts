@@ -17,6 +17,7 @@ export function historicalVectorRepairPredicate(alias: string): string;
 export function historicalVectorMissingIdPredicate(alias: string): string;
 export function nonScannerManagedVectorStatePredicate(alias: string): string;
 export function originalDiaryTypePredicate(alias: string): string;
+export function activeDiarySplitOriginPredicate(alias: string): string;
 export function buildInactiveFiveAxisAuditQueries(input: {
   namespace: string;
   staleHours?: number;

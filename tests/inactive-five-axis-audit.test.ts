@@ -60,6 +60,7 @@ describe("inactive five-axis audit command", () => {
     expect(sql).toContain("eligible_unproven_source");
     expect(sql).toContain("stale_unproven_source");
     expect(sql).toContain("origin_diary_provenance_rows");
+    expect(sql).toContain("origin.status = 'active'");
     expect(sql).toContain("axis_run_drift_rows");
     expect(sql).toContain("stale_revision_runs");
     expect(sql).toContain("stale_running_active_lease");

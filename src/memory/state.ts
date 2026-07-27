@@ -18,6 +18,8 @@ import {
   isFiveAxisMemoryEligible,
   type MemoryEligibilityTransition,
 } from "./fiveAxis/eligibility";
+import { isActiveDiarySplitSource } from "./diaryPolicy";
+import { clearDiaryTimelineGroupsForOrigin } from "./diaryTimeline";
 import type { Env, MemoryRecord } from "../types";
 
 export type VectorDesiredAction = "upsert" | "delete";
@@ -146,10 +148,8 @@ export async function mutateMemoryLifecycle(
     && (existing.five_axis_revision ?? 1) !== options.expectedRevision) return null;
   if (options.requireUnpinned && existing.pinned) return null;
 
-  const transition = classifyMemoryEligibilityTransition(
-    existing,
-    applyMemoryEligibilityPatch(existing, patch)
-  );
+  const after = applyMemoryEligibilityPatch(existing, patch);
+  const transition = classifyMemoryEligibilityTransition(existing, after);
   if (transition === "eligible_to_ineligible") {
     const result = await deprojectMemoryFromFiveAxes(env, {
       namespace,
@@ -176,12 +176,19 @@ export async function mutateMemoryLifecycle(
     expectedRevision: options.expectedRevision ?? existing.five_axis_revision ?? 1,
     requireUnpinned: options.requireUnpinned
   });
-  return updated
-    ? {
-        transition,
-        memory: updated
-      }
-    : null;
+  if (!updated) return null;
+
+  if (isActiveDiarySplitSource(existing) && !isActiveDiarySplitSource(updated)) {
+    await clearDiaryTimelineGroupsForOrigin(env.DB, {
+      namespace,
+      originDiaryId: id
+    });
+  }
+
+  return {
+    transition,
+    memory: updated
+  };
 }
 
 export async function patchSyncedMemory(
