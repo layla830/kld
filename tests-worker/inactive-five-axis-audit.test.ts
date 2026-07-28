@@ -870,6 +870,11 @@ describe("bounded inactive five-axis D1 repair", () => {
          WHERE namespace = ? AND id = ?`
       ).bind(sourceRevision + 1, namespace, source.id),
       env.DB.prepare(
+        `UPDATE memories
+         SET five_axis_revision = five_axis_revision + 1
+         WHERE namespace = ? AND id = ?`
+      ).bind(namespace, target.id),
+      env.DB.prepare(
         `INSERT INTO memory_five_axis_runs (
            namespace, memory_id, memory_revision, axis, status, attempts,
            result_json, last_error, claim_token, lease_expires_at,

@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { createMemory, getMemoryById, updateMemory } from "../src/db/memories";
+import { upsertMemoryCandidate } from "../src/db/memoryCandidates";
 import { scanFactTransitionReviewCandidates } from "../src/memory/factTransitionReview";
 import { scanMetabolismReviewCandidates } from "../src/memory/metabolismReview";
 import { queueRelationReviewCandidate } from "../src/memory/relationReview";
@@ -206,6 +207,70 @@ describe("operational candidate family supersession", () => {
     ]);
   });
 
+  it("keeps M archive dry-run read-only", async () => {
+    const namespace = `candidate-m-dry-run-${crypto.randomUUID()}`;
+    const memory = await createMemory(env.DB, {
+      namespace,
+      type: "project_state",
+      content: "dry-run expired project state",
+      importance: 0.3,
+      confidence: 0.5,
+      expiresAt: "2020-01-01T00:00:00.000Z",
+      ...coordinates
+    });
+
+    await expect(scanMetabolismReviewCandidates(env, namespace, {
+      memoryIds: [memory.id],
+      dryRun: true
+    })).resolves.toMatchObject({ archive: 1 });
+    await expect(candidates(namespace, "m_archive")).resolves.toEqual([]);
+  });
+
+  it("leaves non-operational candidate families unchanged", async () => {
+    const namespace = `candidate-unaffected-${crypto.randomUUID()}`;
+    const memory = await createMemory(env.DB, {
+      namespace,
+      type: "identity",
+      content: "non-operational candidate dependency",
+      ...coordinates
+    });
+    const actions = ["add", "timeline_date", "m_relation_cleanup"] as const;
+    for (const action of actions) {
+      await upsertMemoryCandidate(env.DB, namespace, {
+        externalKey: `${action}:${crypto.randomUUID()}`,
+        dreamDate: "2026-07-29",
+        action,
+        subject: "system",
+        targetId: memory.id,
+        payload: { _kind: "unaffected_candidate_test", memory_id: memory.id },
+        sourceChunkIds: [],
+        status: "pending",
+        dependencies: [{ memoryId: memory.id, role: "target" }]
+      });
+    }
+
+    await updateMemory(env.DB, {
+      namespace,
+      id: memory.id,
+      patch: { content: "non-operational dependency updated" }
+    });
+    await scanFactTransitionReviewCandidates(env, namespace, {
+      factKeys: [`unaffected:${crypto.randomUUID()}`]
+    });
+    await scanMetabolismReviewCandidates(env, namespace, {
+      memoryIds: [memory.id]
+    });
+
+    for (const action of actions) {
+      await expect(candidates(namespace, action)).resolves.toEqual([
+        expect.objectContaining({
+          status: "pending",
+          validation_error: null
+        })
+      ]);
+    }
+  });
+
   it("replaces the whole Z fact family after ranking flips and records both endpoints", async () => {
     const namespace = `candidate-z-${crypto.randomUUID()}`;
     const factKey = `fact:${crypto.randomUUID()}`;
@@ -313,7 +378,7 @@ describe("operational candidate family supersession", () => {
   it("keeps dry-run and terminal candidates unchanged", async () => {
     const namespace = `candidate-z-terminal-${crypto.randomUUID()}`;
     const factKey = `fact:${crypto.randomUUID()}`;
-    const [first, second] = await Promise.all([
+    const [first, second, third] = await Promise.all([
       createMemory(env.DB, {
         namespace,
         type: "project_state",
@@ -329,15 +394,32 @@ describe("operational candidate family supersession", () => {
         factKey,
         importance: 0.8,
         ...coordinates
+      }),
+      createMemory(env.DB, {
+        namespace,
+        type: "project_state",
+        content: "terminal rank three",
+        factKey,
+        importance: 0.7,
+        ...coordinates
       })
     ]);
     await scanFactTransitionReviewCandidates(env, namespace, { factKeys: [factKey] });
-    const [original] = await candidates(namespace, "z_supersede");
-    await env.DB.prepare(
+    const [approved, rejected] = await candidates(namespace, "z_supersede");
+    await env.DB.batch([
+      env.DB.prepare(
       `UPDATE memory_candidates
        SET status = 'approved', resolved_at = updated_at
        WHERE namespace = ? AND external_key = ?`
-    ).bind(namespace, original.external_key).run();
+      ).bind(namespace, approved.external_key),
+      env.DB.prepare(
+        `UPDATE memory_candidates
+         SET status = 'rejected',
+             validation_error = 'manual_rejection',
+             resolved_at = updated_at
+         WHERE namespace = ? AND external_key = ?`
+      ).bind(namespace, rejected.external_key)
+    ]);
     await updateMemory(env.DB, {
       namespace,
       id: second.id,
@@ -348,12 +430,36 @@ describe("operational candidate family supersession", () => {
       factKeys: [factKey],
       dryRun: true
     });
-    await expect(candidates(namespace, "z_supersede")).resolves.toEqual([
+    await expect(candidates(namespace, "z_supersede")).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          external_key: approved.external_key,
+          status: "approved"
+        }),
+        expect.objectContaining({
+          external_key: rejected.external_key,
+          status: "rejected",
+          validation_error: "manual_rejection"
+        })
+      ])
+    );
+
+    await scanFactTransitionReviewCandidates(env, namespace, {
+      factKeys: [factKey]
+    });
+    const afterReplacement = await candidates(namespace, "z_supersede");
+    expect(afterReplacement).toEqual(expect.arrayContaining([
       expect.objectContaining({
-        external_key: original.external_key,
+        external_key: approved.external_key,
         status: "approved"
+      }),
+      expect.objectContaining({
+        external_key: rejected.external_key,
+        status: "rejected",
+        validation_error: "manual_rejection"
       })
-    ]);
-    expect(first.id).not.toBe(second.id);
+    ]));
+    expect(afterReplacement.filter((row) => row.status === "pending")).toHaveLength(2);
+    expect(new Set([first.id, second.id, third.id]).size).toBe(3);
   });
 });
