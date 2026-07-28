@@ -4,6 +4,7 @@ import { createMemory, getMemoryById } from "../src/db/memories";
 import { createMemoryRelation } from "../src/db/memoryRelations";
 import { upsertMemoryCandidate } from "../src/db/memoryCandidates";
 import { approveCandidate } from "../src/api/adminBoard/candidateActions";
+import { approveMetabolismCandidate } from "../src/api/adminBoard/metabolismActions";
 import {
   clearDiaryTimelineGroupsForOrigin,
   rebuildDiaryTimelineForMemory
@@ -100,6 +101,47 @@ describe("diary origin lifecycle", () => {
       namespace,
       `diary_day:${seeded.origin.id}:2026-07-30`
     )).resolves.toBe(0);
+  });
+
+  it("leaves diary groups untouched when approving an ordinary note update candidate", async () => {
+    const namespace = "default";
+    const seeded = await seedDiaryDay(namespace, "2026-07-31");
+    const note = await createMemory(env.DB, {
+      namespace,
+      type: "note",
+      content: "Ordinary note before candidate approval",
+      status: "active"
+    });
+    const externalKey = `dream-update:ordinary-note:${crypto.randomUUID()}`;
+    await upsertMemoryCandidate(env.DB, namespace, {
+      externalKey,
+      dreamDate: "2026-07-31",
+      action: "update",
+      targetId: note.id,
+      payload: { content: "Ordinary note after candidate approval" },
+      sourceChunkIds: [],
+      status: "pending"
+    });
+    const candidate = await env.DB.prepare(
+      "SELECT id FROM memory_candidates WHERE namespace = ? AND external_key = ?"
+    ).bind(namespace, externalKey).first<{ id: string }>();
+    if (!candidate) throw new Error("missing ordinary note update candidate");
+    const form = new FormData();
+    form.set("id", candidate.id);
+
+    await expect(approveCandidate(runtime(), form)).resolves.toMatchObject({
+      id: note.id,
+      type: "note",
+      content: "Ordinary note after candidate approval"
+    });
+    await expect(count(
+      `SELECT COUNT(*) AS count
+       FROM memory_diary_timeline_memberships
+       WHERE namespace = ? AND origin_diary_id = ? AND memory_id = ?`,
+      namespace,
+      seeded.origin.id,
+      seeded.item.id
+    )).resolves.toBe(1);
   });
 
   it("re-elects the canonical diary day and reconnects the sequence after deprojection", async () => {
@@ -259,6 +301,82 @@ describe("diary origin lifecycle", () => {
       role: "day",
       day_memory_id: surviving.id
     });
+  });
+
+  it("rebuilds a diary group after an m_archive approval commits deprojection", async () => {
+    const namespace = "default";
+    const seeded = await seedDiaryDay(namespace, "2026-08-01");
+    const archivedDay = await createMemory(env.DB, {
+      namespace,
+      type: "project_state",
+      content: "Expired diary project state",
+      status: "active",
+      importance: 0.95,
+      confidence: 0.9,
+      expiresAt: "2020-01-01T00:00:00.000Z",
+      source: "timeline_split",
+      sourceMessageIds: [seeded.origin.id],
+      tags: [
+        "timeline",
+        "date:2026-08-01",
+        `origin:${seeded.origin.id}`,
+        "split_version:v2"
+      ]
+    });
+    await rebuildDiaryTimelineForMemory(env.DB, archivedDay);
+    await expect(env.DB.prepare(
+      `SELECT role, day_memory_id
+       FROM memory_diary_timeline_memberships
+       WHERE namespace = ? AND memory_id = ?`
+    ).bind(namespace, archivedDay.id).first()).resolves.toMatchObject({
+      role: "day",
+      day_memory_id: archivedDay.id
+    });
+
+    const externalKey = `m-archive:diary-member:${crypto.randomUUID()}`;
+    await upsertMemoryCandidate(env.DB, namespace, {
+      externalKey,
+      dreamDate: "2026-08-01",
+      action: "m_archive",
+      subject: "system",
+      targetId: archivedDay.id,
+      payload: {
+        _kind: "metabolism_archive",
+        policy: "expired_project_state",
+        before: archivedDay
+      },
+      sourceChunkIds: [],
+      status: "pending"
+    });
+    const candidate = await env.DB.prepare(
+      "SELECT id FROM memory_candidates WHERE namespace = ? AND external_key = ?"
+    ).bind(namespace, externalKey).first<{ id: string }>();
+    if (!candidate) throw new Error("missing metabolism archive candidate");
+    const form = new FormData();
+    form.set("id", candidate.id);
+
+    await expect(approveMetabolismCandidate(runtime(), form)).resolves.toMatchObject({
+      action: "m_archive",
+      memory: {
+        id: archivedDay.id,
+        status: "archived"
+      }
+    });
+    await expect(env.DB.prepare(
+      `SELECT role, day_memory_id
+       FROM memory_diary_timeline_memberships
+       WHERE namespace = ? AND memory_id = ?`
+    ).bind(namespace, seeded.item.id).first()).resolves.toMatchObject({
+      role: "day",
+      day_memory_id: seeded.item.id
+    });
+    await expect(count(
+      `SELECT COUNT(*) AS count
+       FROM memory_diary_timeline_memberships
+       WHERE namespace = ? AND memory_id = ?`,
+      namespace,
+      archivedDay.id
+    )).resolves.toBe(0);
   });
 
   it("clears origin-owned groups on re-type and rebuilds the shared sequence", async () => {
