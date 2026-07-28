@@ -43,10 +43,13 @@ describe("inactive five-axis audit command", () => {
       "axis_runs",
       "candidate_dependencies",
       "vector_state",
-      "deprojection_operations"
+      "deprojection_operations",
+      "retention_orphans"
     ]);
     expect(queries.find((query) => query.name === "vector_state")?.driftFields)
       .toEqual(["vector_drift_rows"]);
+    expect(queries.find((query) => query.name === "retention_orphans")?.driftFields)
+      .toEqual(["actionable_rows"]);
     const sql = queries.map((query) => query.sql).join("\n");
     expect(sql).toContain("failed_vector_states");
     expect(sql).toContain("vector_drift_rows");
@@ -70,6 +73,11 @@ describe("inactive five-axis audit command", () => {
     expect(sql).toContain("ownership_anomalies");
     expect(sql).toContain("running_missing_claim_token");
     expect(sql).toContain("non_running_lease_residue");
+    expect(sql).toContain("actionable_rows");
+    expect(sql).toContain("historical_rows");
+    expect(sql).toContain("orphan_relations");
+    expect(sql).toContain("distinct_historical_candidates");
+    expect(sql).toContain("orphan_metabolism_signal_states");
     expect(sql).not.toMatch(/\b(?:INSERT|UPDATE|DELETE|REPLACE|CREATE|ALTER|DROP)\b/i);
     expect(sql).not.toMatch(/\b(?:content|summary|tags|source_message_ids)\b/i);
   });

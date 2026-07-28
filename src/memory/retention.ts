@@ -134,7 +134,12 @@ async function runMemoryRetentionInner(
         const noVectorIds = deletable
           .filter((m) => m.vector_id === null)
           .map((m) => m.id);
-        stats.hardDeletedMemories = await hardDeleteMemoriesBatched(env.DB, namespace, noVectorIds);
+        stats.hardDeletedMemories = await hardDeleteMemoriesBatched(
+          env.DB,
+          namespace,
+          noVectorIds,
+          hardCutoff
+        );
         stats.hardDeleteSkipped = deletable.length - noVectorIds.length;
         await writeCursor(env.DB, cursorName, now);
         return { ran: true, stats };
@@ -145,11 +150,21 @@ async function runMemoryRetentionInner(
       const safeIds = deletable
         .filter((m) => m.vector_id === null)
         .map((m) => m.id);
-      stats.hardDeletedMemories = await hardDeleteMemoriesBatched(env.DB, namespace, safeIds);
+      stats.hardDeletedMemories = await hardDeleteMemoriesBatched(
+        env.DB,
+        namespace,
+        safeIds,
+        hardCutoff
+      );
       stats.hardDeleteSkipped = deletable.length - safeIds.length;
     } else {
       const allIds = deletable.map((m) => m.id);
-      stats.hardDeletedMemories = await hardDeleteMemoriesBatched(env.DB, namespace, allIds);
+      stats.hardDeletedMemories = await hardDeleteMemoriesBatched(
+        env.DB,
+        namespace,
+        allIds,
+        hardCutoff
+      );
     }
   } else {
     stats.hardDeletedMemories = 0;
