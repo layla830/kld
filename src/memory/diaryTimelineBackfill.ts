@@ -1,5 +1,4 @@
 import type { Env, MemoryRecord } from "../types";
-import { nowIso } from "../utils/time";
 import { DIARY_SPLIT_SOURCE_TYPE } from "./diaryPolicy";
 import { rebuildDiaryTimelineForMemory } from "./diaryTimeline";
 import { patchSyncedMemory } from "./state";
@@ -69,26 +68,6 @@ function coverageForDiary(diary: MemoryRecord, allItems: MemoryRecord[]): DiaryT
   };
 }
 
-async function markLatestSkippedXRunsApplied(db: D1Database, namespace: string, diaryId: string): Promise<void> {
-  const now = nowIso();
-  await db.prepare(
-    `UPDATE memory_five_axis_runs AS run
-     SET status = 'applied',
-         result_json = json_object('outcome', 'diary_timeline_reconciled', 'originDiaryId', ?, 'backfill', 1),
-         last_error = NULL, claim_token = NULL, lease_expires_at = NULL,
-         completed_at = ?, updated_at = ?
-     WHERE run.namespace = ? AND run.axis = 'X' AND run.status = 'skipped'
-       AND run.memory_id IN (
-         SELECT memory_id FROM memory_diary_timeline_memberships
-         WHERE namespace = ? AND origin_diary_id = ?
-       )
-       AND run.memory_revision = (
-         SELECT MAX(latest.memory_revision) FROM memory_five_axis_runs AS latest
-         WHERE latest.namespace = run.namespace AND latest.memory_id = run.memory_id AND latest.axis = 'X'
-       )`
-  ).bind(diaryId, now, now, namespace, namespace, diaryId).run();
-}
-
 async function retireLegacyDayNodes(env: Env, namespace: string, nodes: MemoryRecord[]): Promise<void> {
   for (const node of nodes) {
     if (node.type !== "timeline_day") continue;
@@ -146,7 +125,6 @@ export async function scanDiaryTimelineBackfill(
       for (const item of representativeByDate.values()) {
         await rebuildDiaryTimelineForMemory(env.DB, item);
       }
-      if (representativeByDate.size > 0) await markLatestSkippedXRunsApplied(env.DB, namespace, diary.id);
       coverage.backfilled = representativeByDate.size > 0 || legacyDays.length > 0;
       coverage.timelineDays = 0;
       coverage.missingTimelineDates = [];

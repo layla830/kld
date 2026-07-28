@@ -30,6 +30,7 @@ interface CandidateRow {
 
 interface AxisRunRow {
   status: string;
+  result_json?: string | null;
 }
 
 async function first<T>(sql: string, ...binds: unknown[]): Promise<T | null> {
@@ -452,6 +453,58 @@ describe("five-axis Worker circuit", () => {
          AND EXISTS (SELECT 1 FROM json_each(tags) WHERE value = 'timeline_day_fallback:verbatim')`,
       `origin:${sparseDiary.id}`
     )).resolves.toMatchObject({ count: 1 });
+  });
+
+  it("does not rewrite a rejected terminal X run while backfilling diary structure", async () => {
+    const namespace = `diary-backfill-x-run-${crypto.randomUUID()}`;
+    const diary = await createMemory(env.DB, {
+      namespace,
+      type: "diary",
+      content: "A diary whose structure needs reconciliation",
+      status: "active",
+      source: "mcp"
+    });
+    const item = await createMemory(env.DB, {
+      namespace,
+      type: "event",
+      content: "A dated diary item",
+      status: "active",
+      source: "timeline_split",
+      sourceMessageIds: [diary.id],
+      tags: ["timeline", "date:2026-07-28", `origin:${diary.id}`]
+    });
+    const terminalResult = JSON.stringify({ reason: "candidate_rejected" });
+    const now = new Date().toISOString();
+    await env.DB.prepare(
+      `INSERT INTO memory_five_axis_runs (
+         namespace, memory_id, memory_revision, axis, status, attempts,
+         result_json, last_error, claim_token, lease_expires_at,
+         started_at, completed_at, updated_at
+       ) VALUES (?, ?, ?, 'X', 'skipped', 1, ?, NULL, NULL, NULL, ?, ?, ?)`
+    ).bind(
+      namespace,
+      item.id,
+      item.five_axis_revision ?? 1,
+      terminalResult,
+      now,
+      now,
+      now
+    ).run();
+
+    await expect(scanDiaryTimelineBackfill(env as Env, namespace, {
+      apply: true,
+      limit: 100
+    })).resolves.toMatchObject({ backfilled: 1 });
+
+    const run = await first<AxisRunRow>(
+      `SELECT status, result_json
+       FROM memory_five_axis_runs
+       WHERE namespace = ? AND memory_id = ? AND memory_revision = ? AND axis = 'X'`,
+      namespace,
+      item.id,
+      item.five_axis_revision ?? 1
+    );
+    expect(run).toEqual({ status: "skipped", result_json: terminalResult });
   });
 
   it("retries a non-empty diary split that omits its required timeline day", async () => {

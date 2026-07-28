@@ -19,7 +19,11 @@ import {
   type MemoryEligibilityTransition,
 } from "./fiveAxis/eligibility";
 import { isActiveDiarySplitSource } from "./diaryPolicy";
-import { clearDiaryTimelineGroupsForOrigin } from "./diaryTimeline";
+import {
+  clearDiaryTimelineGroupsForOrigin,
+  rebuildDiaryTimelineForMemory
+} from "./diaryTimeline";
+import { rebuildTimelineSequenceForMemory } from "./timelineRelations";
 import type { Env, MemoryRecord } from "../types";
 
 export type VectorDesiredAction = "upsert" | "delete";
@@ -134,6 +138,38 @@ export async function runDiaryOriginTransitionCleanup(
   });
 }
 
+function timelineSequenceShapeChanged(before: MemoryRecord, after: MemoryRecord): boolean {
+  return before.status !== after.status
+    || before.type !== after.type
+    || before.thread !== after.thread
+    || before.fact_key !== after.fact_key
+    || before.tags !== after.tags;
+}
+
+function diaryTimelineShapeChanged(before: MemoryRecord, after: MemoryRecord): boolean {
+  if (before.source !== "timeline_split" && after.source !== "timeline_split") return false;
+  return before.status !== after.status
+    || before.type !== after.type
+    || before.tags !== after.tags
+    || before.importance !== after.importance
+    || before.confidence !== after.confidence;
+}
+
+async function runMemoryGroupTransitionCleanup(
+  env: Pick<Env, "DB">,
+  before: MemoryRecord,
+  after: MemoryRecord
+): Promise<void> {
+  await runDiaryOriginTransitionCleanup(env, before, after);
+  if (diaryTimelineShapeChanged(before, after)) {
+    await rebuildDiaryTimelineForMemory(env.DB, after);
+    return;
+  }
+  if (after.source !== "timeline_split" && timelineSequenceShapeChanged(before, after)) {
+    await rebuildTimelineSequenceForMemory(env.DB, after);
+  }
+}
+
 export async function createSyncedMemory(
   env: Env,
   input: CreateMemoryInput
@@ -190,7 +226,7 @@ export async function mutateMemoryLifecycle(
   });
   if (!updated) return null;
 
-  await runDiaryOriginTransitionCleanup(env, existing, updated);
+  await runMemoryGroupTransitionCleanup(env, existing, updated);
 
   return {
     transition,

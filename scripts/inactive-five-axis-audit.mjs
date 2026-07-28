@@ -242,6 +242,21 @@ export function buildInactiveFiveAxisAuditQueries(input) {
     AND run.lease_expires_at IS NOT NULL
     AND run.lease_expires_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
   )`;
+  const exhaustedFailedRun = `(
+    run.status = 'failed'
+    AND run.attempts >= 5
+    AND run.claim_token IS NULL
+    AND run.lease_expires_at IS NULL
+    AND run.memory_revision = memory.five_axis_revision
+    AND ${eligibleRunMemory}
+  )`;
+  const exhaustedTerminalRun = `(
+    run.status = 'skipped'
+    AND json_extract(run.result_json, '$.reason') = 'attempts_exhausted'
+    AND run.memory_revision = memory.five_axis_revision
+    AND ${eligibleRunMemory}
+  )`;
+  const exhaustedRun = `(${exhaustedFailedRun} OR ${exhaustedTerminalRun})`;
   const candidateLinkedStaleRun = `(
     ${nonTerminalRun}
     AND ${staleRun}
@@ -281,6 +296,27 @@ export function buildInactiveFiveAxisAuditQueries(input) {
     OR ${futureRevisionRun}
     OR (${candidateLinkedStaleRun} AND NOT (${operationalCandidateOwnedRun}))
     OR ${ineligibleNonTerminalRun}
+    OR ${exhaustedRun}
+  )`;
+  const invalidActiveTimelineMembership = `(
+    NOT (${inactive("memory")})
+    AND (
+      memory.source = 'timeline_split'
+      OR memory.thread IS NULL
+      OR TRIM(memory.thread) = ''
+      OR memory.fact_key IS NULL
+      OR TRIM(memory.fact_key) = ''
+      OR membership.thread != memory.thread
+      OR membership.fact_key != memory.fact_key
+    )
+  )`;
+  const invalidActiveDiaryMembership = `(
+    NOT (${inactive("member")})
+    AND (
+      member.source != 'timeline_split'
+      OR member.type = 'timeline_day'
+      OR membership.timeline_key != 'diary:kld'
+    )
   )`;
 
   return [
@@ -372,8 +408,18 @@ export function buildInactiveFiveAxisAuditQueries(input) {
           JOIN memories AS memory
             ON memory.namespace = membership.namespace
            AND memory.id = membership.memory_id
-          WHERE membership.namespace = ${namespace} AND ${inactive("memory")}
+          WHERE membership.namespace = ${namespace}
+            AND (${inactive("memory")} OR ${invalidActiveTimelineMembership})
         ) AS membership_rows,
+        (
+          SELECT COUNT(*)
+          FROM memory_timeline_memberships AS membership
+          JOIN memories AS memory
+            ON memory.namespace = membership.namespace
+           AND memory.id = membership.memory_id
+          WHERE membership.namespace = ${namespace}
+            AND ${invalidActiveTimelineMembership}
+        ) AS invalid_active_membership_rows,
         (
           SELECT COUNT(*)
           FROM memory_diary_timeline_memberships AS membership
@@ -394,8 +440,18 @@ export function buildInactiveFiveAxisAuditQueries(input) {
               ${inactive("member")}
               OR ${inactive("day")}
               OR NOT (${activeDiarySplitOriginPredicate("origin")})
+              OR ${invalidActiveDiaryMembership}
             )
         ) AS diary_drift_rows,
+        (
+          SELECT COUNT(*)
+          FROM memory_diary_timeline_memberships AS membership
+          JOIN memories AS member
+            ON member.namespace = membership.namespace
+           AND member.id = membership.memory_id
+          WHERE membership.namespace = ${namespace}
+            AND ${invalidActiveDiaryMembership}
+        ) AS invalid_active_diary_membership_rows,
         (
           SELECT COUNT(*)
           FROM memory_diary_timeline_memberships AS membership
@@ -500,6 +556,18 @@ export function buildInactiveFiveAxisAuditQueries(input) {
           WHEN ${malformedOwnership}
           THEN 1 ELSE 0 END
         ), 0) AS ownership_anomalies,
+        COALESCE(SUM(CASE
+          WHEN ${exhaustedRun}
+          THEN 1 ELSE 0 END
+        ), 0) AS exhausted_attempt_runs,
+        COALESCE(SUM(CASE
+          WHEN ${exhaustedFailedRun}
+          THEN 1 ELSE 0 END
+        ), 0) AS legacy_exhausted_failed_runs,
+        COALESCE(SUM(CASE
+          WHEN ${exhaustedTerminalRun}
+          THEN 1 ELSE 0 END
+        ), 0) AS terminal_exhausted_runs,
         COALESCE(SUM(CASE
           WHEN run.status = 'running' AND run.claim_token IS NULL
           THEN 1 ELSE 0 END
