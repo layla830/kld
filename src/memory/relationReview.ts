@@ -1,4 +1,4 @@
-import { upsertMemoryCandidate } from "../db/memoryCandidates";
+import { replacePendingOperationalCandidateFamily } from "../db/memoryCandidates";
 import { normalizeRelationPair } from "../db/memoryRelations";
 import type { Env, MemoryRecord } from "../types";
 
@@ -36,7 +36,12 @@ export async function queueRelationReviewCandidate(
     sourceUpdatedAt,
     targetUpdatedAt
   ].map(encodeURIComponent).join(":");
-  await upsertMemoryCandidate(env.DB, namespace, {
+  await replacePendingOperationalCandidateFamily(env.DB, namespace, {
+    action: "y_relation_review",
+    relationType: pair.relationType,
+    sourceMemoryId: pair.sourceMemoryId,
+    targetMemoryId: pair.targetMemoryId
+  }, [{
     externalKey: candidateExternalKey,
     dreamDate: new Date().toISOString().slice(0, 10),
     action: "y_relation_review",
@@ -63,6 +68,6 @@ export async function queueRelationReviewCandidate(
       { memoryId: pair.sourceMemoryId, role: "source" },
       { memoryId: pair.targetMemoryId, role: "target" }
     ]
-  });
+  }]);
   return candidateExternalKey;
 }

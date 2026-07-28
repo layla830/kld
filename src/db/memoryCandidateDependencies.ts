@@ -1,4 +1,10 @@
 import type { MemoryMutationGuard } from "./memories";
+import {
+  SUPERSEDED_CANDIDATE_SNAPSHOT_REASON,
+  staleOperationalCandidateForMemoryPredicate
+} from "../memory/candidateSnapshotContract.js";
+
+export { SUPERSEDED_CANDIDATE_SNAPSHOT_REASON };
 
 export const PENDING_MEMORY_CANDIDATE_STATUSES = [
   "pending",
@@ -247,4 +253,48 @@ export function prepareRejectDependentCandidates(
       ]
     }
   };
+}
+
+export function prepareRejectStaleOperationalCandidatesForMemory(
+  db: D1Database,
+  input: {
+    namespace: string;
+    memoryId: string;
+    now: string;
+    guard: MemoryMutationGuard;
+  }
+): PreparedDependentCandidateRejection {
+  const candidateSelection: MemoryMutationGuard = {
+    sql: `candidate.namespace = ?
+      AND candidate.action IN ('y_relation_review', 'z_supersede', 'm_archive')
+      AND ${candidateDependsOnMemorySql("candidate", "?")}
+      AND ${staleOperationalCandidateForMemoryPredicate("candidate")}`,
+    binds: [
+      input.namespace,
+      input.memoryId,
+      input.memoryId
+    ]
+  };
+  const runSelection: MemoryMutationGuard = {
+    sql: `EXISTS (
+      SELECT 1
+      FROM memory_candidate_axis_runs AS stale_link
+      JOIN memory_candidates AS candidate
+        ON candidate.namespace = stale_link.namespace
+       AND candidate.external_key = stale_link.candidate_external_key
+      WHERE stale_link.namespace = runs.namespace
+        AND stale_link.memory_id = runs.memory_id
+        AND stale_link.memory_revision = runs.memory_revision
+        AND stale_link.axis = runs.axis
+        AND (${candidateSelection.sql})
+    )`,
+    binds: [...candidateSelection.binds]
+  };
+  return prepareRejectDependentCandidates(db, {
+    reason: SUPERSEDED_CANDIDATE_SNAPSHOT_REASON,
+    now: input.now,
+    guard: input.guard,
+    candidateSelection,
+    runSelection
+  });
 }

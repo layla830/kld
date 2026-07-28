@@ -3,6 +3,7 @@ import { fiveAxisMemoryEligibilityPredicate } from "../memory/fiveAxis/eligibili
 import { newId } from "../utils/ids";
 import { nowIso } from "../utils/time";
 import { buildVectorId } from "../utils/vectorId";
+import { prepareRejectStaleOperationalCandidatesForMemory } from "./memoryCandidateDependencies";
 
 const D1_BIND_LIMIT = 90;
 const CANONICAL_SEARCH_TYPES = new Set(["rule", "lesson", "core", "preference"]);
@@ -540,15 +541,34 @@ export async function updateMemory(
     requireUnpinned?: boolean;
   }
 ): Promise<MemoryRecord | null> {
+  const mutationAt = nowIso();
   const statement = prepareMemoryUpdate(db, {
     ...input,
-    markVectorUnsynced: input.patch.vectorSyncStatus === undefined
+    markVectorUnsynced: input.patch.vectorSyncStatus === undefined,
+    now: mutationAt
   });
   if (!statement) return getMemoryById(db, input);
 
-  const result = await statement.run();
+  const staleCandidates = prepareRejectStaleOperationalCandidatesForMemory(db, {
+    namespace: input.namespace,
+    memoryId: input.id,
+    now: mutationAt,
+    guard: {
+      sql: `EXISTS (
+        SELECT 1 FROM memories AS changed_memory
+        WHERE changed_memory.namespace = ?
+          AND changed_memory.id = ?
+          AND changed_memory.updated_at = ?
+      )`,
+      binds: [input.namespace, input.id, mutationAt]
+    }
+  });
+  const results = await db.batch([
+    statement,
+    ...staleCandidates.statements
+  ]);
 
-  if ((result.meta.changes ?? 0) === 0) return null;
+  if ((results[0]?.meta.changes ?? 0) === 0) return null;
   return getMemoryById(db, input);
 }
 

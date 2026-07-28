@@ -763,4 +763,139 @@ describe("bounded inactive five-axis D1 repair", () => {
     });
     expect(byMemory.get(linkedMemory.id)).toMatchObject({ status: "failed" });
   });
+
+  it("counts stale operational candidates once with an action breakdown", async () => {
+    const namespace = `inactive-candidate-audit-${crypto.randomUUID()}`;
+    const now = new Date().toISOString();
+    const [source, target, archive] = await Promise.all([
+      createMemory(env.DB, {
+        namespace,
+        type: "project_state",
+        content: "stale candidate source",
+        status: "active"
+      }),
+      createMemory(env.DB, {
+        namespace,
+        type: "project_state",
+        content: "stale candidate target",
+        status: "active"
+      }),
+      createMemory(env.DB, {
+        namespace,
+        type: "project_state",
+        content: "stale archive target",
+        status: "active"
+      })
+    ]);
+    const fixtures = [
+      {
+        id: `candidate_${crypto.randomUUID()}`,
+        key: `y-review:${crypto.randomUUID()}`,
+        action: "y_relation_review",
+        targetId: target.id,
+        payload: {
+          relation_type: "supports",
+          source_id: source.id,
+          target_id: target.id,
+          source_revision: source.five_axis_revision ?? 1,
+          target_revision: target.five_axis_revision ?? 1,
+          source_updated_at: source.updated_at,
+          target_updated_at: target.updated_at
+        },
+        dependencies: [
+          { memoryId: source.id, role: "source" },
+          { memoryId: target.id, role: "target" }
+        ]
+      },
+      {
+        id: `candidate_${crypto.randomUUID()}`,
+        key: `z-review:${crypto.randomUUID()}`,
+        action: "z_supersede",
+        targetId: target.id,
+        payload: {
+          fact_key: "audit:stale-z",
+          best: { id: source.id, updated_at: "2020-01-01T00:00:00.000Z" },
+          weaker: { id: target.id, updated_at: target.updated_at }
+        },
+        dependencies: [
+          { memoryId: source.id, role: "source" },
+          { memoryId: target.id, role: "target" }
+        ]
+      },
+      {
+        id: `candidate_${crypto.randomUUID()}`,
+        key: `m-review:${crypto.randomUUID()}`,
+        action: "m_archive",
+        targetId: archive.id,
+        payload: {
+          before: { id: archive.id, updated_at: "2020-01-01T00:00:00.000Z" }
+        },
+        dependencies: [
+          { memoryId: archive.id, role: "target" }
+        ]
+      }
+    ];
+    for (const fixture of fixtures) {
+      await env.DB.batch([
+        env.DB.prepare(
+          `INSERT INTO memory_candidates (
+             id, namespace, external_key, dream_date, action, subject, target_id,
+             payload_json, source_chunk_ids_json, source_chunks_json,
+             status, created_at, updated_at
+           ) VALUES (?, ?, ?, '2026-07-28', ?, 'system', ?, ?, '[]', '[]',
+             'pending', ?, ?)`
+        ).bind(
+          fixture.id,
+          namespace,
+          fixture.key,
+          fixture.action,
+          fixture.targetId,
+          JSON.stringify(fixture.payload),
+          now,
+          now
+        ),
+        ...fixture.dependencies.map((dependency) => env.DB.prepare(
+          `INSERT INTO memory_candidate_dependencies (
+             namespace, candidate_external_key, memory_id, role
+           ) VALUES (?, ?, ?, ?)`
+        ).bind(namespace, fixture.key, dependency.memoryId, dependency.role))
+      ]);
+    }
+    const sourceRevision = source.five_axis_revision ?? 1;
+    const yCandidate = fixtures[0];
+    await env.DB.batch([
+      env.DB.prepare(
+        `UPDATE memories
+         SET five_axis_revision = ?
+         WHERE namespace = ? AND id = ?`
+      ).bind(sourceRevision + 1, namespace, source.id),
+      env.DB.prepare(
+        `INSERT INTO memory_five_axis_runs (
+           namespace, memory_id, memory_revision, axis, status, attempts,
+           result_json, last_error, claim_token, lease_expires_at,
+           started_at, completed_at, updated_at
+         ) VALUES (?, ?, ?, 'Y', 'pending_review', 1, NULL, NULL, NULL, NULL,
+           ?, NULL, ?)`
+      ).bind(namespace, source.id, sourceRevision, now, now),
+      env.DB.prepare(
+        `INSERT INTO memory_candidate_axis_runs (
+           namespace, candidate_external_key, memory_id, memory_revision, axis, created_at
+         ) VALUES (?, ?, ?, ?, 'Y', ?)`
+      ).bind(namespace, yCandidate.key, source.id, sourceRevision, now)
+    ]);
+
+    const audit = await runAudit(namespace);
+    expect(audit.sections.axis_runs[0]).toMatchObject({
+      axis_run_drift_rows: 0,
+      candidate_linked_stale_runs: 1,
+      operational_candidate_owned_stale_runs: 1
+    });
+    expect(audit.sections.operational_candidates[0]).toMatchObject({
+      stale_operational_candidate_rows: 3,
+      stale_y_relation_review_rows: 1,
+      stale_z_supersede_rows: 1,
+      stale_m_archive_rows: 1
+    });
+    expect(audit.drift_count).toBe(3);
+  });
 });

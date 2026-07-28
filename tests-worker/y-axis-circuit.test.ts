@@ -376,7 +376,14 @@ describe("Y-axis Worker circuit", () => {
     });
 
     await expect(approveRelationReviewCandidate(env, formFor(candidate!.id)))
-      .rejects.toThrow("relation_review_candidate_is_stale");
+      .resolves.toBeNull();
+    await expect(env.DB.prepare(
+      `SELECT status, validation_error FROM memory_candidates
+       WHERE namespace = 'default' AND id = ?`
+    ).bind(candidate!.id).first()).resolves.toMatchObject({
+      status: "rejected",
+      validation_error: "superseded_by_newer_candidate_snapshot"
+    });
   });
 
   it("rejects a reviewed relation when an endpoint becomes an original diary", async () => {
@@ -402,7 +409,14 @@ describe("Y-axis Worker circuit", () => {
     });
 
     await expect(approveRelationReviewCandidate(env, formFor(candidate!.id)))
-      .rejects.toThrow("relation_review_candidate_is_stale");
+      .resolves.toBeNull();
+    await expect(env.DB.prepare(
+      `SELECT status, validation_error FROM memory_candidates
+       WHERE namespace = 'default' AND id = ?`
+    ).bind(candidate!.id).first()).resolves.toMatchObject({
+      status: "rejected",
+      validation_error: "superseded_by_newer_candidate_snapshot"
+    });
     await expect(env.DB.prepare(
       `SELECT id FROM memory_relations
        WHERE namespace = 'default' AND source_memory_id = ? AND target_memory_id = ?

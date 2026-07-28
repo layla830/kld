@@ -4,6 +4,9 @@ import {
 import {
   activeDiarySplitSourcePredicate
 } from "../src/memory/diaryPolicyContract.js";
+import {
+  staleOperationalCandidateAuditPredicate
+} from "../src/memory/candidateSnapshotContract.js";
 
 export const AUDIT_ACTIVE_OUTBOX_STATUSES = Object.freeze(["pending", "queued", "failed"]);
 export const AUDIT_NON_TERMINAL_RUN_STATUSES = Object.freeze(["running", "failed", "pending_review"]);
@@ -244,6 +247,31 @@ export function buildInactiveFiveAxisAuditQueries(input) {
     AND ${staleRun}
     AND ${candidateLinkedRun}
   )`;
+  const staleOperationalCandidate = staleOperationalCandidateAuditPredicate("candidate");
+  const candidateHasIneligibleDependency = `EXISTS (
+    SELECT 1
+    FROM memory_candidate_dependencies AS dependency
+    JOIN memories AS memory
+      ON memory.namespace = dependency.namespace
+     AND memory.id = dependency.memory_id
+    WHERE dependency.namespace = candidate.namespace
+      AND dependency.candidate_external_key = candidate.external_key
+      AND ${inactive("memory")}
+  )`;
+  const operationalCandidateOwnedRun = `EXISTS (
+    SELECT 1
+    FROM memory_candidate_axis_runs AS owned_link
+    JOIN memory_candidates AS candidate
+      ON candidate.namespace = owned_link.namespace
+     AND candidate.external_key = owned_link.candidate_external_key
+    WHERE owned_link.namespace = run.namespace
+      AND owned_link.memory_id = run.memory_id
+      AND owned_link.memory_revision = run.memory_revision
+      AND owned_link.axis = run.axis
+      AND candidate.status IN (${sqlList(AUDIT_PENDING_CANDIDATE_STATUSES)})
+      AND ${staleOperationalCandidate}
+      AND NOT (${candidateHasIneligibleDependency})
+  )`;
   const ineligibleNonTerminalRun = `(${nonTerminalRun} AND ${inactive("memory")})`;
   const futureRevisionRun = `(${nonTerminalRun} AND ${futureRun})`;
   const axisRunDrift = `(
@@ -251,7 +279,7 @@ export function buildInactiveFiveAxisAuditQueries(input) {
     OR ${staleExpiredRunningRepairable}
     OR ${malformedOwnership}
     OR ${futureRevisionRun}
-    OR ${candidateLinkedStaleRun}
+    OR (${candidateLinkedStaleRun} AND NOT (${operationalCandidateOwnedRun}))
     OR ${ineligibleNonTerminalRun}
   )`;
 
@@ -464,6 +492,11 @@ export function buildInactiveFiveAxisAuditQueries(input) {
           THEN 1 ELSE 0 END
         ), 0) AS candidate_linked_stale_runs,
         COALESCE(SUM(CASE
+          WHEN ${candidateLinkedStaleRun}
+           AND ${operationalCandidateOwnedRun}
+          THEN 1 ELSE 0 END
+        ), 0) AS operational_candidate_owned_stale_runs,
+        COALESCE(SUM(CASE
           WHEN ${malformedOwnership}
           THEN 1 ELSE 0 END
         ), 0) AS ownership_anomalies,
@@ -505,6 +538,34 @@ export function buildInactiveFiveAxisAuditQueries(input) {
         AND ${inactive("memory")}
       GROUP BY candidate.action, dependency.role
       ORDER BY candidate.action, dependency.role`
+    },
+    {
+      name: "operational_candidates",
+      driftFields: ["stale_operational_candidate_rows"],
+      sql: `SELECT
+        COALESCE(SUM(CASE
+          WHEN ${staleOperationalCandidate}
+          THEN 1 ELSE 0 END
+        ), 0) AS stale_operational_candidate_rows,
+        COALESCE(SUM(CASE
+          WHEN candidate.action = 'y_relation_review'
+           AND ${staleOperationalCandidate}
+          THEN 1 ELSE 0 END
+        ), 0) AS stale_y_relation_review_rows,
+        COALESCE(SUM(CASE
+          WHEN candidate.action = 'z_supersede'
+           AND ${staleOperationalCandidate}
+          THEN 1 ELSE 0 END
+        ), 0) AS stale_z_supersede_rows,
+        COALESCE(SUM(CASE
+          WHEN candidate.action = 'm_archive'
+           AND ${staleOperationalCandidate}
+          THEN 1 ELSE 0 END
+        ), 0) AS stale_m_archive_rows
+      FROM memory_candidates AS candidate
+      WHERE candidate.namespace = ${namespace}
+        AND candidate.status IN (${sqlList(AUDIT_PENDING_CANDIDATE_STATUSES)})
+        AND NOT (${candidateHasIneligibleDependency})`
     },
     {
       name: "vector_state",

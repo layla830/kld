@@ -42,6 +42,7 @@ describe("inactive five-axis audit command", () => {
       "outbox",
       "axis_runs",
       "candidate_dependencies",
+      "operational_candidates",
       "vector_state",
       "deprojection_operations",
       "retention_orphans"
@@ -50,6 +51,8 @@ describe("inactive five-axis audit command", () => {
       .toEqual(["vector_drift_rows"]);
     expect(queries.find((query) => query.name === "retention_orphans")?.driftFields)
       .toEqual(["actionable_rows"]);
+    expect(queries.find((query) => query.name === "operational_candidates")?.driftFields)
+      .toEqual(["stale_operational_candidate_rows"]);
     const sql = queries.map((query) => query.sql).join("\n");
     expect(sql).toContain("failed_vector_states");
     expect(sql).toContain("vector_drift_rows");
@@ -73,6 +76,10 @@ describe("inactive five-axis audit command", () => {
     expect(sql).toContain("ownership_anomalies");
     expect(sql).toContain("running_missing_claim_token");
     expect(sql).toContain("non_running_lease_residue");
+    expect(sql).toContain("stale_operational_candidate_rows");
+    expect(sql).toContain("stale_y_relation_review_rows");
+    expect(sql).toContain("stale_z_supersede_rows");
+    expect(sql).toContain("stale_m_archive_rows");
     expect(sql).toContain("actionable_rows");
     expect(sql).toContain("historical_rows");
     expect(sql).toContain("orphan_relations");
