@@ -23,7 +23,10 @@ import {
 import { payloadOf, readFormText } from "./utils";
 import { prepareMemoryRelationInsert } from "../../db/memoryRelations";
 import { relationProvenance } from "../../db/relationProvenance";
-import { reconcileMemoryVector } from "../../memory/state";
+import {
+  reconcileMemoryVector,
+  runDiaryOriginTransitionCleanup
+} from "../../memory/state";
 import { assessCandidateQuality } from "../../memory/candidateQuality";
 import { canOverrideCandidateValidation } from "../../memory/candidateOverride";
 import { createMemoryEvent, prepareMemoryEventInsert } from "../../db/memoryEvents";
@@ -33,7 +36,10 @@ import {
   isMemoryDreamDeleteProtected
 } from "../../memory/dreamCandidatePolicy";
 import { nowIso } from "../../utils/time";
-import { prepareMemoryDeprojection } from "../../memory/deprojection";
+import {
+  finishPreparedMemoryDeprojection,
+  prepareMemoryDeprojection
+} from "../../memory/deprojection";
 import {
   applyMemoryEligibilityPatch,
   classifyMemoryEligibilityTransition
@@ -425,6 +431,7 @@ async function approveUpdateCandidate(
       id: existing.id
     });
     if (!updated) throw new Error("dream_candidate_update_target_missing");
+    await finishPreparedMemoryDeprojection(env, deprojection);
     return updated;
   }
 
@@ -439,7 +446,7 @@ async function approveUpdateCandidate(
     markVectorUnsynced: true,
     now: mutationAt
   });
-  return commitApproval(
+  const updated = await commitApproval(
     env,
     candidate,
     existing.id,
@@ -449,6 +456,8 @@ async function approveUpdateCandidate(
       binds: [candidate.namespace, existing.id, mutationAt]
     }
   );
+  if (updated) await runDiaryOriginTransitionCleanup(env, existing, updated);
+  return updated;
 }
 
 async function approveDeleteCandidate(
@@ -511,7 +520,10 @@ async function approveDeleteCandidate(
       memoryEventExistsGuard(candidate.namespace, ownershipEventId)
     )
   );
-  if (deleted) return deleted;
+  if (deleted) {
+    await finishPreparedMemoryDeprojection(env, deprojection);
+    return deleted;
+  }
   const changedTarget = await getMemoryById(env.DB, {
     namespace: candidate.namespace,
     id: candidate.target_id

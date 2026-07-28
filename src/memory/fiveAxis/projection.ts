@@ -109,6 +109,7 @@ const defaultDependencies: MemoryFiveAxisProjectionDependencies = {
       apply: true,
       ids: [memory.id],
       selection: "missing_fields",
+      expectedRevision: memory.five_axis_revision ?? 1,
       limit: 1,
       offset: 0
     }, labelCoordinateBatch);
@@ -293,7 +294,7 @@ export async function projectMemoryIntoFiveAxes(
       const result = await dependencies.projectRelations(env, input.namespace, {
         dryRun: false,
         memoryIds: [input.memoryId],
-        memoryRevision,
+        expectedRevision: memoryRevision,
         projectionKey: input.projectionKey
       });
       if (result.error) throw new Error(`y_relation_projection_failed:${result.error}`);

@@ -1,4 +1,4 @@
-import type { PreparedMemoryDeprojection, PrepareMemoryDeprojectionInput } from "../memory/deprojection";
+import type { PreparedMemoryDeprojectionCore, PrepareMemoryDeprojectionInput } from "../memory/deprojection";
 import {
   applyMemoryEligibilityPatch,
   classifyMemoryEligibilityTransition,
@@ -523,7 +523,7 @@ function invariantGuard(
 export async function prepareMemoryDeprojection(
   db: D1Database,
   input: PrepareMemoryDeprojectionInput
-): Promise<PreparedMemoryDeprojection> {
+): Promise<PreparedMemoryDeprojectionCore> {
   const next = applyMemoryEligibilityPatch(input.memory, input.patch);
   const transition: MemoryEligibilityTransition = classifyMemoryEligibilityTransition(input.memory, next);
   if (transition !== "eligible_to_ineligible") {
@@ -621,7 +621,7 @@ export async function prepareMemoryDeprojection(
 
 export function prepareMemoryDeprojectionCallerInvariant(
   db: D1Database,
-  prepared: PreparedMemoryDeprojection,
+  prepared: PreparedMemoryDeprojectionCore,
   callerInvariant: MemoryMutationGuard
 ): D1PreparedStatement {
   return db.prepare(

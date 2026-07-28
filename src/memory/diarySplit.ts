@@ -1,11 +1,11 @@
-import { createMemory } from "../db/memories";
+import { createMemory, getMemoryById } from "../db/memories";
 import { upsertMemoryCandidate } from "../db/memoryCandidates";
 import { createMemoryEvent } from "../db/memoryEvents";
 import { callOpenAICompat } from "../proxy/openaiAdapter";
 import type { Env, MemoryRecord, OpenAIChatRequest, OpenAIChatResponse } from "../types";
 import { upsertMemoryEmbedding } from "./embedding";
 import { DIARY_SPLIT_SOURCE_TYPE, isActiveDiarySplitSource } from "./diaryPolicy";
-import { reconcileMemoryVector } from "./state";
+import { mutateMemoryLifecycle, reconcileMemoryVector } from "./state";
 import {
   DIARY_SPLIT_COMPLETE_EVENT,
   hasActiveV2DiarySplitItem,
@@ -246,7 +246,7 @@ async function diaryAlreadyRescreened(
   return (row?.old_active ?? 0) === 0 && ((row?.new_active ?? 0) > 0 || (row?.old_review ?? 0) > 0);
 }
 
-async function activateRescreenedDiary(
+export async function activateRescreenedDiary(
   env: Env,
   input: { namespace: string; diaryId: string; importer: string; createdIds: string[] }
 ): Promise<string[]> {
@@ -254,35 +254,62 @@ async function activateRescreenedDiary(
   const originTag = `origin:${input.diaryId}`;
   const old = await env.DB.prepare(
     `SELECT * FROM memories
-     WHERE namespace = ? AND status = 'active'
+     WHERE namespace = ? AND status IN ('active', 'review')
        AND EXISTS (SELECT 1 FROM json_each(memories.tags) WHERE value = ?)
        AND EXISTS (SELECT 1 FROM json_each(memories.tags) WHERE value = ?)`
   ).bind(input.namespace, importerTag, originTag).all<MemoryRecord>();
 
   const now = new Date().toISOString();
-  const statements = [env.DB.prepare(
-      `UPDATE memories
-       SET status = 'review', active_fact = 0, audit_state = ?, vector_synced = 0,
-           vector_sync_status = 'pending', updated_at = ?
-       WHERE namespace = ? AND status = 'active'
-         AND EXISTS (SELECT 1 FROM json_each(memories.tags) WHERE value = ?)
-         AND EXISTS (SELECT 1 FROM json_each(memories.tags) WHERE value = ?)`
-    ).bind(`rescreened_by:v2:${now}`, now, input.namespace, importerTag, originTag)];
-  if (input.createdIds.length > 0) {
-    const placeholders = input.createdIds.map(() => "?").join(", ");
-    statements.push(env.DB.prepare(
-      `UPDATE memories
-       SET status = 'active', active_fact = 1, audit_state = 'diary_rescreen_activated',
-           vector_synced = 0, vector_sync_status = 'pending', updated_at = ?
-       WHERE namespace = ? AND status = 'review' AND id IN (${placeholders})`
-    ).bind(now, input.namespace, ...input.createdIds));
+  for (const id of input.createdIds) {
+    const memory = await getMemoryById(env.DB, { namespace: input.namespace, id });
+    if (!memory) throw new Error(`diary_rescreen_new_item_missing:${id}`);
+    if (memory.status === "active") continue;
+    const activated = await mutateMemoryLifecycle(
+      env,
+      input.namespace,
+      id,
+      {
+        status: "active",
+        activeFact: true,
+        auditState: "diary_rescreen_activated"
+      },
+      {
+        source: "system",
+        reason: "diary_rescreen_activate",
+        expectedStatus: "review",
+        expectedRevision: memory.five_axis_revision ?? 1
+      }
+    );
+    if (!activated) throw new Error(`diary_rescreen_activation_conflict:${id}`);
+    await reconcileMemoryVector(env, {
+      namespace: activated.memory.namespace,
+      memoryId: activated.memory.id
+    });
   }
-  await env.DB.batch(statements);
 
   for (const memory of old.results ?? []) {
+    if (memory.status !== "active") continue;
+    const reviewed = await mutateMemoryLifecycle(
+      env,
+      input.namespace,
+      memory.id,
+      {
+        status: "review",
+        activeFact: false,
+        auditState: `rescreened_by:v2:${now}`
+      },
+      {
+        source: "system",
+        reason: "diary_rescreen_replace",
+        operationId: `deproj_diary_rescreen_${memory.id}_${memory.five_axis_revision ?? 1}`,
+        expectedStatus: "active",
+        expectedRevision: memory.five_axis_revision ?? 1
+      }
+    );
+    if (!reviewed) throw new Error(`diary_rescreen_replacement_conflict:${memory.id}`);
     await reconcileMemoryVector(env, {
-      namespace: memory.namespace,
-      memoryId: memory.id
+      namespace: reviewed.memory.namespace,
+      memoryId: reviewed.memory.id
     });
   }
   return (old.results ?? []).map((memory) => memory.id);

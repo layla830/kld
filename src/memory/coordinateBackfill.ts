@@ -27,6 +27,7 @@ export interface CoordinateBackfillCommand {
   offset?: number;
   ids?: string[];
   selection?: CoordinateBackfillSelection;
+  expectedRevision?: number;
 }
 
 export interface CoordinateBackfillResult {
@@ -227,13 +228,23 @@ export async function runCoordinateBackfill(
     const split = splitCoordinatePatch(patch);
     const automaticFields = Object.keys(split.automatic);
     const reviewFields = Object.keys(split.review);
+    let revisionChanged = false;
 
     if (apply) {
       if (automaticFields.length > 0) {
-        const updated = await updateMemory(env.DB, { namespace, id, patch: split.automatic });
-        if (updated) applied += 1;
+        const updated = await updateMemory(env.DB, {
+          namespace,
+          id,
+          patch: split.automatic,
+          expectedRevision: command.expectedRevision ?? current.five_axis_revision ?? 1
+        });
+        if (updated) {
+          applied += 1;
+        } else {
+          revisionChanged = true;
+        }
       }
-      if (reviewFields.length > 0) {
+      if (!revisionChanged && reviewFields.length > 0) {
         const candidateExternalKey = `coordinate-backfill:${id}`;
         await upsertMemoryCandidate(env.DB, namespace, {
           externalKey: candidateExternalKey,
@@ -246,12 +257,13 @@ export async function runCoordinateBackfill(
         });
         candidateExternalKeys.push(candidateExternalKey);
         queued += 1;
-      } else {
+      } else if (!revisionChanged) {
         await dismissPendingMemoryCandidateByExternalKey(env.DB, namespace, `coordinate-backfill:${id}`);
       }
     }
 
-    const outcome = !apply ? "dry_run" : automaticFields.length > 0 && reviewFields.length > 0
+    const outcome = !apply ? "dry_run" : revisionChanged ? "revision_changed"
+      : automaticFields.length > 0 && reviewFields.length > 0
       ? "auto_and_review" : reviewFields.length > 0 ? "review" : "auto_applied";
     results.push({ id, outcome, automatic_fields: automaticFields, review_fields: reviewFields, review_reasons: split.reasons, before, proposed });
   }
