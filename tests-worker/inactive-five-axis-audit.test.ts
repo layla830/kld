@@ -549,12 +549,52 @@ describe("read-only inactive five-axis audit", () => {
     const report = await runAudit(namespace);
     expect(report.sections.timeline[0]).toMatchObject({
       membership_rows: 0,
-      diary_drift_rows: 4,
+      diary_drift_rows: 5,
+      invalid_active_diary_membership_rows: 4,
       diary_member_drift_rows: 1,
       diary_day_drift_rows: 1,
       invalid_origin_diary_rows: 2,
       origin_diary_provenance_rows: 1
     });
+  });
+
+  it("owns exhausted current-revision runs without hiding legacy failures", async () => {
+    const namespace = `audit-exhausted-runs-${crypto.randomUUID()}`;
+    const memory = await createMemory(env.DB, {
+      namespace,
+      type: "note",
+      content: "Exhausted run audit ownership",
+      status: "active"
+    });
+    const now = new Date().toISOString();
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO memory_five_axis_runs (
+           namespace, memory_id, memory_revision, axis, status, attempts,
+           result_json, last_error, claim_token, lease_expires_at,
+           started_at, completed_at, updated_at
+         ) VALUES (?, ?, ?, 'Y', 'failed', 5, NULL, 'legacy failure',
+                   NULL, NULL, ?, ?, ?)`
+      ).bind(namespace, memory.id, memory.five_axis_revision ?? 1, now, now, now),
+      env.DB.prepare(
+        `INSERT INTO memory_five_axis_runs (
+           namespace, memory_id, memory_revision, axis, status, attempts,
+           result_json, last_error, claim_token, lease_expires_at,
+           started_at, completed_at, updated_at
+         ) VALUES (?, ?, ?, 'Z', 'skipped', 5,
+                   json_object('reason', 'attempts_exhausted', 'attempts', 5),
+                   NULL, NULL, NULL, ?, ?, ?)`
+      ).bind(namespace, memory.id, memory.five_axis_revision ?? 1, now, now, now)
+    ]);
+
+    const report = await runAudit(namespace);
+    expect(report.sections.axis_runs[0]).toMatchObject({
+      axis_run_drift_rows: 2,
+      exhausted_attempt_runs: 2,
+      legacy_exhausted_failed_runs: 1,
+      terminal_exhausted_runs: 1
+    });
+    expect(report.drift_count).toBe(2);
   });
 });
 

@@ -261,12 +261,25 @@ describe("five-axis failure semantics", () => {
        WHERE id = ?`
     ).bind(outbox!.id).run();
     await env.DB.prepare(
-      `INSERT INTO memory_five_axis_runs (
+       `INSERT INTO memory_five_axis_runs (
          namespace, memory_id, memory_revision, axis, status, attempts,
          result_json, last_error, claim_token, lease_expires_at,
          started_at, completed_at, updated_at
-       ) VALUES ('default', ?, ?, 'Y', 'failed', 5, NULL, 'embedding unavailable', NULL, NULL, NULL, NULL, ?)`
-    ).bind(memory.id, outbox!.memory_revision ?? 1, new Date().toISOString()).run();
+       ) VALUES (
+         'default', ?, ?, 'Y', 'skipped', 5,
+         json_object(
+           'reason', 'attempts_exhausted',
+           'attempts', 5,
+           'last_error', 'embedding unavailable'
+         ),
+         NULL, NULL, NULL, NULL, ?, ?
+       )`
+    ).bind(
+      memory.id,
+      outbox!.memory_revision ?? 1,
+      new Date().toISOString(),
+      new Date().toISOString()
+    ).run();
 
     await expect(finalizeExhaustedFiveAxisOutbox(env.DB)).resolves.toBeGreaterThanOrEqual(1);
     const deadLetters = await listFiveAxisDeadLetters(env.DB, "default", 100);
@@ -290,7 +303,7 @@ describe("five-axis failure semantics", () => {
       outbox_id: outbox!.id,
       previous_attempts: 5,
       previous_error: "embedding unavailable",
-      axis_runs_reset: [{ axis: "Y", status: "failed", attempts: 5 }]
+      axis_runs_reset: [{ axis: "Y", status: "skipped", attempts: 5 }]
     });
 
     const runtimeEnv = {

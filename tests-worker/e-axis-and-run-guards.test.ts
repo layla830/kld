@@ -6,6 +6,7 @@ import {
   claimFiveAxisRun,
   completeFiveAxisRun,
   failFiveAxisRun,
+  FIVE_AXIS_RUN_ATTEMPTS_EXHAUSTED,
   getFiveAxisRun,
   MAX_FIVE_AXIS_RUN_ATTEMPTS,
   type FiveAxisRunKey
@@ -402,11 +403,25 @@ describe("five-axis Worker guards", () => {
         .resolves.toBe("failed");
     }
     await expect(claimFiveAxisRun(env.DB, key)).resolves.toBeNull();
-    await expect(env.DB.prepare(
-      `SELECT status, attempts FROM memory_five_axis_runs
+    const exhausted = await env.DB.prepare(
+      `SELECT status, attempts, result_json, last_error FROM memory_five_axis_runs
        WHERE namespace = ? AND memory_id = ? AND memory_revision = ? AND axis = ?`
-    ).bind(key.namespace, key.memoryId, key.memoryRevision, key.axis).first())
-      .resolves.toMatchObject({ status: "failed", attempts: MAX_FIVE_AXIS_RUN_ATTEMPTS });
+    ).bind(key.namespace, key.memoryId, key.memoryRevision, key.axis).first<{
+      status: string;
+      attempts: number;
+      result_json: string;
+      last_error: string | null;
+    }>();
+    expect(exhausted).toMatchObject({
+      status: "skipped",
+      attempts: MAX_FIVE_AXIS_RUN_ATTEMPTS,
+      last_error: null
+    });
+    expect(JSON.parse(exhausted!.result_json)).toEqual({
+      reason: FIVE_AXIS_RUN_ATTEMPTS_EXHAUSTED,
+      attempts: MAX_FIVE_AXIS_RUN_ATTEMPTS,
+      last_error: `failure-${MAX_FIVE_AXIS_RUN_ATTEMPTS}`
+    });
   });
 
   it("does not route an unknown candidate action into M approval", async () => {

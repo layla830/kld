@@ -6,6 +6,9 @@ import {
 } from "../memory/fiveAxis/eligibility";
 import { getMemoryById } from "./memories";
 import {
+  FIVE_AXIS_RUN_ATTEMPTS_EXHAUSTED
+} from "./memoryFiveAxisRuns";
+import {
   FIVE_AXIS_OUTBOX_TRANSITIONS,
   FIVE_AXIS_OUTBOX_STATUS,
   statusPlaceholders,
@@ -427,9 +430,20 @@ export async function retryFiveAxisDeadLetter(db: D1Database, namespace: string,
   const failedRuns = await db.prepare(
     `SELECT axis, status, attempts FROM memory_five_axis_runs
      WHERE namespace = ? AND memory_id = ? AND memory_revision = ?
-       AND status IN ('failed', 'running')
+       AND (
+         status IN ('failed', 'running')
+         OR (
+           status = 'skipped'
+           AND json_extract(result_json, '$.reason') = ?
+         )
+       )
      ORDER BY axis`
-  ).bind(namespace, outbox.memory_id, outbox.memory_revision ?? 1)
+  ).bind(
+    namespace,
+    outbox.memory_id,
+    outbox.memory_revision ?? 1,
+    FIVE_AXIS_RUN_ATTEMPTS_EXHAUSTED
+  )
     .all<{ axis: string; status: string; attempts: number }>();
   const now = nowIso();
   const audit = db.prepare(
@@ -453,9 +467,16 @@ export async function retryFiveAxisDeadLetter(db: D1Database, namespace: string,
   );
   const resetRuns = db.prepare(
     `UPDATE memory_five_axis_runs AS runs
-     SET status = 'failed', attempts = 0, claim_token = NULL, lease_expires_at = NULL,
-         completed_at = ?, updated_at = ?
-     WHERE runs.status IN ('failed', 'running')
+     SET status = 'failed', attempts = 0, result_json = NULL, last_error = NULL,
+         claim_token = NULL, lease_expires_at = NULL,
+         completed_at = NULL, updated_at = ?
+     WHERE (
+         runs.status IN ('failed', 'running')
+         OR (
+           runs.status = 'skipped'
+           AND json_extract(runs.result_json, '$.reason') = ?
+         )
+       )
        AND EXISTS (
          SELECT 1 FROM memory_five_axis_outbox AS outbox
          WHERE outbox.namespace = ? AND outbox.id = ? AND outbox.status = 'dead_letter'
@@ -463,7 +484,7 @@ export async function retryFiveAxisDeadLetter(db: D1Database, namespace: string,
            AND outbox.memory_id = runs.memory_id
            AND outbox.memory_revision = runs.memory_revision
        )`
-  ).bind(now, now, namespace, id);
+  ).bind(now, FIVE_AXIS_RUN_ATTEMPTS_EXHAUSTED, namespace, id);
   const resetOutbox = db.prepare(
     `UPDATE memory_five_axis_outbox
      SET status = ?, attempts = 0, queued_at = NULL, completed_at = NULL,

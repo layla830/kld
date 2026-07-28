@@ -41,6 +41,7 @@ export type CompleteFiveAxisRunOutcome =
 export type FailFiveAxisRunOutcome = "failed" | "superseded" | "not_owned";
 
 const SUPERSEDED_BY_NEWER_MEMORY_REVISION = "superseded_by_newer_memory_revision";
+export const FIVE_AXIS_RUN_ATTEMPTS_EXHAUSTED = "attempts_exhausted";
 
 export function prepareCandidateAxisRunReconciliation(
   db: D1Database,
@@ -421,7 +422,17 @@ export async function failFiveAxisRun(
   const eligibility = fiveAxisMemoryEligibilityPredicate("memory");
   const write = await db.prepare(
     `UPDATE memory_five_axis_runs
-     SET status = 'failed', result_json = NULL, last_error = ?, claim_token = NULL,
+     SET status = CASE WHEN attempts >= ? THEN 'skipped' ELSE 'failed' END,
+         result_json = CASE
+           WHEN attempts >= ? THEN json_object(
+             'reason', ?,
+             'attempts', attempts,
+             'last_error', ?
+           )
+           ELSE NULL
+         END,
+         last_error = CASE WHEN attempts >= ? THEN NULL ELSE ? END,
+         claim_token = NULL,
          lease_expires_at = NULL, completed_at = ?, updated_at = ?
      WHERE namespace = ? AND memory_id = ? AND memory_revision = ? AND axis = ?
        AND status = 'running' AND claim_token = ?
@@ -433,6 +444,11 @@ export async function failFiveAxisRun(
            AND (${eligibility.sql})
        )`
   ).bind(
+    MAX_FIVE_AXIS_RUN_ATTEMPTS,
+    MAX_FIVE_AXIS_RUN_ATTEMPTS,
+    FIVE_AXIS_RUN_ATTEMPTS_EXHAUSTED,
+    message.slice(0, 1000),
+    MAX_FIVE_AXIS_RUN_ATTEMPTS,
     message.slice(0, 1000),
     now,
     now,

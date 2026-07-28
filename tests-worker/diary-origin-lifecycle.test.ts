@@ -13,6 +13,7 @@ import {
   deleteSyncedMemory,
   patchSyncedMemory
 } from "../src/memory/state";
+import { rebuildTimelineSequenceForMemory } from "../src/memory/timelineRelations";
 import { deprojectMemoryFromFiveAxes } from "../src/memory/deprojection";
 import { activateRescreenedDiary } from "../src/memory/diarySplit";
 import type { Env, MemoryRecord } from "../src/types";
@@ -482,6 +483,90 @@ describe("diary origin lifecycle", () => {
       "SELECT COUNT(*) AS count FROM memory_diary_timeline_memberships WHERE namespace = ? AND origin_diary_id = ?",
       namespace,
       seeded.origin.id
+    )).resolves.toBe(0);
+  });
+
+  it("rebuilds old and new diary groups when an active member changes date", async () => {
+    const namespace = `diary-member-move-${crypto.randomUUID()}`;
+    const seeded = await seedDiaryDay(namespace, "2026-07-28");
+    const moved = await patchSyncedMemory(runtime(), namespace, seeded.item.id, {
+      tags: [
+        "timeline",
+        "date:2026-07-29",
+        `origin:${seeded.origin.id}`,
+        "split_version:v2"
+      ]
+    });
+
+    expect(moved).toMatchObject({ id: seeded.item.id, status: "active" });
+    await expect(count(
+      `SELECT COUNT(*) AS count
+       FROM memory_diary_timeline_memberships
+       WHERE namespace = ? AND memory_id = ? AND event_date = '2026-07-28'`,
+      namespace,
+      seeded.item.id
+    )).resolves.toBe(0);
+    await expect(env.DB.prepare(
+      `SELECT event_date, role, day_memory_id
+       FROM memory_diary_timeline_memberships
+       WHERE namespace = ? AND memory_id = ?`
+    ).bind(namespace, seeded.item.id).first()).resolves.toMatchObject({
+      event_date: "2026-07-29",
+      role: "day",
+      day_memory_id: seeded.item.id
+    });
+  });
+
+  it("clears an active timeline membership when its canonical date disappears", async () => {
+    const namespace = `timeline-member-clear-${crypto.randomUUID()}`;
+    const first = await createMemory(env.DB, {
+      namespace,
+      type: "project_state",
+      content: "First timeline state",
+      status: "active",
+      thread: "release",
+      factKey: "project:release",
+      tags: ["timeline", "date:2026-07-28"]
+    });
+    const second = await createMemory(env.DB, {
+      namespace,
+      type: "project_state",
+      content: "Second timeline state",
+      status: "active",
+      thread: "release",
+      factKey: "project:release",
+      tags: ["timeline", "date:2026-07-29"]
+    });
+    await rebuildTimelineSequenceForMemory(env.DB, first);
+    await rebuildTimelineSequenceForMemory(env.DB, second);
+    await expect(count(
+      "SELECT COUNT(*) AS count FROM memory_timeline_memberships WHERE namespace = ?",
+      namespace
+    )).resolves.toBe(2);
+    const owner = 'timeline_approved:["release","project:release"]';
+    await expect(count(
+      `SELECT COUNT(*) AS count FROM memory_relations
+       WHERE namespace = ? AND relation_type = 'temporal_sequence'
+         AND reason = ?`,
+      namespace,
+      owner
+    )).resolves.toBe(1);
+
+    await patchSyncedMemory(runtime(), namespace, first.id, {
+      tags: ["timeline"]
+    });
+
+    await expect(count(
+      "SELECT COUNT(*) AS count FROM memory_timeline_memberships WHERE namespace = ? AND memory_id = ?",
+      namespace,
+      first.id
+    )).resolves.toBe(0);
+    await expect(count(
+      `SELECT COUNT(*) AS count FROM memory_relations
+       WHERE namespace = ? AND relation_type = 'temporal_sequence'
+         AND reason = ?`,
+      namespace,
+      owner
     )).resolves.toBe(0);
   });
 
