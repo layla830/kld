@@ -4,6 +4,9 @@ import {
 import {
   activeDiarySplitSourcePredicate
 } from "../src/memory/diaryPolicyContract.js";
+import {
+  staleOperationalCandidateAuditPredicate
+} from "../src/memory/candidateSnapshotContract.js";
 
 export const AUDIT_ACTIVE_OUTBOX_STATUSES = Object.freeze(["pending", "queued", "failed"]);
 export const AUDIT_NON_TERMINAL_RUN_STATUSES = Object.freeze(["running", "failed", "pending_review"]);
@@ -244,6 +247,31 @@ export function buildInactiveFiveAxisAuditQueries(input) {
     AND ${staleRun}
     AND ${candidateLinkedRun}
   )`;
+  const staleOperationalCandidate = staleOperationalCandidateAuditPredicate("candidate");
+  const candidateHasIneligibleDependency = `EXISTS (
+    SELECT 1
+    FROM memory_candidate_dependencies AS dependency
+    JOIN memories AS memory
+      ON memory.namespace = dependency.namespace
+     AND memory.id = dependency.memory_id
+    WHERE dependency.namespace = candidate.namespace
+      AND dependency.candidate_external_key = candidate.external_key
+      AND ${inactive("memory")}
+  )`;
+  const operationalCandidateOwnedRun = `EXISTS (
+    SELECT 1
+    FROM memory_candidate_axis_runs AS owned_link
+    JOIN memory_candidates AS candidate
+      ON candidate.namespace = owned_link.namespace
+     AND candidate.external_key = owned_link.candidate_external_key
+    WHERE owned_link.namespace = run.namespace
+      AND owned_link.memory_id = run.memory_id
+      AND owned_link.memory_revision = run.memory_revision
+      AND owned_link.axis = run.axis
+      AND candidate.status IN (${sqlList(AUDIT_PENDING_CANDIDATE_STATUSES)})
+      AND ${staleOperationalCandidate}
+      AND NOT (${candidateHasIneligibleDependency})
+  )`;
   const ineligibleNonTerminalRun = `(${nonTerminalRun} AND ${inactive("memory")})`;
   const futureRevisionRun = `(${nonTerminalRun} AND ${futureRun})`;
   const axisRunDrift = `(
@@ -251,7 +279,7 @@ export function buildInactiveFiveAxisAuditQueries(input) {
     OR ${staleExpiredRunningRepairable}
     OR ${malformedOwnership}
     OR ${futureRevisionRun}
-    OR ${candidateLinkedStaleRun}
+    OR (${candidateLinkedStaleRun} AND NOT (${operationalCandidateOwnedRun}))
     OR ${ineligibleNonTerminalRun}
   )`;
 
@@ -359,10 +387,13 @@ export function buildInactiveFiveAxisAuditQueries(input) {
             ON day.namespace = membership.namespace
            AND day.id = membership.day_memory_id
           WHERE membership.namespace = ${namespace}
+            AND member.id IS NOT NULL
+            AND day.id IS NOT NULL
+            AND origin.id IS NOT NULL
             AND (
-              member.id IS NULL OR ${inactive("member")}
-              OR day.id IS NULL OR ${inactive("day")}
-              OR origin.id IS NULL OR NOT (${activeDiarySplitOriginPredicate("origin")})
+              ${inactive("member")}
+              OR ${inactive("day")}
+              OR NOT (${activeDiarySplitOriginPredicate("origin")})
             )
         ) AS diary_drift_rows,
         (
@@ -461,6 +492,11 @@ export function buildInactiveFiveAxisAuditQueries(input) {
           THEN 1 ELSE 0 END
         ), 0) AS candidate_linked_stale_runs,
         COALESCE(SUM(CASE
+          WHEN ${candidateLinkedStaleRun}
+           AND ${operationalCandidateOwnedRun}
+          THEN 1 ELSE 0 END
+        ), 0) AS operational_candidate_owned_stale_runs,
+        COALESCE(SUM(CASE
           WHEN ${malformedOwnership}
           THEN 1 ELSE 0 END
         ), 0) AS ownership_anomalies,
@@ -502,6 +538,34 @@ export function buildInactiveFiveAxisAuditQueries(input) {
         AND ${inactive("memory")}
       GROUP BY candidate.action, dependency.role
       ORDER BY candidate.action, dependency.role`
+    },
+    {
+      name: "operational_candidates",
+      driftFields: ["stale_operational_candidate_rows"],
+      sql: `SELECT
+        COALESCE(SUM(CASE
+          WHEN ${staleOperationalCandidate}
+          THEN 1 ELSE 0 END
+        ), 0) AS stale_operational_candidate_rows,
+        COALESCE(SUM(CASE
+          WHEN candidate.action = 'y_relation_review'
+           AND ${staleOperationalCandidate}
+          THEN 1 ELSE 0 END
+        ), 0) AS stale_y_relation_review_rows,
+        COALESCE(SUM(CASE
+          WHEN candidate.action = 'z_supersede'
+           AND ${staleOperationalCandidate}
+          THEN 1 ELSE 0 END
+        ), 0) AS stale_z_supersede_rows,
+        COALESCE(SUM(CASE
+          WHEN candidate.action = 'm_archive'
+           AND ${staleOperationalCandidate}
+          THEN 1 ELSE 0 END
+        ), 0) AS stale_m_archive_rows
+      FROM memory_candidates AS candidate
+      WHERE candidate.namespace = ${namespace}
+        AND candidate.status IN (${sqlList(AUDIT_PENDING_CANDIDATE_STATUSES)})
+        AND NOT (${candidateHasIneligibleDependency})`
     },
     {
       name: "vector_state",
@@ -602,6 +666,275 @@ export function buildInactiveFiveAxisAuditQueries(input) {
         ON memory.namespace = operation.namespace
        AND memory.id = operation.memory_id
       WHERE operation.namespace = ${namespace}`
+    },
+    {
+      name: "retention_orphans",
+      driftFields: ["actionable_rows"],
+      sql: `WITH candidate_dependency_orphans AS (
+        SELECT
+          dependency.candidate_external_key,
+          candidate.status AS candidate_status,
+          CASE WHEN candidate.id IS NULL THEN 1 ELSE 0 END AS candidate_missing,
+          CASE WHEN memory.id IS NULL THEN 1 ELSE 0 END AS memory_missing
+        FROM memory_candidate_dependencies AS dependency
+        LEFT JOIN memory_candidates AS candidate
+          ON candidate.namespace = dependency.namespace
+         AND candidate.external_key = dependency.candidate_external_key
+        LEFT JOIN memories AS memory
+          ON memory.namespace = dependency.namespace
+         AND memory.id = dependency.memory_id
+        WHERE dependency.namespace = ${namespace}
+          AND (candidate.id IS NULL OR memory.id IS NULL)
+      ),
+      candidate_direct_orphans AS (
+        SELECT candidate.external_key, candidate.status AS candidate_status
+        FROM memory_candidates AS candidate
+        WHERE candidate.namespace = ${namespace}
+          AND (
+            (
+              candidate.target_id IS NOT NULL
+              AND TRIM(candidate.target_id) != ''
+              AND NOT EXISTS (
+                SELECT 1 FROM memories AS memory
+                WHERE memory.namespace = candidate.namespace
+                  AND memory.id = candidate.target_id
+              )
+            )
+            OR (
+              candidate.result_memory_id IS NOT NULL
+              AND TRIM(candidate.result_memory_id) != ''
+              AND NOT EXISTS (
+                SELECT 1 FROM memories AS memory
+                WHERE memory.namespace = candidate.namespace
+                  AND memory.id = candidate.result_memory_id
+              )
+            )
+          )
+      ),
+      orphan_candidates AS (
+        SELECT candidate_external_key AS external_key, candidate_status
+        FROM candidate_dependency_orphans
+        WHERE candidate_missing = 0 AND memory_missing = 1
+        UNION
+        SELECT external_key, candidate_status
+        FROM candidate_direct_orphans
+      ),
+      orphan_counts AS (
+        SELECT
+          (
+            SELECT COUNT(*)
+            FROM memory_relations AS relation
+            WHERE relation.namespace = ${namespace}
+              AND (
+                NOT EXISTS (
+                  SELECT 1 FROM memories AS memory
+                  WHERE memory.namespace = relation.namespace
+                    AND memory.id = relation.source_memory_id
+                )
+                OR NOT EXISTS (
+                  SELECT 1 FROM memories AS memory
+                  WHERE memory.namespace = relation.namespace
+                    AND memory.id = relation.target_memory_id
+                )
+              )
+          ) AS orphan_relations,
+          (
+            SELECT COUNT(*)
+            FROM memory_timeline_memberships AS membership
+            WHERE membership.namespace = ${namespace}
+              AND NOT EXISTS (
+                SELECT 1 FROM memories AS memory
+                WHERE memory.namespace = membership.namespace
+                  AND memory.id = membership.memory_id
+              )
+          ) AS orphan_timeline_memberships,
+          (
+            SELECT COUNT(*)
+            FROM memory_diary_timeline_memberships AS membership
+            WHERE membership.namespace = ${namespace}
+              AND (
+                NOT EXISTS (
+                  SELECT 1 FROM memories AS memory
+                  WHERE memory.namespace = membership.namespace
+                    AND memory.id = membership.memory_id
+                )
+                OR NOT EXISTS (
+                  SELECT 1 FROM memories AS memory
+                  WHERE memory.namespace = membership.namespace
+                    AND memory.id = membership.origin_diary_id
+                )
+                OR NOT EXISTS (
+                  SELECT 1 FROM memories AS memory
+                  WHERE memory.namespace = membership.namespace
+                    AND memory.id = membership.day_memory_id
+                )
+              )
+          ) AS orphan_diary_timeline_memberships,
+          (
+            SELECT COUNT(*)
+            FROM memory_five_axis_outbox AS outbox
+            WHERE outbox.namespace = ${namespace}
+              AND NOT EXISTS (
+                SELECT 1 FROM memories AS memory
+                WHERE memory.namespace = outbox.namespace
+                  AND memory.id = outbox.memory_id
+              )
+          ) AS orphan_outbox_rows,
+          (
+            SELECT COUNT(*)
+            FROM memory_five_axis_runs AS run
+            WHERE run.namespace = ${namespace}
+              AND NOT EXISTS (
+                SELECT 1 FROM memories AS memory
+                WHERE memory.namespace = run.namespace
+                  AND memory.id = run.memory_id
+              )
+          ) AS orphan_axis_runs,
+          (
+            SELECT COUNT(*)
+            FROM memory_candidate_axis_runs AS link
+            WHERE link.namespace = ${namespace}
+              AND (
+                NOT EXISTS (
+                  SELECT 1 FROM memories AS memory
+                  WHERE memory.namespace = link.namespace
+                    AND memory.id = link.memory_id
+                )
+                OR NOT EXISTS (
+                  SELECT 1 FROM memory_five_axis_runs AS run
+                  WHERE run.namespace = link.namespace
+                    AND run.memory_id = link.memory_id
+                    AND run.memory_revision = link.memory_revision
+                    AND run.axis = link.axis
+                )
+                OR NOT EXISTS (
+                  SELECT 1 FROM memory_candidates AS candidate
+                  WHERE candidate.namespace = link.namespace
+                    AND candidate.external_key = link.candidate_external_key
+                )
+              )
+          ) AS orphan_candidate_axis_run_links,
+          (
+            SELECT COUNT(*)
+            FROM candidate_dependency_orphans
+            WHERE candidate_missing = 1
+               OR candidate_status IN (${sqlList(AUDIT_PENDING_CANDIDATE_STATUSES)})
+          ) AS actionable_candidate_dependency_rows,
+          (
+            SELECT COUNT(*)
+            FROM candidate_dependency_orphans
+            WHERE candidate_missing = 0
+              AND memory_missing = 1
+              AND candidate_status NOT IN (${sqlList(AUDIT_PENDING_CANDIDATE_STATUSES)})
+          ) AS historical_candidate_dependency_rows,
+          (
+            SELECT COUNT(*)
+            FROM candidate_direct_orphans
+            WHERE candidate_status IN (${sqlList(AUDIT_PENDING_CANDIDATE_STATUSES)})
+          ) AS actionable_candidate_rows,
+          (
+            SELECT COUNT(*)
+            FROM candidate_direct_orphans
+            WHERE candidate_status NOT IN (${sqlList(AUDIT_PENDING_CANDIDATE_STATUSES)})
+          ) AS historical_candidate_rows,
+          (
+            SELECT COUNT(*)
+            FROM orphan_candidates
+            WHERE candidate_status IN (${sqlList(AUDIT_PENDING_CANDIDATE_STATUSES)})
+          ) AS distinct_actionable_candidates,
+          (
+            SELECT COUNT(*)
+            FROM orphan_candidates
+            WHERE candidate_status NOT IN (${sqlList(AUDIT_PENDING_CANDIDATE_STATUSES)})
+          ) AS distinct_historical_candidates,
+          (
+            SELECT COUNT(*)
+            FROM memory_metabolism_signal_state AS signal
+            WHERE signal.namespace = ${namespace}
+              AND NOT EXISTS (
+                SELECT 1 FROM memories AS memory
+                WHERE memory.namespace = signal.namespace
+                  AND memory.id = signal.memory_id
+              )
+          ) AS orphan_metabolism_signal_states,
+          (
+            SELECT COUNT(*)
+            FROM memory_recall_daily AS daily
+            WHERE daily.namespace = ${namespace}
+              AND NOT EXISTS (
+                SELECT 1 FROM memories AS memory
+                WHERE memory.namespace = daily.namespace
+                  AND memory.id = daily.memory_id
+              )
+          ) AS orphan_recall_daily_rows,
+          (
+            SELECT COUNT(*)
+            FROM memory_recall_receipts AS receipt
+            WHERE receipt.namespace = ${namespace}
+              AND NOT EXISTS (
+                SELECT 1 FROM memories AS memory
+                WHERE memory.namespace = receipt.namespace
+                  AND memory.id = receipt.memory_id
+              )
+          ) AS orphan_recall_receipts,
+          (
+            SELECT COUNT(*)
+            FROM memory_events AS event
+            WHERE event.namespace = ${namespace}
+              AND event.memory_id IS NOT NULL
+              AND NOT EXISTS (
+                SELECT 1 FROM memories AS memory
+                WHERE memory.namespace = event.namespace
+                  AND memory.id = event.memory_id
+              )
+          ) AS historical_memory_event_rows,
+          (
+            SELECT COUNT(*)
+            FROM memory_deprojections AS operation
+            WHERE operation.namespace = ${namespace}
+              AND (
+                operation.completed_at IS NULL
+                OR operation.invariants_verified != 1
+              )
+              AND NOT EXISTS (
+                SELECT 1 FROM memories AS memory
+                WHERE memory.namespace = operation.namespace
+                  AND memory.id = operation.memory_id
+              )
+          ) AS actionable_deprojection_rows,
+          (
+            SELECT COUNT(*)
+            FROM memory_deprojections AS operation
+            WHERE operation.namespace = ${namespace}
+              AND operation.completed_at IS NOT NULL
+              AND operation.invariants_verified = 1
+              AND NOT EXISTS (
+                SELECT 1 FROM memories AS memory
+                WHERE memory.namespace = operation.namespace
+                  AND memory.id = operation.memory_id
+              )
+          ) AS historical_deprojection_rows
+      )
+      SELECT *,
+        orphan_relations
+        + orphan_timeline_memberships
+        + orphan_diary_timeline_memberships
+        + orphan_outbox_rows
+        + orphan_axis_runs
+        + orphan_candidate_axis_run_links
+        + actionable_candidate_dependency_rows
+        + actionable_candidate_rows
+        + orphan_metabolism_signal_states
+        + orphan_recall_daily_rows
+        + orphan_recall_receipts
+        + actionable_deprojection_rows
+          AS actionable_rows,
+        historical_candidate_dependency_rows
+        + historical_candidate_rows
+        + historical_memory_event_rows
+        + historical_deprojection_rows
+          AS historical_rows
+      FROM orphan_counts`
     }
   ];
 }

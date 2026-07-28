@@ -6,6 +6,10 @@ import {
   prepareCandidateAxisRunReconciliationByExternalKey
 } from "./memoryFiveAxisRuns";
 import {
+  PENDING_MEMORY_CANDIDATE_STATUSES,
+  RECONCILABLE_CANDIDATE_RUN_STATUSES,
+  SUPERSEDED_CANDIDATE_SNAPSHOT_REASON,
+  candidateReviewStatusSql,
   prepareMemoryCandidateDependencyReplacement,
   type MemoryCandidateDeclaredDependency
 } from "./memoryCandidateDependencies";
@@ -54,8 +58,63 @@ export interface CandidateInput {
   dependencies?: readonly MemoryCandidateDeclaredDependency[];
 }
 
-export async function upsertMemoryCandidate(db: D1Database, namespace: string, input: CandidateInput): Promise<void> {
-  const now = nowIso();
+export type OperationalCandidateFamily =
+  | {
+      action: "y_relation_review";
+      relationType: string;
+      sourceMemoryId: string;
+      targetMemoryId: string;
+    }
+  | {
+      action: "m_archive";
+      targetMemoryId: string;
+    }
+  | {
+      action: "z_supersede";
+      factKey: string;
+    };
+
+function sqlStringList(values: readonly string[]): string {
+  return values.map((value) => `'${value.replaceAll("'", "''")}'`).join(", ");
+}
+
+function operationalCandidateFamilySelection(
+  family: OperationalCandidateFamily,
+  candidateAlias: string
+): { sql: string; binds: unknown[] } {
+  if (family.action === "y_relation_review") {
+    return {
+      sql: `${candidateAlias}.action = 'y_relation_review'
+        AND json_extract(${candidateAlias}.payload_json, '$.relation_type') = ?
+        AND json_extract(${candidateAlias}.payload_json, '$.source_id') = ?
+        AND json_extract(${candidateAlias}.payload_json, '$.target_id') = ?`,
+      binds: [
+        family.relationType,
+        family.sourceMemoryId,
+        family.targetMemoryId
+      ]
+    };
+  }
+  if (family.action === "m_archive") {
+    return {
+      sql: `${candidateAlias}.action = 'm_archive'
+        AND ${candidateAlias}.target_id = ?`,
+      binds: [family.targetMemoryId]
+    };
+  }
+  return {
+    sql: `${candidateAlias}.action = 'z_supersede'
+      AND json_extract(${candidateAlias}.payload_json, '$.fact_key') = ?`,
+    binds: [family.factKey]
+  };
+}
+
+function prepareMemoryCandidateUpsert(
+  db: D1Database,
+  namespace: string,
+  input: CandidateInput,
+  now: string
+): D1PreparedStatement[] {
   const candidateWrite = db.prepare(
     `INSERT INTO memory_candidates
       (id, namespace, external_key, dream_date, action, subject, target_id, payload_json,
@@ -81,7 +140,7 @@ export async function upsertMemoryCandidate(db: D1Database, namespace: string, i
         candidate.memoryId === dependency.memoryId && candidate.role === dependency.role
       ) === index
   );
-  await db.batch([
+  return [
     candidateWrite,
     ...prepareMemoryCandidateDependencyReplacement(
       db,
@@ -89,7 +148,95 @@ export async function upsertMemoryCandidate(db: D1Database, namespace: string, i
       input.externalKey,
       dependencies
     )
+  ];
+}
+
+export async function upsertMemoryCandidate(db: D1Database, namespace: string, input: CandidateInput): Promise<void> {
+  await db.batch(prepareMemoryCandidateUpsert(db, namespace, input, nowIso()));
+}
+
+export async function replacePendingOperationalCandidateFamily(
+  db: D1Database,
+  namespace: string,
+  family: OperationalCandidateFamily,
+  inputs: readonly CandidateInput[]
+): Promise<{ candidateExternalKeys: string[]; superseded: number }> {
+  if (inputs.some((input) => input.action !== family.action)) {
+    throw new Error("operational_candidate_family_action_mismatch");
+  }
+  const now = nowIso();
+  const candidateExternalKeys = [...new Set(
+    inputs.map((input) => input.externalKey.trim()).filter(Boolean)
+  )];
+  const desiredKeysJson = JSON.stringify(candidateExternalKeys);
+  const familySelection = operationalCandidateFamilySelection(family, "candidate");
+  const pendingStatuses = sqlStringList(PENDING_MEMORY_CANDIDATE_STATUSES);
+  const rejection = db.prepare(
+    `UPDATE memory_candidates AS candidate
+     SET status = 'rejected',
+         validation_error = ?,
+         resolved_at = ?,
+         updated_at = ?
+     WHERE candidate.namespace = ?
+       AND candidate.status IN (${pendingStatuses})
+       AND (${familySelection.sql})
+       AND NOT EXISTS (
+         SELECT 1 FROM json_each(?) AS desired
+         WHERE desired.value = candidate.external_key
+       )`
+  ).bind(
+    SUPERSEDED_CANDIDATE_SNAPSHOT_REASON,
+    now,
+    now,
+    namespace,
+    ...familySelection.binds,
+    desiredKeysJson
+  );
+  const rejectedFamilySelection = operationalCandidateFamilySelection(family, "candidate");
+  const reconcile = db.prepare(
+    `UPDATE memory_five_axis_runs AS runs
+     SET status = ${candidateReviewStatusSql("runs")},
+         claim_token = NULL,
+         lease_expires_at = NULL,
+         completed_at = ?,
+         updated_at = ?
+     WHERE runs.status IN (${sqlStringList(RECONCILABLE_CANDIDATE_RUN_STATUSES)})
+       AND EXISTS (
+         SELECT 1
+         FROM memory_candidate_axis_runs AS link
+         JOIN memory_candidates AS candidate
+           ON candidate.namespace = link.namespace
+          AND candidate.external_key = link.candidate_external_key
+         WHERE link.namespace = runs.namespace
+           AND link.memory_id = runs.memory_id
+           AND link.memory_revision = runs.memory_revision
+           AND link.axis = runs.axis
+           AND candidate.namespace = ?
+           AND candidate.status = 'rejected'
+           AND candidate.validation_error = ?
+           AND candidate.resolved_at = ?
+           AND (${rejectedFamilySelection.sql})
+       )`
+  ).bind(
+    now,
+    now,
+    namespace,
+    SUPERSEDED_CANDIDATE_SNAPSHOT_REASON,
+    now,
+    ...rejectedFamilySelection.binds
+  );
+  const candidateWrites = inputs.flatMap((input) =>
+    prepareMemoryCandidateUpsert(db, namespace, input, now)
+  );
+  const results = await db.batch([
+    ...candidateWrites,
+    rejection,
+    reconcile
   ]);
+  return {
+    candidateExternalKeys,
+    superseded: results[candidateWrites.length]?.meta.changes ?? 0
+  };
 }
 
 export async function listMemoryCandidates(db: D1Database, namespace: string, limit = 100): Promise<MemoryCandidateRecord[]> {

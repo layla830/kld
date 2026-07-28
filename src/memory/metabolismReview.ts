@@ -1,4 +1,7 @@
-import { upsertMemoryCandidate } from "../db/memoryCandidates";
+import {
+  replacePendingOperationalCandidateFamily,
+  upsertMemoryCandidate
+} from "../db/memoryCandidates";
 import { SYMMETRIC_RELATION_TYPES } from "../db/memoryRelations";
 import type { MemoryRecord } from "../types";
 
@@ -33,6 +36,28 @@ interface QueuedCandidates {
   candidateExternalKeys: string[];
 }
 
+function archiveCandidatePredicate(alias: string): string {
+  return `${alias}.status = 'active' AND ${alias}.pinned = 0
+    AND (
+      (${alias}.type = 'project_state' AND ${alias}.expires_at IS NOT NULL AND ${alias}.expires_at < ?)
+      OR (
+        ${alias}.type NOT IN ('identity','relationship_moment','diary','layla_diary','auto_diary')
+        AND ${alias}.created_at < ?
+        AND COALESCE(${alias}.last_recalled_at, ${alias}.created_at) < ?
+        AND ${alias}.recall_count = 0
+        AND ${alias}.importance <= ? AND ${alias}.confidence <= ?
+        AND NOT EXISTS (
+          SELECT 1 FROM memory_relations AS relation
+          WHERE relation.namespace = ${alias}.namespace
+            AND (
+              relation.source_memory_id = ${alias}.id
+              OR relation.target_memory_id = ${alias}.id
+            )
+        )
+      )
+    )`;
+}
+
 async function queueArchiveCandidates(
   env: { DB: D1Database },
   namespace: string,
@@ -45,22 +70,7 @@ async function queueArchiveCandidates(
   const idClause = ids.length > 0 ? ` AND id IN (${ids.map(() => "?").join(", ")})` : "";
   const rows = await env.DB.prepare(
     `SELECT * FROM memories
-     WHERE namespace = ? AND status = 'active' AND pinned = 0
-       AND (
-         (type = 'project_state' AND expires_at IS NOT NULL AND expires_at < ?)
-         OR (
-           type NOT IN ('identity','relationship_moment','diary','layla_diary','auto_diary')
-           AND created_at < ?
-           AND COALESCE(last_recalled_at, created_at) < ?
-           AND recall_count = 0
-           AND importance <= ? AND confidence <= ?
-           AND NOT EXISTS (
-             SELECT 1 FROM memory_relations r
-             WHERE r.namespace = memories.namespace
-               AND (r.source_memory_id = memories.id OR r.target_memory_id = memories.id)
-           )
-         )
-       )
+     WHERE namespace = ? AND (${archiveCandidatePredicate("memories")})
        ${idClause}
      ORDER BY COALESCE(last_recalled_at, created_at) ASC
      LIMIT 50`
@@ -82,7 +92,10 @@ async function queueArchiveCandidates(
       ? "expired_project_state"
       : "cold_low_signal";
     const candidateExternalKey = `m-review:archive:${policy}:${memory.id}:${memory.updated_at}`;
-    if (!dryRun) await upsertMemoryCandidate(env.DB, namespace, {
+    if (!dryRun) await replacePendingOperationalCandidateFamily(env.DB, namespace, {
+      action: "m_archive",
+      targetMemoryId: memory.id
+    }, [{
       externalKey: candidateExternalKey,
       dreamDate: dateKey(),
       action: "m_archive",
@@ -99,9 +112,52 @@ async function queueArchiveCandidates(
       },
       sourceChunkIds: [],
       status: "pending"
-    });
+    }]);
     if (!dryRun) candidateExternalKeys.push(candidateExternalKey);
     queued += 1;
+  }
+  if (!dryRun) {
+    const pendingScope = ids.length > 0
+      ? ` AND target_id IN (${ids.map(() => "?").join(", ")})`
+      : "";
+    const pending = await env.DB.prepare(
+      `SELECT DISTINCT target_id
+       FROM memory_candidates
+       WHERE namespace = ?
+         AND action = 'm_archive'
+         AND status IN ('pending', 'needs_subject_review', 'deferred_relation')
+         AND target_id IS NOT NULL
+         AND TRIM(target_id) != ''
+         ${pendingScope}
+       ORDER BY target_id
+       LIMIT 50`
+    ).bind(namespace, ...ids).all<{ target_id: string }>();
+    const pendingTargetIds = (pending.results ?? []).map((row) => row.target_id);
+    if (pendingTargetIds.length > 0) {
+      const placeholders = pendingTargetIds.map(() => "?").join(", ");
+      const current = await env.DB.prepare(
+        `SELECT id FROM memories
+         WHERE namespace = ?
+           AND (${archiveCandidatePredicate("memories")})
+           AND id IN (${placeholders})`
+      ).bind(
+        namespace,
+        now,
+        coldBefore,
+        coldBefore,
+        COLD_MEMORY_MAX_IMPORTANCE,
+        COLD_MEMORY_MAX_CONFIDENCE,
+        ...pendingTargetIds
+      ).all<{ id: string }>();
+      const currentTargetIds = new Set((current.results ?? []).map((row) => row.id));
+      for (const targetMemoryId of pendingTargetIds) {
+        if (currentTargetIds.has(targetMemoryId)) continue;
+        await replacePendingOperationalCandidateFamily(env.DB, namespace, {
+          action: "m_archive",
+          targetMemoryId
+        }, []);
+      }
+    }
   }
   return { count: queued, candidateExternalKeys };
 }

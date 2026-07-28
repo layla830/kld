@@ -235,6 +235,173 @@ describe("read-only inactive five-axis audit", () => {
     });
   });
 
+  it("separates actionable orphans from retained historical references", async () => {
+    const namespace = `retention-orphan-audit-${crypto.randomUUID()}`;
+    const missingMemoryId = `missing_${crypto.randomUUID()}`;
+    const candidateKey = `orphan-candidate:${crypto.randomUUID()}`;
+    const pendingMemoryId = `pending_${crypto.randomUUID()}`;
+    const pendingCandidateKey = `pending-orphan-candidate:${crypto.randomUUID()}`;
+    const now = "2026-07-28T00:00:00.000Z";
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO memory_relations (
+           id, namespace, source_memory_id, target_memory_id,
+           relation_type, strength, reason, created_at
+         ) VALUES (?, ?, ?, ?, 'same_topic', 1, 'orphan fixture', ?)`
+      ).bind(
+        `relation_${crypto.randomUUID()}`,
+        namespace,
+        missingMemoryId,
+        `also_${missingMemoryId}`,
+        now
+      ),
+      env.DB.prepare(
+        `INSERT INTO memory_timeline_memberships (
+           namespace, memory_id, thread, fact_key, updated_at
+         ) VALUES (?, ?, 'orphan', 'orphan.fact', ?)`
+      ).bind(namespace, missingMemoryId, now),
+      env.DB.prepare(
+        `INSERT INTO memory_diary_timeline_memberships (
+           namespace, memory_id, origin_diary_id, timeline_key,
+           event_date, role, day_memory_id, updated_at
+         ) VALUES (?, ?, ?, 'orphan:test', '2026-07-28', 'item', ?, ?)`
+      ).bind(namespace, missingMemoryId, missingMemoryId, missingMemoryId, now),
+      env.DB.prepare(
+        `INSERT INTO memory_five_axis_outbox (
+           namespace, memory_id, memory_updated_at, memory_revision,
+           status, attempts, created_at, updated_at
+         ) VALUES (?, ?, ?, 1, 'skipped', 0, ?, ?)`
+      ).bind(namespace, missingMemoryId, now, now, now),
+      env.DB.prepare(
+        `INSERT INTO memory_five_axis_runs (
+           namespace, memory_id, memory_revision, axis, status, attempts, updated_at
+         ) VALUES (?, ?, 1, 'X', 'skipped', 0, ?)`
+      ).bind(namespace, missingMemoryId, now),
+      env.DB.prepare(
+        `INSERT INTO memory_candidates (
+           id, namespace, external_key, dream_date, action, target_id,
+           payload_json, source_chunk_ids_json, source_chunks_json,
+           status, created_at, updated_at
+         ) VALUES (?, ?, ?, '2026-07-28', 'update', ?, '{}', '[]', '[]', 'rejected', ?, ?)`
+      ).bind(
+        `candidate_${crypto.randomUUID()}`,
+        namespace,
+        candidateKey,
+        missingMemoryId,
+        now,
+        now
+      ),
+      env.DB.prepare(
+        `INSERT INTO memory_candidates (
+           id, namespace, external_key, dream_date, action, target_id,
+           payload_json, source_chunk_ids_json, source_chunks_json,
+           status, created_at, updated_at
+         ) VALUES (?, ?, ?, '2026-07-28', 'update', ?, '{}', '[]', '[]', 'pending', ?, ?)`
+      ).bind(
+        `candidate_${crypto.randomUUID()}`,
+        namespace,
+        pendingCandidateKey,
+        pendingMemoryId,
+        now,
+        now
+      ),
+      env.DB.prepare(
+        `INSERT INTO memory_metabolism_signal_state (
+           namespace, memory_id, policy_key, band, payload_json,
+           first_observed_at, updated_at
+         ) VALUES (?, ?, 'orphan', 'cooled_after_use', '{}', ?, ?)`
+      ).bind(namespace, missingMemoryId, now, now),
+      env.DB.prepare(
+        `INSERT INTO memory_recall_receipts (
+           namespace, operation_id, memory_id, source,
+           recall_day, recalled_at, created_at
+         ) VALUES (?, ?, ?, 'api_context', '2026-07-28', ?, ?)`
+      ).bind(namespace, `recall_${crypto.randomUUID()}`, missingMemoryId, now, now),
+      env.DB.prepare(
+        `INSERT INTO memory_events (
+           id, namespace, event_type, memory_id, payload_json, created_at
+         ) VALUES (?, ?, 'orphan_fixture', ?, '{}', ?)`
+      ).bind(`event_${crypto.randomUUID()}`, namespace, missingMemoryId, now),
+      env.DB.prepare(
+        `INSERT INTO memory_deprojections (
+           operation_id, namespace, memory_id, source, reason,
+           intent_fingerprint, transition,
+           previous_status, next_status, previous_type, next_type,
+           previous_active_fact, next_active_fact,
+           previous_revision, current_revision, created_at
+         ) VALUES (
+           ?, ?, ?, 'system', 'orphan fixture',
+           ?, 'eligible_to_ineligible',
+           'active', 'deleted', 'note', 'note',
+           1, 0, 1, 2, ?
+         )`
+      ).bind(
+        `deprojection_${crypto.randomUUID()}`,
+        namespace,
+        missingMemoryId,
+        "b".repeat(64),
+        now
+      ),
+      env.DB.prepare(
+        `INSERT INTO memory_deprojections (
+           operation_id, namespace, memory_id, source, reason,
+           intent_fingerprint, transition,
+           previous_status, next_status, previous_type, next_type,
+           previous_active_fact, next_active_fact,
+           previous_revision, current_revision,
+           invariants_verified, created_at, completed_at
+         ) VALUES (
+           ?, ?, ?, 'system', 'completed orphan fixture',
+           ?, 'eligible_to_ineligible',
+           'active', 'deleted', 'note', 'note',
+           1, 0, 2, 3, 1, ?, ?
+         )`
+      ).bind(
+        `deprojection_${crypto.randomUUID()}`,
+        namespace,
+        missingMemoryId,
+        "c".repeat(64),
+        now,
+        now
+      )
+    ]);
+    await env.DB.prepare(
+      `INSERT INTO memory_candidate_dependencies (
+         namespace, candidate_external_key, memory_id, role
+       ) VALUES (?, ?, ?, 'target')`
+    ).bind(namespace, candidateKey, missingMemoryId).run();
+    await env.DB.prepare(
+      `INSERT INTO memory_candidate_dependencies (
+         namespace, candidate_external_key, memory_id, role
+       ) VALUES (?, ?, ?, 'target')`
+    ).bind(namespace, pendingCandidateKey, pendingMemoryId).run();
+
+    const report = await runAudit(namespace);
+    expect(report.sections.retention_orphans[0]).toMatchObject({
+      orphan_relations: 1,
+      orphan_timeline_memberships: 1,
+      orphan_diary_timeline_memberships: 1,
+      orphan_outbox_rows: 1,
+      orphan_axis_runs: 1,
+      orphan_candidate_axis_run_links: 0,
+      actionable_candidate_dependency_rows: 1,
+      historical_candidate_dependency_rows: 1,
+      actionable_candidate_rows: 1,
+      historical_candidate_rows: 1,
+      distinct_actionable_candidates: 1,
+      distinct_historical_candidates: 1,
+      orphan_metabolism_signal_states: 1,
+      orphan_recall_daily_rows: 1,
+      orphan_recall_receipts: 1,
+      historical_memory_event_rows: 1,
+      actionable_deprojection_rows: 1,
+      historical_deprojection_rows: 1,
+      actionable_rows: 11,
+      historical_rows: 4
+    });
+    expect(report.drift_count).toBe(11);
+  });
+
   it("classifies relation provenance without double-counting stale unproven rows", async () => {
     const namespace = `relation-provenance-${crypto.randomUUID()}`;
     const now = new Date().toISOString();
@@ -595,5 +762,145 @@ describe("bounded inactive five-axis D1 repair", () => {
       lease_expires_at: expired
     });
     expect(byMemory.get(linkedMemory.id)).toMatchObject({ status: "failed" });
+  });
+
+  it("counts stale operational candidates once with an action breakdown", async () => {
+    const namespace = `inactive-candidate-audit-${crypto.randomUUID()}`;
+    const now = new Date().toISOString();
+    const [source, target, archive] = await Promise.all([
+      createMemory(env.DB, {
+        namespace,
+        type: "project_state",
+        content: "stale candidate source",
+        status: "active"
+      }),
+      createMemory(env.DB, {
+        namespace,
+        type: "project_state",
+        content: "stale candidate target",
+        status: "active"
+      }),
+      createMemory(env.DB, {
+        namespace,
+        type: "project_state",
+        content: "stale archive target",
+        status: "active"
+      })
+    ]);
+    const fixtures = [
+      {
+        id: `candidate_${crypto.randomUUID()}`,
+        key: `y-review:${crypto.randomUUID()}`,
+        action: "y_relation_review",
+        targetId: target.id,
+        payload: {
+          relation_type: "supports",
+          source_id: source.id,
+          target_id: target.id,
+          source_revision: source.five_axis_revision ?? 1,
+          target_revision: target.five_axis_revision ?? 1,
+          source_updated_at: source.updated_at,
+          target_updated_at: target.updated_at
+        },
+        dependencies: [
+          { memoryId: source.id, role: "source" },
+          { memoryId: target.id, role: "target" }
+        ]
+      },
+      {
+        id: `candidate_${crypto.randomUUID()}`,
+        key: `z-review:${crypto.randomUUID()}`,
+        action: "z_supersede",
+        targetId: target.id,
+        payload: {
+          fact_key: "audit:stale-z",
+          best: { id: source.id, updated_at: "2020-01-01T00:00:00.000Z" },
+          weaker: { id: target.id, updated_at: target.updated_at }
+        },
+        dependencies: [
+          { memoryId: source.id, role: "source" },
+          { memoryId: target.id, role: "target" }
+        ]
+      },
+      {
+        id: `candidate_${crypto.randomUUID()}`,
+        key: `m-review:${crypto.randomUUID()}`,
+        action: "m_archive",
+        targetId: archive.id,
+        payload: {
+          before: { id: archive.id, updated_at: "2020-01-01T00:00:00.000Z" }
+        },
+        dependencies: [
+          { memoryId: archive.id, role: "target" }
+        ]
+      }
+    ];
+    for (const fixture of fixtures) {
+      await env.DB.batch([
+        env.DB.prepare(
+          `INSERT INTO memory_candidates (
+             id, namespace, external_key, dream_date, action, subject, target_id,
+             payload_json, source_chunk_ids_json, source_chunks_json,
+             status, created_at, updated_at
+           ) VALUES (?, ?, ?, '2026-07-28', ?, 'system', ?, ?, '[]', '[]',
+             'pending', ?, ?)`
+        ).bind(
+          fixture.id,
+          namespace,
+          fixture.key,
+          fixture.action,
+          fixture.targetId,
+          JSON.stringify(fixture.payload),
+          now,
+          now
+        ),
+        ...fixture.dependencies.map((dependency) => env.DB.prepare(
+          `INSERT INTO memory_candidate_dependencies (
+             namespace, candidate_external_key, memory_id, role
+           ) VALUES (?, ?, ?, ?)`
+        ).bind(namespace, fixture.key, dependency.memoryId, dependency.role))
+      ]);
+    }
+    const sourceRevision = source.five_axis_revision ?? 1;
+    const yCandidate = fixtures[0];
+    await env.DB.batch([
+      env.DB.prepare(
+        `UPDATE memories
+         SET five_axis_revision = ?
+         WHERE namespace = ? AND id = ?`
+      ).bind(sourceRevision + 1, namespace, source.id),
+      env.DB.prepare(
+        `UPDATE memories
+         SET five_axis_revision = five_axis_revision + 1
+         WHERE namespace = ? AND id = ?`
+      ).bind(namespace, target.id),
+      env.DB.prepare(
+        `INSERT INTO memory_five_axis_runs (
+           namespace, memory_id, memory_revision, axis, status, attempts,
+           result_json, last_error, claim_token, lease_expires_at,
+           started_at, completed_at, updated_at
+         ) VALUES (?, ?, ?, 'Y', 'pending_review', 1, NULL, NULL, NULL, NULL,
+           ?, NULL, ?)`
+      ).bind(namespace, source.id, sourceRevision, now, now),
+      env.DB.prepare(
+        `INSERT INTO memory_candidate_axis_runs (
+           namespace, candidate_external_key, memory_id, memory_revision, axis, created_at
+         ) VALUES (?, ?, ?, ?, 'Y', ?)`
+      ).bind(namespace, yCandidate.key, source.id, sourceRevision, now)
+    ]);
+
+    const audit = await runAudit(namespace);
+    expect(audit.sections.axis_runs[0]).toMatchObject({
+      axis_run_drift_rows: 0,
+      candidate_linked_stale_runs: 1,
+      operational_candidate_owned_stale_runs: 1
+    });
+    expect(audit.sections.operational_candidates[0]).toMatchObject({
+      stale_operational_candidate_rows: 3,
+      stale_y_relation_review_rows: 1,
+      stale_z_supersede_rows: 1,
+      stale_m_archive_rows: 1
+    });
+    expect(audit.drift_count).toBe(3);
   });
 });
