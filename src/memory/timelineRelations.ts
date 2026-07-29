@@ -45,6 +45,7 @@ async function rebuildTimelineGroup(
     `SELECT * FROM memories
      WHERE namespace = ? AND status = 'active' AND thread = ? AND fact_key = ?
        AND type NOT IN ('diary', 'layla_diary', 'auto_diary', 'dream_review')
+       AND (source IS NULL OR source != 'timeline_split')
        AND tags LIKE '%"date:%'`
   ).bind(namespace, group.thread, group.factKey).all<MemoryRecord>();
   const dated = (rows.results ?? [])
@@ -87,7 +88,8 @@ export async function rebuildTimelineSequenceForMemory(
      WHERE namespace = ? AND memory_id = ?`
   ).bind(memory.namespace, memory.id).first<TimelineMembershipRecord>();
   const previousGroup = previous ? { thread: previous.thread, factKey: previous.fact_key } : null;
-  const currentGroup = memory.status === "active" && isFiveAxisMemoryTypeEligible(memory.type)
+  const currentGroup = memory.status === "active" && memory.source !== "timeline_split"
+    && isFiveAxisMemoryTypeEligible(memory.type)
     && memory.thread && memory.fact_key && dateTag(memory.tags)
     ? { thread: memory.thread, factKey: memory.fact_key }
     : null;

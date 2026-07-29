@@ -11,6 +11,7 @@ import {
   memoryEventExistsGuard
 } from "../../db/mutationGuards";
 import { loadDreamConfig } from "../../config/runtime";
+import { rebuildDiaryTimelineForMemory } from "../../memory/diaryTimeline";
 import { extractExplicitDates } from "../../memory/timelineBackfill";
 import { rebuildTimelineSequenceForMemory } from "../../memory/timelineRelations";
 import { analyzeTimelineDateTags, parseTimelineDate } from "../../memory/timelineDates";
@@ -111,12 +112,16 @@ export async function approveTimelineCandidate(env: Env, form: FormData): Promis
   if (!committed) return null;
   const updated = await getMemoryById(env.DB, { namespace, id: target.id });
   if (!updated) throw new Error("timeline_candidate_target_missing_after_commit");
-  const sequence = await rebuildTimelineSequenceForMemory(env.DB, updated);
+  const ordinarySequence = await rebuildTimelineSequenceForMemory(env.DB, updated);
+  const owner = updated.source === "timeline_split" ? "diary" : "sequence";
+  const sequence = owner === "diary"
+    ? await rebuildDiaryTimelineForMemory(env.DB, updated)
+    : ordinarySequence;
   await createMemoryEvent(env.DB, {
     namespace,
     eventType: "x_timeline_sequence_rebuilt",
     memoryId: updated.id,
-    payload: { candidate_id: candidate.id, date, sequence }
+    payload: { candidate_id: candidate.id, date, owner, sequence }
   });
   return updated;
 }
