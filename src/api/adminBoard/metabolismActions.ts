@@ -1,12 +1,16 @@
-import { createMemoryEvent, prepareMemoryEventInsert } from "../../db/memoryEvents";
+import { prepareMemoryEventInsert } from "../../db/memoryEvents";
 import { loadDreamConfig } from "../../config/runtime";
 import {
   commitMemoryCandidateApproval,
+  commitMemoryCandidateRollback,
   getMemoryCandidate,
-  resolveMemoryCandidate,
-  rollbackMemoryCandidate
+  resolveMemoryCandidate
 } from "../../db/memoryCandidates";
-import { getMemoryById, updateMemory } from "../../db/memories";
+import {
+  getMemoryById,
+  prepareMemoryUpdate,
+  type MemoryMutationGuard
+} from "../../db/memories";
 import type { Env, MemoryRecord } from "../../types";
 import {
   COLD_MEMORY_MAX_CONFIDENCE,
@@ -314,42 +318,120 @@ export async function rollbackMetabolismCandidate(env: Env, form: FormData): Pro
   if (!candidate || candidate.status !== "approved" || !["m_archive", "m_relation_cleanup"].includes(candidate.action)) return null;
   const before = beforeOf(payloadOf(candidate.payload_json));
   let memory: MemoryRecord | null = null;
+  const mutationAt = nowIso();
+  const candidateGuard = memoryCandidateStatusGuard(namespace, candidate.id, "approved");
+  const rollbackEventId = `ev_m_rollback_${candidate.id}`;
+  const businessStatements: D1PreparedStatement[] = [];
+  let successGuard: MemoryMutationGuard;
 
   if (candidate.action === "m_archive") {
     if (!candidate.target_id) return null;
     const current = await getMemoryById(env.DB, { namespace, id: candidate.target_id });
     if (!current || current.status !== "archived") throw new Error("metabolism_rollback_target_changed");
-    memory = await updateMemory(env.DB, {
+    const restore = prepareMemoryUpdate(env.DB, {
       namespace,
       id: current.id,
       patch: {
         status: typeof before.status === "string" ? before.status : "active",
         activeFact: before.active_fact !== 0
       },
-      expectedStatus: "archived"
+      expectedStatus: "archived",
+      expectedRevision: current.five_axis_revision ?? 1,
+      guard: candidateGuard,
+      markVectorUnsynced: true,
+      now: mutationAt
     });
-    if (!memory) return null;
+    if (!restore) return null;
+    const restoredStatus = typeof before.status === "string" ? before.status : "active";
+    const restoredGuard = {
+      sql: "EXISTS (SELECT 1 FROM memories WHERE namespace = ? AND id = ? AND status = ? AND updated_at = ?)",
+      binds: [namespace, current.id, restoredStatus, mutationAt]
+    };
+    businessStatements.push(
+      restore,
+      prepareMemoryEventInsert(env.DB, {
+        namespace,
+        eventType: "m_rollback",
+        memoryId: current.id,
+        payload: { candidate_id: candidate.id, action: candidate.action, restored: before }
+      }, {
+        id: rollbackEventId,
+        now: mutationAt,
+        guard: combineMutationGuards(candidateGuard, restoredGuard)
+      })
+    );
+    successGuard = combineMutationGuards(
+      restoredGuard,
+      memoryEventExistsGuard(namespace, rollbackEventId)
+    );
   } else {
     const required = ["id", "source_memory_id", "target_memory_id", "relation_type", "strength", "created_at"];
     if (required.some((key) => before[key] === undefined || before[key] === null)) return null;
-    const restored = await env.DB.prepare(
-      `INSERT OR IGNORE INTO memory_relations
+    const relationAbsentGuard = {
+      sql: "NOT EXISTS (SELECT 1 FROM memory_relations WHERE namespace = ? AND id = ?)",
+      binds: [namespace, before.id]
+    };
+    const rollbackEvent = prepareMemoryEventInsert(env.DB, {
+      namespace,
+      eventType: "m_rollback",
+      payload: { candidate_id: candidate.id, action: candidate.action, restored: before }
+    }, {
+      id: rollbackEventId,
+      now: mutationAt,
+      guard: combineMutationGuards(candidateGuard, relationAbsentGuard)
+    });
+    const restoreRelation = env.DB.prepare(
+      `INSERT INTO memory_relations
        (id, namespace, source_memory_id, target_memory_id, relation_type, strength, reason, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+       SELECT ?, ?, ?, ?, ?, ?, ?, ?
+       WHERE EXISTS (
+         SELECT 1 FROM memory_events WHERE namespace = ? AND id = ?
+       )`
     ).bind(
       before.id, namespace, before.source_memory_id, before.target_memory_id,
-      before.relation_type, before.strength, before.reason ?? null, before.created_at
-    ).run();
-    if ((restored.meta.changes ?? 0) !== 1) throw new Error("metabolism_relation_rollback_conflict");
+      before.relation_type, before.strength, before.reason ?? null, before.created_at,
+      namespace, rollbackEventId
+    );
+    const relationRestoredGuard = {
+      sql: `EXISTS (
+        SELECT 1 FROM memory_relations
+        WHERE namespace = ? AND id = ?
+          AND source_memory_id = ? AND target_memory_id = ? AND relation_type = ?
+      )`,
+      binds: [
+        namespace,
+        before.id,
+        before.source_memory_id,
+        before.target_memory_id,
+        before.relation_type
+      ]
+    };
+    businessStatements.push(rollbackEvent, restoreRelation);
+    successGuard = combineMutationGuards(
+      relationRestoredGuard,
+      memoryEventExistsGuard(namespace, rollbackEventId)
+    );
   }
 
-  if (!await rollbackMemoryCandidate(env.DB, namespace, candidate.id)) {
-    throw new Error("metabolism_rollback_state_conflict");
-  }
-  await createMemoryEvent(env.DB, {
+  const committed = await commitMemoryCandidateRollback(env.DB, {
     namespace,
-    eventType: "m_rollback",
-    payload: { candidate_id: candidate.id, action: candidate.action, restored: before }
+    id: candidate.id,
+    expectedStatus: "approved",
+    businessStatements,
+    successGuard
   });
+  if (!committed) {
+    if (candidate.action === "m_relation_cleanup") {
+      const current = await env.DB.prepare(
+        "SELECT id FROM memory_relations WHERE namespace = ? AND id = ?"
+      ).bind(namespace, before.id).first<{ id: string }>();
+      if (current) throw new Error("metabolism_relation_rollback_conflict");
+    }
+    return null;
+  }
+  if (candidate.action === "m_archive" && candidate.target_id) {
+    memory = await getMemoryById(env.DB, { namespace, id: candidate.target_id });
+    if (!memory) throw new Error("metabolism_rollback_target_missing_after_commit");
+  }
   return { memory, action: "rollback" };
 }

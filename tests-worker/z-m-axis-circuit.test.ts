@@ -142,6 +142,36 @@ describe("Z-axis Worker circuit", () => {
       weaker.id
     )).resolves.toMatchObject({ status: "applied" });
 
+    const rollbackAbortTrigger = `test_z_rollback_abort_${crypto.randomUUID().replaceAll("-", "")}`;
+    const zCandidateId = candidate!.id.replaceAll("'", "''");
+    await env.DB.prepare(
+      `CREATE TRIGGER ${rollbackAbortTrigger}
+       BEFORE UPDATE OF status ON memory_candidates
+       WHEN OLD.id = '${zCandidateId}' AND NEW.status = 'rolled_back'
+       BEGIN
+         SELECT RAISE(ABORT, 'forced Z rollback failure');
+       END`
+    ).run();
+    try {
+      await expect(rollbackFactTransitionCandidate(runtimeEnv, formFor(candidate!.id))).rejects.toThrow();
+    } finally {
+      await env.DB.prepare(`DROP TRIGGER IF EXISTS ${rollbackAbortTrigger}`).run();
+    }
+    await expect(first<Pick<MemoryRecord, "status" | "active_fact">>(
+      "SELECT status, active_fact FROM memories WHERE namespace = 'default' AND id = ?",
+      weaker.id
+    )).resolves.toMatchObject({ status: "superseded", active_fact: 0 });
+    await expect(first<CandidateRow>(
+      "SELECT id, status, action FROM memory_candidates WHERE id = ?",
+      candidate!.id
+    )).resolves.toMatchObject({ status: "approved" });
+    await expect(first<{ count: number }>(
+      `SELECT COUNT(*) AS count FROM memory_events
+       WHERE namespace = 'default' AND event_type = 'z_rollback'
+         AND json_extract(payload_json, '$.candidate_id') = ?`,
+      candidate!.id
+    )).resolves.toMatchObject({ count: 0 });
+
     await expect(rollbackFactTransitionCandidate(runtimeEnv, formFor(candidate!.id)))
       .resolves.toMatchObject({ axis: "Z", action: "rollback" });
     await expect(first<Pick<MemoryRecord, "status" | "active_fact" | "vector_sync_status">>(
@@ -304,6 +334,36 @@ describe("M-axis Worker circuit", () => {
       invariants_verified: 1
     });
 
+    const rollbackAbortTrigger = `test_m_archive_rollback_abort_${crypto.randomUUID().replaceAll("-", "")}`;
+    const mCandidateId = candidate!.id.replaceAll("'", "''");
+    await env.DB.prepare(
+      `CREATE TRIGGER ${rollbackAbortTrigger}
+       BEFORE UPDATE OF status ON memory_candidates
+       WHEN OLD.id = '${mCandidateId}' AND NEW.status = 'rolled_back'
+       BEGIN
+         SELECT RAISE(ABORT, 'forced M archive rollback failure');
+       END`
+    ).run();
+    try {
+      await expect(rollbackMetabolismCandidate(env, formFor(candidate!.id))).rejects.toThrow();
+    } finally {
+      await env.DB.prepare(`DROP TRIGGER IF EXISTS ${rollbackAbortTrigger}`).run();
+    }
+    await expect(first<Pick<MemoryRecord, "status" | "active_fact">>(
+      "SELECT status, active_fact FROM memories WHERE namespace = 'default' AND id = ?",
+      expired.id
+    )).resolves.toMatchObject({ status: "archived", active_fact: 0 });
+    await expect(first<CandidateRow>(
+      "SELECT id, status, action FROM memory_candidates WHERE id = ?",
+      candidate!.id
+    )).resolves.toMatchObject({ status: "approved" });
+    await expect(first<{ count: number }>(
+      `SELECT COUNT(*) AS count FROM memory_events
+       WHERE namespace = 'default' AND event_type = 'm_rollback'
+         AND json_extract(payload_json, '$.candidate_id') = ?`,
+      candidate!.id
+    )).resolves.toMatchObject({ count: 0 });
+
     await expect(rollbackMetabolismCandidate(env, formFor(candidate!.id)))
       .resolves.toMatchObject({ action: "rollback", memory: { id: expired.id, status: "active" } });
     await expect(first<CandidateRow>(
@@ -368,6 +428,34 @@ describe("M-axis Worker circuit", () => {
     )).resolves.toMatchObject({ status: "applied" });
     await expect(first("SELECT id FROM memory_relations WHERE namespace = 'default' AND id = ?", relationId))
       .resolves.toBeNull();
+
+    const rollbackAbortTrigger = `test_m_relation_rollback_abort_${crypto.randomUUID().replaceAll("-", "")}`;
+    const relationCandidateId = candidate!.id.replaceAll("'", "''");
+    await env.DB.prepare(
+      `CREATE TRIGGER ${rollbackAbortTrigger}
+       BEFORE UPDATE OF status ON memory_candidates
+       WHEN OLD.id = '${relationCandidateId}' AND NEW.status = 'rolled_back'
+       BEGIN
+         SELECT RAISE(ABORT, 'forced M relation rollback failure');
+       END`
+    ).run();
+    try {
+      await expect(rollbackMetabolismCandidate(env, formFor(candidate!.id))).rejects.toThrow();
+    } finally {
+      await env.DB.prepare(`DROP TRIGGER IF EXISTS ${rollbackAbortTrigger}`).run();
+    }
+    await expect(first("SELECT id FROM memory_relations WHERE namespace = 'default' AND id = ?", relationId))
+      .resolves.toBeNull();
+    await expect(first<CandidateRow>(
+      "SELECT id, status, action FROM memory_candidates WHERE id = ?",
+      candidate!.id
+    )).resolves.toMatchObject({ status: "approved" });
+    await expect(first<{ count: number }>(
+      `SELECT COUNT(*) AS count FROM memory_events
+       WHERE namespace = 'default' AND event_type = 'm_rollback'
+         AND json_extract(payload_json, '$.candidate_id') = ?`,
+      candidate!.id
+    )).resolves.toMatchObject({ count: 0 });
 
     await expect(rollbackMetabolismCandidate(env, formFor(candidate!.id)))
       .resolves.toMatchObject({ action: "rollback", memory: null });

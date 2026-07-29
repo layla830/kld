@@ -1,12 +1,12 @@
-import { createMemoryEvent, prepareMemoryEventInsert } from "../../db/memoryEvents";
+import { prepareMemoryEventInsert } from "../../db/memoryEvents";
 import { loadDreamConfig } from "../../config/runtime";
 import {
   commitMemoryCandidateApproval,
+  commitMemoryCandidateRollback,
   getMemoryCandidate,
-  resolveMemoryCandidate,
-  rollbackMemoryCandidate
+  resolveMemoryCandidate
 } from "../../db/memoryCandidates";
-import { getMemoryById, updateMemory } from "../../db/memories";
+import { getMemoryById, prepareMemoryUpdate } from "../../db/memories";
 import { listFactKeyConflictsForReview } from "../../memory/fiveAxis/zFacts";
 import {
   finishPreparedMemoryDeprojection,
@@ -14,6 +14,7 @@ import {
 } from "../../memory/deprojection";
 import { reconcileMemoryVector } from "../../memory/state";
 import type { Env, MemoryRecord } from "../../types";
+import { nowIso } from "../../utils/time";
 import { payloadOf, readFormText } from "./utils";
 import {
   combineMutationGuards,
@@ -183,26 +184,54 @@ export async function rollbackFactTransitionCandidate(env: Env, form: FormData):
     throw new Error("fact_transition_rollback_state_changed");
   }
 
-  const restored = await updateMemory(env.DB, {
+  const mutationAt = nowIso();
+  const candidateGuard = memoryCandidateStatusGuard(candidate.namespace, candidate.id, "approved");
+  const restore = prepareMemoryUpdate(env.DB, {
     namespace: candidate.namespace,
     id: weaker.id,
     patch: { status: "active", activeFact: weakerSnapshot.active_fact !== 0 },
     expectedStatus: "superseded",
-    requireUnpinned: true
+    expectedRevision: weaker.five_axis_revision ?? 1,
+    requireUnpinned: true,
+    guard: candidateGuard,
+    markVectorUnsynced: true,
+    now: mutationAt
   });
-  if (!restored) return null;
+  if (!restore) return null;
+  const rollbackEventId = `ev_z_rollback_${candidate.id}`;
+  const restoredGuard = {
+    sql: "EXISTS (SELECT 1 FROM memories WHERE namespace = ? AND id = ? AND status = 'active' AND updated_at = ?)",
+    binds: [candidate.namespace, weaker.id, mutationAt]
+  };
+  const rollbackEvent = prepareMemoryEventInsert(env.DB, {
+    namespace: candidate.namespace,
+    eventType: "z_rollback",
+    memoryId: weaker.id,
+    payload: { candidate_id: candidate.id, fact_key: factKey, restored: weakerSnapshot }
+  }, {
+    id: rollbackEventId,
+    now: mutationAt,
+    guard: combineMutationGuards(candidateGuard, restoredGuard)
+  });
+  const committed = await commitMemoryCandidateRollback(env.DB, {
+    namespace: candidate.namespace,
+    id: candidate.id,
+    expectedStatus: "approved",
+    businessStatements: [restore, rollbackEvent],
+    successGuard: combineMutationGuards(
+      restoredGuard,
+      memoryEventsExistGuard(candidate.namespace, [rollbackEventId])
+    )
+  });
+  if (!committed) return null;
+  const restored = await getMemoryById(env.DB, {
+    namespace: candidate.namespace,
+    id: weaker.id
+  });
+  if (!restored) throw new Error("fact_transition_rollback_target_missing_after_commit");
   await reconcileMemoryVector(env, {
     namespace: restored.namespace,
     memoryId: restored.id
-  });
-  if (!await rollbackMemoryCandidate(env.DB, candidate.namespace, candidate.id)) {
-    throw new Error("fact_transition_rollback_candidate_changed");
-  }
-  await createMemoryEvent(env.DB, {
-    namespace: candidate.namespace,
-    eventType: "z_rollback",
-    memoryId: restored.id,
-    payload: { candidate_id: candidate.id, fact_key: factKey, restored: weakerSnapshot }
   });
   return { axis: "Z", action: "rollback", memories: [restored] };
 }
