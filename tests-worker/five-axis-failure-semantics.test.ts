@@ -205,6 +205,168 @@ describe("five-axis failure semantics", () => {
        WHERE namespace = 'default' AND event_type = 'x_timeline_candidate_approved'
          AND json_extract(payload_json, '$.candidate_id') = ?`
     ).bind(candidate!.id).first<{ count: number }>()).resolves.toMatchObject({ count: 1 });
+    const sequenceEvent = await env.DB.prepare(
+      `SELECT payload_json FROM memory_events
+       WHERE namespace = 'default' AND event_type = 'x_timeline_sequence_rebuilt'
+         AND json_extract(payload_json, '$.candidate_id') = ?`
+    ).bind(candidate!.id).first<{ payload_json: string }>();
+    expect(JSON.parse(sequenceEvent!.payload_json)).toMatchObject({ owner: "sequence" });
+  });
+
+  it("routes timeline_split date repair to the diary owner and clears ordinary membership", async () => {
+    const origin = await createMemory(env.DB, {
+      namespace: "default",
+      type: "diary",
+      content: "Timeline owner repair origin",
+      status: "active",
+      source: "mcp"
+    });
+    const memory = await createMemory(env.DB, {
+      namespace: "default",
+      type: "project_state",
+      content: "Timeline split fact with a date conflict",
+      status: "active",
+      source: "timeline_split",
+      sourceMessageIds: [origin.id],
+      thread: `timeline-split-owner:${crypto.randomUUID()}`,
+      factKey: `timeline.split.owner:${crypto.randomUUID()}`,
+      tags: [
+        "timeline",
+        "date:2026-07-20",
+        "date:2026-07-21",
+        `origin:${origin.id}`,
+        "split_version:v2"
+      ]
+    });
+    await env.DB.prepare(
+      `INSERT INTO memory_timeline_memberships
+       (namespace, memory_id, thread, fact_key, updated_at)
+       VALUES ('default', ?, ?, ?, ?)`
+    ).bind(
+      memory.id,
+      memory.thread,
+      memory.fact_key,
+      new Date().toISOString()
+    ).run();
+
+    await expect(queueTimelineCandidateForMemory(env as Env, memory)).resolves.toMatchObject({
+      outcome: "queued",
+      dates: ["2026-07-20", "2026-07-21"]
+    });
+    const candidate = await env.DB.prepare(
+      `SELECT id FROM memory_candidates
+       WHERE namespace = 'default' AND target_id = ? AND action = 'timeline_date' AND status = 'pending'`
+    ).bind(memory.id).first<{ id: string }>();
+    const form = new FormData();
+    form.set("id", candidate!.id);
+    form.set("date", "2026-07-21");
+
+    await expect(approveTimelineCandidate(env as Env, form)).resolves.toMatchObject({ id: memory.id });
+
+    await expect(env.DB.prepare(
+      `SELECT COUNT(*) AS count FROM memory_timeline_memberships
+       WHERE namespace = 'default' AND memory_id = ?`
+    ).bind(memory.id).first<{ count: number }>()).resolves.toMatchObject({ count: 0 });
+    await expect(env.DB.prepare(
+      `SELECT origin_diary_id, event_date, timeline_key
+       FROM memory_diary_timeline_memberships
+       WHERE namespace = 'default' AND memory_id = ?`
+    ).bind(memory.id).first()).resolves.toMatchObject({
+      origin_diary_id: origin.id,
+      event_date: "2026-07-21",
+      timeline_key: "diary:kld"
+    });
+    await expect(env.DB.prepare(
+      "SELECT status FROM memory_candidates WHERE namespace = 'default' AND id = ?"
+    ).bind(candidate!.id).first()).resolves.toMatchObject({ status: "approved" });
+    const event = await env.DB.prepare(
+      `SELECT payload_json FROM memory_events
+       WHERE namespace = 'default' AND event_type = 'x_timeline_sequence_rebuilt'
+         AND json_extract(payload_json, '$.candidate_id') = ?`
+    ).bind(candidate!.id).first<{ payload_json: string }>();
+    expect(JSON.parse(event!.payload_json)).toMatchObject({
+      owner: "diary",
+      sequence: {
+        outcome: "diary_timeline_reconciled",
+        originDiaryId: origin.id,
+        eventDate: "2026-07-21"
+      }
+    });
+  });
+
+  it("keeps timeline approval committed when diary rebuild fails and lets X retry it", async () => {
+    const origin = await createMemory(env.DB, {
+      namespace: "default",
+      type: "diary",
+      content: "Timeline owner retry origin",
+      status: "active",
+      source: "mcp"
+    });
+    const memory = await createMemory(env.DB, {
+      namespace: "default",
+      type: "project_state",
+      content: "Timeline split fact whose diary rebuild retries",
+      status: "active",
+      source: "timeline_split",
+      sourceMessageIds: [origin.id],
+      thread: `timeline-split-retry:${crypto.randomUUID()}`,
+      factKey: `timeline.split.retry:${crypto.randomUUID()}`,
+      tags: [
+        "timeline",
+        "date:2026-07-20",
+        "date:2026-07-21",
+        `origin:${origin.id}`,
+        "split_version:v2"
+      ]
+    });
+    await queueTimelineCandidateForMemory(env as Env, memory);
+    const candidate = await env.DB.prepare(
+      `SELECT id FROM memory_candidates
+       WHERE namespace = 'default' AND target_id = ? AND action = 'timeline_date' AND status = 'pending'`
+    ).bind(memory.id).first<{ id: string }>();
+    const form = new FormData();
+    form.set("id", candidate!.id);
+    form.set("date", "2026-07-21");
+    const triggerName = `test_diary_owner_abort_${crypto.randomUUID().replaceAll("-", "")}`;
+    const memoryId = memory.id.replaceAll("'", "''");
+    await env.DB.prepare(
+      `CREATE TRIGGER ${triggerName}
+       BEFORE INSERT ON memory_diary_timeline_memberships
+       WHEN NEW.memory_id = '${memoryId}'
+       BEGIN
+         SELECT RAISE(ABORT, 'forced diary owner failure');
+       END`
+    ).run();
+    try {
+      await expect(approveTimelineCandidate(env as Env, form))
+        .rejects.toThrow("forced diary owner failure");
+    } finally {
+      await env.DB.prepare(`DROP TRIGGER IF EXISTS ${triggerName}`).run();
+    }
+
+    await expect(env.DB.prepare(
+      "SELECT status FROM memory_candidates WHERE namespace = 'default' AND id = ?"
+    ).bind(candidate!.id).first()).resolves.toMatchObject({ status: "approved" });
+    const updated = await getMemoryById(env.DB, { namespace: "default", id: memory.id });
+    expect(JSON.parse(updated!.tags || "[]").filter((tag: string) => tag.startsWith("date:")))
+      .toEqual(["date:2026-07-21"]);
+    await expect(env.DB.prepare(
+      `SELECT COUNT(*) AS count FROM memory_events
+       WHERE namespace = 'default' AND event_type = 'x_timeline_sequence_rebuilt'
+         AND json_extract(payload_json, '$.candidate_id') = ?`
+    ).bind(candidate!.id).first<{ count: number }>()).resolves.toMatchObject({ count: 0 });
+
+    await expect(queueTimelineCandidateForMemory(env as Env, updated!)).resolves.toMatchObject({
+      outcome: "diary_reconciled",
+      queued: 0
+    });
+    await expect(env.DB.prepare(
+      `SELECT origin_diary_id, event_date FROM memory_diary_timeline_memberships
+       WHERE namespace = 'default' AND memory_id = ?`
+    ).bind(memory.id).first()).resolves.toMatchObject({
+      origin_diary_id: origin.id,
+      event_date: "2026-07-21"
+    });
   });
 
   it("reports missing Y infrastructure as an error instead of a true empty graph", async () => {
