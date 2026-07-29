@@ -101,6 +101,55 @@ function relationSnapshotStatement(
   );
 }
 
+function relationCleanupSnapshotPredicate(alias: string): string {
+  return `${alias}.namespace = ?
+    AND ${alias}.event_type = 'm_snapshot'
+    AND json_extract(${alias}.payload_json, '$.candidate_id') = ?
+    AND json_extract(${alias}.payload_json, '$.action') = 'm_relation_cleanup'
+    AND json_type(${alias}.payload_json, '$.relation_was_present') IN ('true', 'false')
+    AND json_type(${alias}.payload_json, '$.before') = 'object'
+    AND json_extract(${alias}.payload_json, '$.before.id') = ?
+    AND json_extract(${alias}.payload_json, '$.before.source_memory_id') = ?
+    AND json_extract(${alias}.payload_json, '$.before.target_memory_id') = ?
+    AND json_extract(${alias}.payload_json, '$.before.relation_type') = ?
+    AND (
+      json_extract(${alias}.payload_json, '$.relation_was_present') = 0
+      OR (
+        json_extract(${alias}.payload_json, '$.relation_was_present') = 1
+        AND json_extract(${alias}.payload_json, '$.before.strength') IS NOT NULL
+        AND json_extract(${alias}.payload_json, '$.before.created_at') IS NOT NULL
+      )
+    )
+    AND (
+      SELECT COUNT(*)
+      FROM memory_events AS snapshot_count
+      WHERE snapshot_count.namespace = ?
+        AND snapshot_count.event_type = 'm_snapshot'
+        AND json_extract(snapshot_count.payload_json, '$.candidate_id') = ?
+        AND json_extract(snapshot_count.payload_json, '$.action') = 'm_relation_cleanup'
+    ) = 1`;
+}
+
+function relationCleanupSnapshotBinds(
+  namespace: string,
+  candidateId: string,
+  relationId: string,
+  sourceMemoryId: string,
+  targetMemoryId: string,
+  relationType: string
+): unknown[] {
+  return [
+    namespace,
+    candidateId,
+    relationId,
+    sourceMemoryId,
+    targetMemoryId,
+    relationType,
+    namespace,
+    candidateId
+  ];
+}
+
 export async function approveMetabolismCandidate(
   env: Env,
   form: FormData,
@@ -365,50 +414,131 @@ export async function rollbackMetabolismCandidate(env: Env, form: FormData): Pro
       memoryEventExistsGuard(namespace, rollbackEventId)
     );
   } else {
-    const required = ["id", "source_memory_id", "target_memory_id", "relation_type", "strength", "created_at"];
+    const required = ["id", "source_memory_id", "target_memory_id", "relation_type"];
     if (required.some((key) => before[key] === undefined || before[key] === null)) return null;
-    const relationAbsentGuard = {
-      sql: "NOT EXISTS (SELECT 1 FROM memory_relations WHERE namespace = ? AND id = ?)",
-      binds: [namespace, before.id]
-    };
-    const rollbackEvent = prepareMemoryEventInsert(env.DB, {
+    const relationId = before.id as string;
+    const sourceMemoryId = before.source_memory_id as string;
+    const targetMemoryId = before.target_memory_id as string;
+    const relationType = before.relation_type as string;
+    const snapshotBinds = relationCleanupSnapshotBinds(
       namespace,
-      eventType: "m_rollback",
-      payload: { candidate_id: candidate.id, action: candidate.action, restored: before }
-    }, {
-      id: rollbackEventId,
-      now: mutationAt,
-      guard: combineMutationGuards(candidateGuard, relationAbsentGuard)
-    });
+      candidate.id,
+      relationId,
+      sourceMemoryId,
+      targetMemoryId,
+      relationType
+    );
+    const snapshotPredicate = relationCleanupSnapshotPredicate("snapshot");
+    const rollbackEvent = env.DB.prepare(
+      `INSERT INTO memory_events (id, namespace, event_type, memory_id, payload_json, created_at)
+       SELECT ?, ?, 'm_rollback', NULL,
+         json_object(
+           'candidate_id', ?,
+           'action', 'm_relation_cleanup',
+           'relation_restored', json_extract(snapshot.payload_json, '$.relation_was_present'),
+           'restored', CASE
+             WHEN json_extract(snapshot.payload_json, '$.relation_was_present') = 1
+             THEN json_extract(snapshot.payload_json, '$.before')
+             ELSE NULL
+           END
+         ),
+         ?
+       FROM memory_events AS snapshot
+       WHERE ${snapshotPredicate}
+         AND EXISTS (
+           SELECT 1 FROM memory_candidates
+           WHERE namespace = ? AND id = ? AND status = 'approved'
+         )
+         AND NOT EXISTS (
+           SELECT 1 FROM memory_relations WHERE namespace = ? AND id = ?
+         )
+         AND NOT EXISTS (
+           SELECT 1 FROM memory_events WHERE namespace = ? AND id = ?
+         )`
+    ).bind(
+      rollbackEventId,
+      namespace,
+      candidate.id,
+      mutationAt,
+      ...snapshotBinds,
+      namespace,
+      candidate.id,
+      namespace,
+      relationId,
+      namespace,
+      rollbackEventId
+    );
     const restoreRelation = env.DB.prepare(
       `INSERT INTO memory_relations
        (id, namespace, source_memory_id, target_memory_id, relation_type, strength, reason, created_at)
-       SELECT ?, ?, ?, ?, ?, ?, ?, ?
-       WHERE EXISTS (
-         SELECT 1 FROM memory_events WHERE namespace = ? AND id = ?
-       )`
+       SELECT
+         json_extract(snapshot.payload_json, '$.before.id'),
+         ?,
+         json_extract(snapshot.payload_json, '$.before.source_memory_id'),
+         json_extract(snapshot.payload_json, '$.before.target_memory_id'),
+         json_extract(snapshot.payload_json, '$.before.relation_type'),
+         json_extract(snapshot.payload_json, '$.before.strength'),
+         json_extract(snapshot.payload_json, '$.before.reason'),
+         json_extract(snapshot.payload_json, '$.before.created_at')
+       FROM memory_events AS snapshot
+       WHERE ${snapshotPredicate}
+         AND json_extract(snapshot.payload_json, '$.relation_was_present') = 1
+         AND EXISTS (
+           SELECT 1 FROM memory_candidates
+           WHERE namespace = ? AND id = ? AND status = 'approved'
+         )
+         AND NOT EXISTS (
+           SELECT 1 FROM memory_relations WHERE namespace = ? AND id = ?
+         )
+         AND EXISTS (
+           SELECT 1 FROM memory_events WHERE namespace = ? AND id = ?
+         )`
     ).bind(
-      before.id, namespace, before.source_memory_id, before.target_memory_id,
-      before.relation_type, before.strength, before.reason ?? null, before.created_at,
-      namespace, rollbackEventId
+      namespace,
+      ...snapshotBinds,
+      namespace,
+      candidate.id,
+      namespace,
+      relationId,
+      namespace,
+      rollbackEventId
     );
-    const relationRestoredGuard = {
+    const snapshotPostStateGuard = {
       sql: `EXISTS (
-        SELECT 1 FROM memory_relations
-        WHERE namespace = ? AND id = ?
-          AND source_memory_id = ? AND target_memory_id = ? AND relation_type = ?
+        SELECT 1
+        FROM memory_events AS snapshot
+        WHERE ${snapshotPredicate}
+          AND (
+            (
+              json_extract(snapshot.payload_json, '$.relation_was_present') = 1
+              AND EXISTS (
+                SELECT 1 FROM memory_relations
+                WHERE namespace = ? AND id = ?
+                  AND source_memory_id = ? AND target_memory_id = ? AND relation_type = ?
+              )
+            )
+            OR (
+              json_extract(snapshot.payload_json, '$.relation_was_present') = 0
+              AND NOT EXISTS (
+                SELECT 1 FROM memory_relations WHERE namespace = ? AND id = ?
+              )
+            )
+          )
       )`,
       binds: [
+        ...snapshotBinds,
         namespace,
-        before.id,
-        before.source_memory_id,
-        before.target_memory_id,
-        before.relation_type
+        relationId,
+        sourceMemoryId,
+        targetMemoryId,
+        relationType,
+        namespace,
+        relationId
       ]
     };
     businessStatements.push(rollbackEvent, restoreRelation);
     successGuard = combineMutationGuards(
-      relationRestoredGuard,
+      snapshotPostStateGuard,
       memoryEventExistsGuard(namespace, rollbackEventId)
     );
   }
@@ -422,9 +552,30 @@ export async function rollbackMetabolismCandidate(env: Env, form: FormData): Pro
   });
   if (!committed) {
     if (candidate.action === "m_relation_cleanup") {
+      const latestCandidate = await getMemoryCandidate(env.DB, namespace, candidate.id);
+      if (!latestCandidate || latestCandidate.status !== "approved") return null;
+      const relationId = typeof before.id === "string" ? before.id : "";
+      const sourceMemoryId = typeof before.source_memory_id === "string" ? before.source_memory_id : "";
+      const targetMemoryId = typeof before.target_memory_id === "string" ? before.target_memory_id : "";
+      const relationType = typeof before.relation_type === "string" ? before.relation_type : "";
+      const snapshot = relationId && sourceMemoryId && targetMemoryId && relationType
+        ? await env.DB.prepare(
+          `SELECT 1 AS valid
+           FROM memory_events AS snapshot
+           WHERE ${relationCleanupSnapshotPredicate("snapshot")}`
+        ).bind(...relationCleanupSnapshotBinds(
+          namespace,
+          candidate.id,
+          relationId,
+          sourceMemoryId,
+          targetMemoryId,
+          relationType
+        )).first<{ valid: number }>()
+        : null;
+      if (!snapshot) throw new Error("metabolism_relation_rollback_snapshot_invalid");
       const current = await env.DB.prepare(
         "SELECT id FROM memory_relations WHERE namespace = ? AND id = ?"
-      ).bind(namespace, before.id).first<{ id: string }>();
+      ).bind(namespace, relationId).first<{ id: string }>();
       if (current) throw new Error("metabolism_relation_rollback_conflict");
     }
     return null;
