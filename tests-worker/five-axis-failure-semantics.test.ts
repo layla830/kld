@@ -169,11 +169,42 @@ describe("five-axis failure semantics", () => {
     const form = new FormData();
     form.set("id", candidate!.id);
     form.set("date", "2026-07-21");
+    const triggerName = `test_x_approval_abort_${crypto.randomUUID().replaceAll("-", "")}`;
+    const candidateId = candidate!.id.replaceAll("'", "''");
+    await env.DB.prepare(
+      `CREATE TRIGGER ${triggerName}
+       BEFORE UPDATE OF status ON memory_candidates
+       WHEN OLD.id = '${candidateId}' AND NEW.status = 'approved'
+       BEGIN
+         SELECT RAISE(ABORT, 'forced timeline approval failure');
+       END`
+    ).run();
+    try {
+      await expect(approveTimelineCandidate(env as Env, form)).rejects.toThrow();
+    } finally {
+      await env.DB.prepare(`DROP TRIGGER IF EXISTS ${triggerName}`).run();
+    }
+    await expect(getMemoryById(env.DB, { namespace: "default", id: memory.id }))
+      .resolves.toMatchObject({ tags: memory.tags });
+    await expect(env.DB.prepare(
+      "SELECT status FROM memory_candidates WHERE namespace = 'default' AND id = ?"
+    ).bind(candidate!.id).first()).resolves.toMatchObject({ status: "pending" });
+    await expect(env.DB.prepare(
+      `SELECT COUNT(*) AS count FROM memory_events
+       WHERE namespace = 'default' AND event_type = 'x_timeline_candidate_approved'
+         AND json_extract(payload_json, '$.candidate_id') = ?`
+    ).bind(candidate!.id).first<{ count: number }>()).resolves.toMatchObject({ count: 0 });
+
     await expect(approveTimelineCandidate(env as Env, form)).resolves.toMatchObject({ id: memory.id });
 
     const repaired = await getMemoryById(env.DB, { namespace: "default", id: memory.id });
     const dateTags = JSON.parse(repaired!.tags || "[]").filter((tag: string) => tag.startsWith("date:"));
     expect(dateTags).toEqual(["date:2026-07-21"]);
+    await expect(env.DB.prepare(
+      `SELECT COUNT(*) AS count FROM memory_events
+       WHERE namespace = 'default' AND event_type = 'x_timeline_candidate_approved'
+         AND json_extract(payload_json, '$.candidate_id') = ?`
+    ).bind(candidate!.id).first<{ count: number }>()).resolves.toMatchObject({ count: 1 });
   });
 
   it("reports missing Y infrastructure as an error instead of a true empty graph", async () => {

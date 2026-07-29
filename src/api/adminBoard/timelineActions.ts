@@ -1,11 +1,21 @@
-import { getMemoryCandidate, resolveMemoryCandidate } from "../../db/memoryCandidates";
-import { createMemoryEvent } from "../../db/memoryEvents";
-import { getMemoryById, updateMemory } from "../../db/memories";
+import {
+  commitMemoryCandidateApproval,
+  getMemoryCandidate,
+  resolveMemoryCandidate
+} from "../../db/memoryCandidates";
+import { createMemoryEvent, prepareMemoryEventInsert } from "../../db/memoryEvents";
+import { getMemoryById, prepareMemoryUpdate } from "../../db/memories";
+import {
+  combineMutationGuards,
+  memoryCandidateStatusGuard,
+  memoryEventExistsGuard
+} from "../../db/mutationGuards";
 import { loadDreamConfig } from "../../config/runtime";
 import { extractExplicitDates } from "../../memory/timelineBackfill";
 import { rebuildTimelineSequenceForMemory } from "../../memory/timelineRelations";
 import { analyzeTimelineDateTags, parseTimelineDate } from "../../memory/timelineDates";
 import type { Env, MemoryRecord } from "../../types";
+import { nowIso } from "../../utils/time";
 import { parseTags, payloadOf, readFormText } from "./utils";
 
 export type TimelineCandidateErrorCode = "invalid_date" | "stale" | "date_conflict";
@@ -57,14 +67,50 @@ export async function approveTimelineCandidate(env: Env, form: FormData): Promis
   } else if (tags.some((tag) => tag.startsWith("date:") && tag !== `date:${date}`)) {
     throw new TimelineCandidateError("date_conflict");
   }
-  const updated = await updateMemory(env.DB, {
+  const mutationAt = nowIso();
+  const candidateGuard = memoryCandidateStatusGuard(namespace, candidate.id, "pending");
+  const statement = prepareMemoryUpdate(env.DB, {
     namespace,
     id: target.id,
     patch: {
       tags: [...new Set([...tags.filter((tag) => !tag.startsWith("date:")), `date:${date}`, "timeline"])]
-    }
+    },
+    expectedStatus: "active",
+    expectedRevision: target.five_axis_revision ?? 1,
+    guard: candidateGuard,
+    markVectorUnsynced: true,
+    now: mutationAt
   });
-  if (!updated) return null;
+  if (!statement) return null;
+  const approvalEventId = `ev_x_timeline_approved_${candidate.id}`;
+  const memoryUpdatedGuard = {
+    sql: "EXISTS (SELECT 1 FROM memories WHERE namespace = ? AND id = ? AND status = 'active' AND updated_at = ?)",
+    binds: [namespace, target.id, mutationAt]
+  };
+  const approvalEvent = prepareMemoryEventInsert(env.DB, {
+    namespace,
+    eventType: "x_timeline_candidate_approved",
+    memoryId: target.id,
+    payload: { candidate_id: candidate.id, date }
+  }, {
+    id: approvalEventId,
+    now: mutationAt,
+    guard: combineMutationGuards(candidateGuard, memoryUpdatedGuard)
+  });
+  const committed = await commitMemoryCandidateApproval(env.DB, {
+    namespace,
+    id: candidate.id,
+    expectedStatus: "pending",
+    resultMemoryId: target.id,
+    businessStatements: [statement, approvalEvent],
+    successGuard: combineMutationGuards(
+      memoryUpdatedGuard,
+      memoryEventExistsGuard(namespace, approvalEventId)
+    )
+  });
+  if (!committed) return null;
+  const updated = await getMemoryById(env.DB, { namespace, id: target.id });
+  if (!updated) throw new Error("timeline_candidate_target_missing_after_commit");
   const sequence = await rebuildTimelineSequenceForMemory(env.DB, updated);
   await createMemoryEvent(env.DB, {
     namespace,
@@ -72,7 +118,6 @@ export async function approveTimelineCandidate(env: Env, form: FormData): Promis
     memoryId: updated.id,
     payload: { candidate_id: candidate.id, date, sequence }
   });
-  await resolveMemoryCandidate(env.DB, namespace, candidate.id, "approved", updated.id);
   return updated;
 }
 

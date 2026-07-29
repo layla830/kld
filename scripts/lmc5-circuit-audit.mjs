@@ -228,6 +228,15 @@ const checks = [
     fs
       .readFileSync("src/api/adminBoard/timelineActions.ts", "utf8")
       .includes('tags.filter((tag) => !tag.startsWith("date:"))') &&
+      fs
+        .readFileSync("src/api/adminBoard/timelineActions.ts", "utf8")
+        .includes("commitMemoryCandidateApproval") &&
+      fs
+        .readFileSync("src/api/adminBoard/timelineActions.ts", "utf8")
+        .includes('eventType: "x_timeline_candidate_approved"') &&
+      fs
+        .readFileSync("src/api/adminBoard/timelineActions.ts", "utf8")
+        .includes("expectedRevision: target.five_axis_revision ?? 1") &&
       !fs
         .readFileSync("src/api/adminBoard/timelineActions.ts", "utf8")
         .includes("patch: { content:"),
@@ -806,7 +815,8 @@ const checks = [
     "Z: nightly conflicts become one typed review candidate per weaker fact",
     factTransitionReview.includes('action: "z_supersede"') &&
       factTransitionReview.includes('_kind: "fact_transition"') &&
-      factTransitionReview.includes("for (const weaker of review.weaker)") &&
+      factTransitionReview.includes("for (const weaker of best ? review?.weaker ?? [] : [])") &&
+      factTransitionReview.includes("replacePendingOperationalCandidateFamily") &&
       operationalReview.includes("scanFactTransitionReviewCandidates") &&
       operationalReview.includes("scanMetabolismReviewCandidates") &&
       fiveAxisNightly.includes("scanOperationalReviewCandidates"),
@@ -919,7 +929,10 @@ const checks = [
   [
     "M: approved operations expose rollback closure",
     metabolismActions.includes('eventType: "m_rollback"') &&
-      metabolismActions.includes("rollbackMemoryCandidate") &&
+      metabolismActions.includes("commitMemoryCandidateRollback") &&
+      factTransitionActions.includes("commitMemoryCandidateRollback") &&
+      candidateDb.includes("businessStatements: D1PreparedStatement[]") &&
+      candidateDb.includes("prepareCandidateAxisRunReconciliation") &&
       candidateDb.includes("status = 'rolled_back'") &&
       metabolismView.includes("回滚这次操作"),
   ],

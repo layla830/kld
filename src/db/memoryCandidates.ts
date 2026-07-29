@@ -455,16 +455,46 @@ export async function commitMemoryCandidateApproval(
   return (results[updateIndex]?.meta.changes ?? 0) === 1;
 }
 
-export async function rollbackMemoryCandidate(db: D1Database, namespace: string, id: string): Promise<boolean> {
+export async function commitMemoryCandidateRollback(
+  db: D1Database,
+  input: {
+    namespace: string;
+    id: string;
+    expectedStatus: "approved";
+    businessStatements: D1PreparedStatement[];
+    successGuard?: { sql: string; binds: unknown[] };
+  }
+): Promise<boolean> {
   const now = nowIso();
+  const successClause = input.successGuard ? ` AND (${input.successGuard.sql})` : "";
   const update = db.prepare(
-    "UPDATE memory_candidates SET status = 'rolled_back', resolved_at = ?, updated_at = ? WHERE namespace = ? AND id = ? AND status = 'approved'"
-  ).bind(now, now, namespace, id);
+    `UPDATE memory_candidates
+     SET status = 'rolled_back', resolved_at = ?, updated_at = ?
+     WHERE namespace = ? AND id = ? AND status = ?${successClause}`
+  ).bind(
+    now,
+    now,
+    input.namespace,
+    input.id,
+    input.expectedStatus,
+    ...(input.successGuard?.binds ?? [])
+  );
+  const updateIndex = input.businessStatements.length;
   const results = await db.batch([
+    ...input.businessStatements,
     update,
-    prepareCandidateAxisRunReconciliation(db, namespace, id, now)
+    prepareCandidateAxisRunReconciliation(db, input.namespace, input.id, now)
   ]);
-  return (results[0]?.meta.changes ?? 0) > 0;
+  return (results[updateIndex]?.meta.changes ?? 0) === 1;
+}
+
+export async function rollbackMemoryCandidate(db: D1Database, namespace: string, id: string): Promise<boolean> {
+  return commitMemoryCandidateRollback(db, {
+    namespace,
+    id,
+    expectedStatus: "approved",
+    businessStatements: []
+  });
 }
 
 export async function dismissPendingMemoryCandidateByExternalKey(db: D1Database, namespace: string, externalKey: string): Promise<boolean> {
