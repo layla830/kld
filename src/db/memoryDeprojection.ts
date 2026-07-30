@@ -397,6 +397,11 @@ function cleanupStatements(
       ...pendingOperation.binds
     ),
     db.prepare(
+      `DELETE FROM memory_metabolism_signal_state
+       WHERE namespace = ? AND memory_id = ?
+         AND (${pendingOperation.sql})`
+    ).bind(input.namespace, input.memoryId, ...pendingOperation.binds),
+    db.prepare(
       `UPDATE memory_five_axis_outbox
        SET status = ?,
            last_error = NULL,
