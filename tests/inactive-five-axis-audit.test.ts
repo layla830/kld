@@ -43,6 +43,7 @@ describe("inactive five-axis audit command", () => {
       "axis_runs",
       "candidate_dependencies",
       "operational_candidates",
+      "m_snapshot_contract",
       "vector_state",
       "deprojection_operations",
       "retention_orphans"
@@ -53,6 +54,12 @@ describe("inactive five-axis audit command", () => {
       .toEqual(["actionable_rows"]);
     expect(queries.find((query) => query.name === "operational_candidates")?.driftFields)
       .toEqual(["stale_operational_candidate_rows"]);
+    expect(queries.find((query) => query.name === "m_snapshot_contract")?.driftFields)
+      .toEqual([
+        "missing_snapshot_candidates",
+        "duplicate_snapshot_candidates",
+        "malformed_snapshot_candidates"
+      ]);
     const sql = queries.map((query) => query.sql).join("\n");
     expect(sql).toContain("failed_vector_states");
     expect(sql).toContain("vector_drift_rows");
@@ -80,6 +87,9 @@ describe("inactive five-axis audit command", () => {
     expect(sql).toContain("stale_y_relation_review_rows");
     expect(sql).toContain("stale_z_supersede_rows");
     expect(sql).toContain("stale_m_archive_rows");
+    expect(sql).toContain("missing_snapshot_candidates");
+    expect(sql).toContain("duplicate_snapshot_candidates");
+    expect(sql).toContain("malformed_snapshot_candidates");
     expect(sql).toContain("actionable_rows");
     expect(sql).toContain("historical_rows");
     expect(sql).toContain("orphan_relations");

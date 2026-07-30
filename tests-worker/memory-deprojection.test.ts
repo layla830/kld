@@ -112,6 +112,17 @@ describe("memory deprojection Workers contract", () => {
   it("atomically removes current projections and terminalizes old work", async () => {
     const memory = await createEligibleMemory("mem_deprojection_atomic");
     await seedProjectionState(memory, "atomic");
+    await env.DB.prepare(
+      `INSERT INTO memory_metabolism_signal_state (
+         namespace, memory_id, policy_key, band, payload_json,
+         first_observed_at, updated_at
+       ) VALUES (?, ?, 'recall_decay', 'cold', '{}', ?, ?)`
+    ).bind(
+      NAMESPACE,
+      memory.id,
+      "2026-07-23T02:00:00.000Z",
+      "2026-07-23T02:00:00.000Z"
+    ).run();
 
     const result = await deprojectMemoryFromFiveAxes(env as Env, {
       namespace: NAMESPACE,
@@ -162,6 +173,12 @@ describe("memory deprojection Workers contract", () => {
       NAMESPACE,
       memory.id,
       memory.id,
+      memory.id
+    )).toBe(0);
+    expect(await count(
+      `SELECT COUNT(*) AS count FROM memory_metabolism_signal_state
+       WHERE namespace = ? AND memory_id = ?`,
+      NAMESPACE,
       memory.id
     )).toBe(0);
 
@@ -661,6 +678,17 @@ describe("memory deprojection Workers contract", () => {
     const memory = await createEligibleMemory("mem_deprojection_rollback");
     await seedProjectionState(memory, "rollback");
     await env.DB.prepare(
+      `INSERT INTO memory_metabolism_signal_state (
+         namespace, memory_id, policy_key, band, payload_json,
+         first_observed_at, updated_at
+       ) VALUES (?, ?, 'recall_decay', 'cold', '{}', ?, ?)`
+    ).bind(
+      NAMESPACE,
+      memory.id,
+      "2026-07-23T02:00:00.000Z",
+      "2026-07-23T02:00:00.000Z"
+    ).run();
+    await env.DB.prepare(
       `CREATE TRIGGER fail_deprojection_relation_cleanup
        BEFORE DELETE ON memory_relations
        WHEN OLD.namespace = '${NAMESPACE}' AND (
@@ -711,6 +739,12 @@ describe("memory deprojection Workers contract", () => {
     expect(await count(
       `SELECT COUNT(*) AS count FROM memory_candidates
        WHERE namespace = ? AND target_id = ? AND status = 'pending'`,
+      NAMESPACE,
+      memory.id
+    )).toBe(1);
+    expect(await count(
+      `SELECT COUNT(*) AS count FROM memory_metabolism_signal_state
+       WHERE namespace = ? AND memory_id = ?`,
       NAMESPACE,
       memory.id
     )).toBe(1);

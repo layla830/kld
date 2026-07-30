@@ -7,6 +7,10 @@ import {
 import {
   staleOperationalCandidateAuditPredicate
 } from "../src/memory/candidateSnapshotContract.js";
+import {
+  relationCleanupSnapshotCountSql,
+  relationCleanupSnapshotValiditySql
+} from "../src/memory/relationCleanupSnapshotContract.js";
 
 export const AUDIT_ACTIVE_OUTBOX_STATUSES = Object.freeze(["pending", "queued", "failed"]);
 export const AUDIT_NON_TERMINAL_RUN_STATUSES = Object.freeze(["running", "failed", "pending_review"]);
@@ -263,6 +267,11 @@ export function buildInactiveFiveAxisAuditQueries(input) {
     AND ${candidateLinkedRun}
   )`;
   const staleOperationalCandidate = staleOperationalCandidateAuditPredicate("candidate");
+  const relationCleanupSnapshotCount = relationCleanupSnapshotCountSql("candidate");
+  const relationCleanupSnapshotValidity = relationCleanupSnapshotValiditySql(
+    "snapshot",
+    "candidate"
+  );
   const candidateHasIneligibleDependency = `EXISTS (
     SELECT 1
     FROM memory_candidate_dependencies AS dependency
@@ -634,6 +643,34 @@ export function buildInactiveFiveAxisAuditQueries(input) {
       WHERE candidate.namespace = ${namespace}
         AND candidate.status IN (${sqlList(AUDIT_PENDING_CANDIDATE_STATUSES)})
         AND NOT (${candidateHasIneligibleDependency})`
+    },
+    {
+      name: "m_snapshot_contract",
+      driftFields: [
+        "missing_snapshot_candidates",
+        "duplicate_snapshot_candidates",
+        "malformed_snapshot_candidates"
+      ],
+      sql: `SELECT
+        COALESCE(SUM(CASE
+          WHEN ${relationCleanupSnapshotCount} = 0 THEN 1 ELSE 0 END
+        ), 0) AS missing_snapshot_candidates,
+        COALESCE(SUM(CASE
+          WHEN ${relationCleanupSnapshotCount} > 1 THEN 1 ELSE 0 END
+        ), 0) AS duplicate_snapshot_candidates,
+        COALESCE(SUM(CASE
+          WHEN ${relationCleanupSnapshotCount} = 1
+           AND NOT EXISTS (
+             SELECT 1
+             FROM memory_events AS snapshot
+             WHERE ${relationCleanupSnapshotValidity}
+           )
+          THEN 1 ELSE 0 END
+        ), 0) AS malformed_snapshot_candidates
+      FROM memory_candidates AS candidate
+      WHERE candidate.namespace = ${namespace}
+        AND candidate.action = 'm_relation_cleanup'
+        AND candidate.status = 'approved'`
     },
     {
       name: "vector_state",

@@ -290,6 +290,16 @@ describe("M-axis Worker circuit", () => {
       expiresAt: "2020-01-01T00:00:00.000Z",
       ...coordinates
     });
+    await env.DB.prepare(
+      `INSERT INTO memory_metabolism_signal_state (
+         namespace, memory_id, policy_key, band, payload_json,
+         first_observed_at, updated_at
+       ) VALUES ('default', ?, 'recall_decay', 'cold', '{}', ?, ?)`
+    ).bind(
+      expired.id,
+      "2026-07-30T00:00:00.000Z",
+      "2026-07-30T00:00:00.000Z"
+    ).run();
     await expect(projectMemoryIntoFiveAxes(env, {
       namespace: "default",
       memoryId: expired.id,
@@ -333,6 +343,11 @@ describe("M-axis Worker circuit", () => {
       candidate_id: candidate!.id,
       invariants_verified: 1
     });
+    await expect(first<{ count: number }>(
+      `SELECT COUNT(*) AS count FROM memory_metabolism_signal_state
+       WHERE namespace = 'default' AND memory_id = ?`,
+      expired.id
+    )).resolves.toMatchObject({ count: 0 });
 
     const rollbackAbortTrigger = `test_m_archive_rollback_abort_${crypto.randomUUID().replaceAll("-", "")}`;
     const mCandidateId = candidate!.id.replaceAll("'", "''");
@@ -375,6 +390,11 @@ describe("M-axis Worker circuit", () => {
        WHERE namespace = 'default' AND memory_id = ? AND memory_revision = 1 AND axis = 'M'`,
       expired.id
     )).resolves.toMatchObject({ status: "skipped" });
+    await expect(first<{ count: number }>(
+      `SELECT COUNT(*) AS count FROM memory_metabolism_signal_state
+       WHERE namespace = 'default' AND memory_id = ?`,
+      expired.id
+    )).resolves.toMatchObject({ count: 0 });
   });
 
   it("removes and restores a reviewed relation cleanup candidate", async () => {
@@ -385,11 +405,13 @@ describe("M-axis Worker circuit", () => {
       ...coordinates
     });
     const relationId = "rel_runtime_m_self_loop";
+    const relationCreatedAt = new Date().toISOString();
     await env.DB.prepare(
       `INSERT INTO memory_relations (
          id, namespace, source_memory_id, target_memory_id, relation_type, strength, reason, created_at
        ) VALUES (?, 'default', ?, ?, 'same_topic', 0.8, 'runtime self-loop', ?)`
-    ).bind(relationId, memory.id, memory.id, new Date().toISOString()).run();
+    ).bind(relationId, memory.id, memory.id, relationCreatedAt).run();
+    const relationCandidateKey = `m-review:relation:${relationId}:${relationCreatedAt}`;
 
     await expect(projectMemoryIntoFiveAxes(env, {
       namespace: "default",
@@ -403,7 +425,7 @@ describe("M-axis Worker circuit", () => {
     const candidate = await first<CandidateRow>(
       `SELECT id, status, action FROM memory_candidates
        WHERE namespace = 'default' AND action = 'm_relation_cleanup' AND external_key = ?`,
-      `m-review:relation:${relationId}`
+      relationCandidateKey
     );
     expect(candidate).toMatchObject({ status: "pending", action: "m_relation_cleanup" });
     await expect(env.DB.prepare(
@@ -411,7 +433,7 @@ describe("M-axis Worker circuit", () => {
        WHERE namespace = 'default' AND candidate_external_key = ?
          AND role IN ('source', 'target')
        ORDER BY role`
-    ).bind(`m-review:relation:${relationId}`).all<{ memory_id: string; role: string }>())
+    ).bind(relationCandidateKey).all<{ memory_id: string; role: string }>())
       .resolves.toMatchObject({
         results: [
           { memory_id: memory.id, role: "source" },

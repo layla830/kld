@@ -104,7 +104,7 @@ describe("memory deprojection contract", () => {
     expect(plan.transition).toBe("eligible_to_ineligible");
     expect(plan.previousRevision).toBe(4);
     expect(plan.currentRevision).toBe(5);
-    expect(plan.statements).toHaveLength(10);
+    expect(plan.statements).toHaveLength(11);
     expect(plan.successGuard.binds.slice(0, 9)).toEqual([
       "deproj_unit",
       "default",
@@ -133,6 +133,9 @@ describe("memory deprojection contract", () => {
     )).toBe(true);
     expect(prepared.some((statement) =>
       statement.sql.includes("UPDATE memory_five_axis_runs AS runs")
+    )).toBe(true);
+    expect(prepared.some((statement) =>
+      statement.sql.includes("DELETE FROM memory_metabolism_signal_state")
     )).toBe(true);
     expect(prepared.some((statement) => statement.sql.includes("invariants_verified"))).toBe(true);
   });

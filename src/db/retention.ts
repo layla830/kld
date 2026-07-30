@@ -1,5 +1,9 @@
 import { nowIso } from "../utils/time";
 import { PENDING_MEMORY_CANDIDATE_STATUSES } from "./memoryCandidateDependencies";
+import {
+  relationCleanupSnapshotCountSql,
+  relationCleanupSnapshotValiditySql
+} from "../memory/relationCleanupSnapshotContract.js";
 
 // ---------------------------------------------------------------------------
 // Batch size for SQL IN clauses and Vectorize deleteByIds
@@ -48,8 +52,26 @@ export async function deleteOldMemoryEvents(
   namespace: string,
   cutoff: string
 ): Promise<number> {
+  const snapshotValidity = relationCleanupSnapshotValiditySql(
+    "memory_events",
+    "candidate"
+  );
+  const snapshotCount = relationCleanupSnapshotCountSql("candidate");
   const result = await db
-    .prepare("DELETE FROM memory_events WHERE namespace = ? AND created_at < ?")
+    .prepare(
+      `DELETE FROM memory_events
+       WHERE namespace = ? AND created_at < ?
+         AND NOT EXISTS (
+           SELECT 1
+           FROM memory_candidates AS candidate
+           WHERE candidate.namespace = memory_events.namespace
+             AND candidate.id = json_extract(memory_events.payload_json, '$.candidate_id')
+             AND candidate.action = 'm_relation_cleanup'
+             AND candidate.status = 'approved'
+             AND ${snapshotValidity}
+             AND ${snapshotCount} = 1
+         )`
+    )
     .bind(namespace, cutoff)
     .run();
   return result.meta.changes ?? 0;
