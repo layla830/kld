@@ -905,9 +905,9 @@ const checks = [
   ],
   [
     "M: repeated patrols advance past relations already reviewed or queued",
-    metabolismReview.includes("NOT EXISTS") &&
-      metabolismReview.includes("c.external_key = 'm-review:relation:' || r.id") &&
-      metabolismReview.includes("c.external_key = 'm-review:relation:' || b.id"),
+    metabolismReview.includes("relationCleanupCandidateSuppression") &&
+      metabolismReview.includes("'m-review:relation:' || ${alias}.id || ':' || ${alias}.created_at") &&
+      metabolismReview.includes("legacy_candidate.external_key = 'm-review:relation:' || ${alias}.id"),
   ],
   [
     "M: protected memories never enter archive review",

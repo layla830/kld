@@ -36,6 +36,33 @@ interface QueuedCandidates {
   candidateExternalKeys: string[];
 }
 
+function relationCleanupCandidateKey(relation: RelationSnapshot): string {
+  return `m-review:relation:${relation.id}:${relation.created_at}`;
+}
+
+function relationCleanupCandidateSuppression(alias: "r" | "b"): string {
+  return `AND NOT EXISTS (
+      SELECT 1 FROM memory_candidates AS candidate
+      WHERE candidate.namespace = ${alias}.namespace
+        AND candidate.external_key =
+          'm-review:relation:' || ${alias}.id || ':' || ${alias}.created_at
+    )
+    AND NOT EXISTS (
+      SELECT 1 FROM memory_candidates AS legacy_candidate
+      WHERE legacy_candidate.namespace = ${alias}.namespace
+        AND legacy_candidate.external_key = 'm-review:relation:' || ${alias}.id
+        AND json_extract(legacy_candidate.payload_json, '$.before.id') = ${alias}.id
+        AND json_extract(legacy_candidate.payload_json, '$.before.source_memory_id')
+          = ${alias}.source_memory_id
+        AND json_extract(legacy_candidate.payload_json, '$.before.target_memory_id')
+          = ${alias}.target_memory_id
+        AND json_extract(legacy_candidate.payload_json, '$.before.relation_type')
+          = ${alias}.relation_type
+        AND json_extract(legacy_candidate.payload_json, '$.before.created_at')
+          = ${alias}.created_at
+    )`;
+}
+
 function archiveCandidatePredicate(alias: string): string {
   return `${alias}.status = 'active' AND ${alias}.pinned = 0
     AND (
@@ -181,10 +208,7 @@ async function relationCleanupRows(
       `SELECT r.* FROM memory_relations r
        WHERE r.namespace = ? AND r.source_memory_id = r.target_memory_id
          ${relationFilter}
-         AND NOT EXISTS (
-           SELECT 1 FROM memory_candidates c
-           WHERE c.namespace = r.namespace AND c.external_key = 'm-review:relation:' || r.id
-         )
+         ${relationCleanupCandidateSuppression("r")}
        LIMIT 50`
     ).bind(namespace, ...ids, ...ids).all<RelationSnapshot>(),
     env.DB.prepare(
@@ -196,10 +220,7 @@ async function relationCleanupRows(
          OR m1.status NOT IN ('active','review') OR m2.status NOT IN ('active','review')
        )
          ${relationFilter}
-         AND NOT EXISTS (
-           SELECT 1 FROM memory_candidates c
-           WHERE c.namespace = r.namespace AND c.external_key = 'm-review:relation:' || r.id
-         )
+         ${relationCleanupCandidateSuppression("r")}
        LIMIT 50`
     ).bind(namespace, ...ids, ...ids).all<RelationSnapshot>(),
     env.DB.prepare(
@@ -210,10 +231,7 @@ async function relationCleanupRows(
         AND b.id > a.id
        WHERE a.namespace = ? AND a.relation_type IN (${symmetricPlaceholders})
          ${symmetricFilter}
-         AND NOT EXISTS (
-           SELECT 1 FROM memory_candidates c
-           WHERE c.namespace = b.namespace AND c.external_key = 'm-review:relation:' || b.id
-         )
+         ${relationCleanupCandidateSuppression("b")}
        LIMIT 50`
     ).bind(namespace, ...symmetricTypes, ...ids, ...ids).all<RelationSnapshot>()
   ]);
@@ -237,7 +255,7 @@ async function queueRelationCandidates(
   if (dryRun) return { count: rows.length, candidateExternalKeys: [] };
   const candidateExternalKeys: string[] = [];
   for (const row of rows) {
-    const candidateExternalKey = `m-review:relation:${row.relation.id}`;
+    const candidateExternalKey = relationCleanupCandidateKey(row.relation);
     await upsertMemoryCandidate(env.DB, namespace, {
       externalKey: candidateExternalKey,
       dreamDate: dateKey(),
