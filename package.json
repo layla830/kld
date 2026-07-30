@@ -16,6 +16,7 @@
     "repair:inactive-five-axis-d1": "node scripts/repair-inactive-five-axis-d1.mjs",
     "repair:diary-origin-timeline": "node scripts/repair-diary-origin-timeline.mjs",
     "repair:inactive-vector-state": "node scripts/repair-inactive-vector-state.mjs",
+    "repair:legacy-relation-snapshots": "node scripts/repair-legacy-relation-snapshots.mjs",
     "test": "npm run test:unit && npm run test:worker",
     "test:unit": "vitest run --config vitest.config.ts",
     "test:worker": "vitest run --config vitest.worker.config.ts",
