@@ -7,5 +7,6 @@ dist/
 scripts/fact_key_audit*.json
 scripts/memory_relations*.json
 scripts/lmc5_coordinates*.json
+scripts/recall_regression_report*.json
 scripts/.tmp-audit/
 .audit/
