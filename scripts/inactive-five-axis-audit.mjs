@@ -11,6 +11,9 @@ import {
   relationCleanupSnapshotCountSql,
   relationCleanupSnapshotValiditySql
 } from "../src/memory/relationCleanupSnapshotContract.js";
+import {
+  relationProvenanceSql
+} from "../src/memory/relationProvenanceContract.js";
 
 export const AUDIT_ACTIVE_OUTBOX_STATUSES = Object.freeze(["pending", "queued", "failed"]);
 export const AUDIT_NON_TERMINAL_RUN_STATUSES = Object.freeze(["running", "failed", "pending_review"]);
@@ -125,12 +128,6 @@ export function activeDiarySplitOriginPredicate(alias) {
   return bindSqlPredicate(activeDiarySplitSourcePredicate(alias));
 }
 
-function relationReasonPrefixPredicate(alias, prefixes) {
-  return `(${prefixes.map((prefix) =>
-    `SUBSTR(COALESCE(${alias}.reason, ''), 1, ${prefix.length}) = ${sqlString(prefix)}`
-  ).join(" OR ")})`;
-}
-
 export function buildInactiveFiveAxisAuditQueries(input) {
   const namespace = sqlString(input.namespace);
   const staleHours = Math.min(Math.max(Math.floor(input.staleHours ?? 24), 1), 24 * 365);
@@ -139,33 +136,13 @@ export function buildInactiveFiveAxisAuditQueries(input) {
     ${inactive("source_memory")}
     OR ${inactive("target_memory")}
   )`;
-  const deterministicRelation = relationReasonPrefixPredicate("relation", [
-    "diary_day:",
-    "diary_timeline:",
-    "timeline_approved:"
-  ]);
-  const humanReviewedRelation = relationReasonPrefixPredicate("relation", [
-    "y-review:approved:",
-    "fact-group:approved:"
-  ]);
-  const builderBackedRelation = relationReasonPrefixPredicate("relation", [
-    "y:auto:",
-    "dream:auto:"
-  ]);
-  const apiWrittenRelation = relationReasonPrefixPredicate("relation", [
-    "api:memory-write:"
-  ]);
-  const legacyBackfillRelation = relationReasonPrefixPredicate("relation", [
-    "legacy-backfill:"
-  ]);
-  const provenRelation = `(
-    ${deterministicRelation}
-    OR ${humanReviewedRelation}
-    OR ${builderBackedRelation}
-    OR ${apiWrittenRelation}
-    OR ${legacyBackfillRelation}
-  )`;
-  const unprovenRelation = `NOT (${provenRelation})`;
+  const provenance = relationProvenanceSql("relation");
+  const deterministicRelation = provenance.predicates.deterministic_rebuildable;
+  const humanReviewedRelation = provenance.predicates.human_reviewed;
+  const builderBackedRelation = provenance.predicates.builder_backed;
+  const apiWrittenRelation = provenance.predicates.api_written;
+  const legacyBackfillRelation = provenance.predicates.legacy_backfill;
+  const unprovenRelation = provenance.unproven;
   const vectorNeedsUpsert = historicalVectorNeedsUpsertPredicate("memory");
   const vectorNeedsDelete = historicalVectorNeedsDeletePredicate("memory");
   const vectorRepair = historicalVectorRepairPredicate("memory");
