@@ -1,1 +1,5 @@
 ops/vps/*.py text eol=lf
+# Vite/vitest evaluates CLI modules through vm.Script, which rejects a shebang
+# pushed off line 1 after SSR preamble injection; CRLF defeats the pipeline's
+# shebang stripping, so keep every .mjs LF even under core.autocrlf=true.
+*.mjs text eol=lf
