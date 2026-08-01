@@ -71,6 +71,38 @@ describe("memory relation provenance promotion", () => {
     ).bind(namespace).first<{ count: number }>()).resolves.toEqual({ count: 1 });
   });
 
+  it("promotes a null reason without adding an empty previous-reason suffix", async () => {
+    const namespace = `relation-provenance-null-${crypto.randomUUID()}`;
+    const [source, target] = await createEndpoints(namespace);
+
+    await expect(createMemoryRelation(env.DB, {
+      namespace,
+      sourceMemoryId: source.id,
+      targetMemoryId: target.id,
+      relationType: "same_topic",
+      strength: 0.6
+    })).resolves.toBe(true);
+    const before = await readRelation(namespace);
+    expect(before?.reason).toBeNull();
+
+    const provenReason = `y:auto:${source.id}:1`;
+    await expect(createMemoryRelation(env.DB, {
+      namespace,
+      sourceMemoryId: source.id,
+      targetMemoryId: target.id,
+      relationType: "same_topic",
+      strength: 0.95,
+      reason: provenReason
+    })).resolves.toBe(true);
+
+    await expect(readRelation(namespace)).resolves.toEqual({
+      id: before!.id,
+      strength: 0.6,
+      reason: provenReason,
+      created_at: before!.created_at
+    });
+  });
+
   it("never overwrites human-reviewed provenance", async () => {
     const namespace = `relation-provenance-reviewed-${crypto.randomUUID()}`;
     const [source, target] = await createEndpoints(namespace);
