@@ -1,6 +1,6 @@
 import { handleHealth } from "./api/health";
 import { handleCache } from "./api/cache";
-import { handleCacheHealth, handleDreamDryRun, handleZAuditApprove, handleZAuditPending, handleZAuditScan, handleFiveAxisMaintenance, handleBackfillCoordinates, handleFactGroupProposals, handleTimelineBackfill, handleDiaryTimelineBackfill, handleLegacyRelationBackfill } from "./api/debug";
+import { handleCacheHealth, handleDreamDryRun, handleZAuditApprove, handleZAuditPending, handleZAuditScan, handleFiveAxisMaintenance, handleHistoricalYReconfirmation, handleBackfillCoordinates, handleFactGroupProposals, handleTimelineBackfill, handleDiaryTimelineBackfill, handleLegacyRelationBackfill } from "./api/debug";
 import { handleChatCompletions } from "./api/chatCompletions";
 import { handleGuideDogChatCompletions } from "./api/guideDog";
 import { handleAdminBoard } from "./api/adminBoard";
@@ -141,6 +141,10 @@ export default {
 
     if (request.method === "POST" && url.pathname === "/v1/debug/xyzem_maintenance") {
       return handleFiveAxisMaintenance(request, env);
+    }
+
+    if (request.method === "POST" && url.pathname === "/v1/debug/historical_y_reconfirmation") {
+      return handleHistoricalYReconfirmation(request, env);
     }
 
     if (request.method === "POST" && url.pathname === "/v1/debug/backfill_coordinates") {
