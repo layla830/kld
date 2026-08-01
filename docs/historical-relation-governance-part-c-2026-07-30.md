@@ -487,3 +487,65 @@ window.
 - no fallback restore path;
 - no change to recall traversal;
 - no attempt to make `clean=true` by hiding historical debt from the audit.
+
+## Post-completion follow-ups (Kimi (modal), 2026-07-31)
+
+Code landing:
+
+- PR #110 merged into `main` at `fd7e484` (merge commit, 2026-07-31): the
+  full governance toolchain (three deployed migrations, audit / snapshot /
+  delete / rollback commands, shared provenance contract, nine test files,
+  this handoff) is now durable on `main`. Rollback capability no longer
+  depends on any local worktree or feature branch surviving.
+- Pre-merge verification re-run: unit 179 passed (only the four pre-existing
+  Windows import failures), Worker 31 files / 197 passed / 6 skipped,
+  `tsc --noEmit` clean.
+
+Windows CLI import noise root-caused and fixed (PR #111, head `cbd1213`,
+merged into `main` as `c53dd19`):
+
+- Not a CRLF parsing issue per se: vitest inlines project modules through
+  `vm.Script`, which honors a shebang only at byte 0. CRLF defeats the
+  pipeline's own shebang stripping, so `#!/usr/bin/env node` survived into
+  the evaluated source below the injected SSR preamble. LF checkouts mask it,
+  which is why the newer LF-era scripts never failed.
+- Fix: `*.mjs text eol=lf` in `.gitattributes` (same idiom as the existing
+  `ops/vps/*.py` pin); shebangs kept; local CRLF files normalized with no
+  index content change.
+- Unit suite is now fully green: 41 files / 193 tests passed; Worker suite
+  unchanged (197 passed, 6 skipped).
+
+Recall regression failure (`says-this-kind-of-thing`) investigated via
+read-only production probes — no pipeline bug:
+
+- entry lanes into the merged candidate pool are vector / keyword / fact-key
+  hint / relation expansion; the paraphrase satisfied none of them;
+- zero of all 259 quote rows (any status) lexically match the query terms;
+  quotes carry no fact_keys; all 84 active quotes are
+  `vector_sync_status=synced`; 248 relations still touch active quotes;
+- no pre-deletion baseline ever existed, and the deletion only touched
+  ineligible endpoints. Expectation was simply unsatisfiable against real
+  data.
+- Case replaced with a literal-anchored utterance query
+  (`她那句「比骂我疼」的原话怎么说`): the quoted segment enters the pool
+  through the literal channel as a protected hit, then `applyLead` hoists the
+  quote (`mem_4aad46baaf264787ae16c32edadee274`, active + synced).
+- Full regression against production: 6/6. PR #112 also asserts the exact
+  target ID (`mem_4aad46baaf264787ae16c32edadee274`) so another quote cannot
+  produce a false pass; merged into `main` as `80ae48a` on 2026-08-01.
+
+Open items handed forward:
+
+- 174 quote records bulk-created in `review` status on 2026-07-10 (diary
+  re-import era) were never re-approved; roughly two thirds of the quote
+  corpus is recall-excluded with vectors deleted. Needs a product decision.
+- The `eligible_unproven` cohort (1369) remains deliberately retained under
+  the Part C decision; a separate review phase is still its only exit.
+- D1 Time Travel bookmark of 2026-07-30: account is Workers Free (user
+  confirmed), so the retention window lapses around 2026-08-06. Row-level
+  rollback (470 snapshots + 470 ledger rows + guard triggers) is unaffected.
+- Housekeeping pending: merged branches
+  (`agent/historical-relation-governance`, `agent/windows-mjs-shebang-eol`)
+  and the local worktree still to be cleaned up.
+
+— Kimi (modal), 2026-07-31
