@@ -93,8 +93,11 @@ const RELATION_NEIGHBOR_TOP_K = 6;
 const RELATION_NEIGHBOR_MIN_SCORE = 0.5;
 const RELATION_MAX_SCAN = 500;
 
-function readRelationModel(env: Env): string | null {
-  const value = env.DREAM_MODEL?.trim() || env.MEMORY_MODEL?.trim() || env.MEMORY_EXTRACT_MODEL?.trim();
+function readRelationModel(env: Env, modelOverride?: string): string | null {
+  const value = modelOverride?.trim()
+    || env.DREAM_MODEL?.trim()
+    || env.MEMORY_MODEL?.trim()
+    || env.MEMORY_EXTRACT_MODEL?.trim();
   return value || null;
 }
 
@@ -179,10 +182,11 @@ function buildRelationPrompt(candidates: RelationCandidate[]): string {
 
 export async function proposeRelationsViaLlm(
   env: Env,
-  candidates: RelationCandidate[]
+  candidates: RelationCandidate[],
+  modelOverride?: string
 ): Promise<{ hints: RelationHint[]; error?: string }> {
   if (candidates.length === 0) return { hints: [] };
-  const model = readRelationModel(env);
+  const model = readRelationModel(env, modelOverride);
   if (!model) return { hints: [], error: "missing_model" };
 
   const basePrompt = buildRelationPrompt(candidates);

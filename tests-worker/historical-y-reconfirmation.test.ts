@@ -107,7 +107,11 @@ async function createVerifiedFixture(
 }
 
 function exactProposal(relationType = "same_topic") {
-  return vi.fn(async (_runtimeEnv: Env, candidates: RelationCandidate[]) => ({
+  return vi.fn(async (
+    _runtimeEnv: Env,
+    candidates: RelationCandidate[],
+    _modelOverride?: string
+  ) => ({
     hints: candidates.map((candidate) => ({
       pair_id: candidate.pairId,
       relation_type: relationType,
@@ -125,13 +129,18 @@ describe("historical Y relation reconfirmation", () => {
       id: fixture.relationId
     });
     const proposal = exactProposal();
-    const result = await runHistoricalYReconfirmation(env, fixture.namespace, {
+    const runtimeEnv = {
+      ...env,
+      HISTORICAL_Y_RECONFIRM_MODEL: "deepseek/deepseek-v4-flash"
+    } as Env;
+    const result = await runHistoricalYReconfirmation(runtimeEnv, fixture.namespace, {
       manifestId: fixture.manifestId,
       relationIds: [fixture.relationId],
       dryRun: true
     }, { proposeRelations: proposal, now: () => "2026-08-02T01:00:00.000Z" });
 
     expect(proposal).toHaveBeenCalledTimes(1);
+    expect(proposal.mock.calls[0]?.[2]).toBe("deepseek/deepseek-v4-flash");
     expect(result).toMatchObject({
       mode: "dry_run",
       promoted: 1,

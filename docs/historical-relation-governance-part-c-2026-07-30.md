@@ -560,6 +560,8 @@ create a relation outside the selected historical manifest rows.
 Ownership boundaries:
 
 - `scripts/reconfirm-historical-y-relations.mjs` is the only operator driver;
+- the server-owned `HISTORICAL_Y_RECONFIRM_MODEL` selects the review model, so
+  historical batches can use Flash without changing normal Dream or Y-axis runs;
 - `POST /v1/debug/historical_y_reconfirmation` is the only Worker entry;
 - one request contains 1-10 exact relation IDs and never loops;
 - only `eligible_unproven` snapshot rows with a Y-safe relation type are
