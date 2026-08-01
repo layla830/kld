@@ -2,6 +2,7 @@ import {
   fiveAxisMemoryEligibilityPredicate,
   isFiveAxisMemoryEligible
 } from "../memory/fiveAxis/eligibility";
+import { relationProvenanceSql } from "../memory/relationProvenanceContract.js";
 import type { MemoryRecord } from "../types";
 import { newId } from "../utils/ids";
 import { nowIso } from "../utils/time";
@@ -9,6 +10,8 @@ import { fetchMemoriesByIds } from "./memories";
 import type { MemoryMutationGuard } from "./memories";
 
 const D1_BIND_LIMIT = 90;
+const existingRelationProvenance = relationProvenanceSql("memory_relations");
+const incomingRelationProvenance = relationProvenanceSql("excluded");
 
 export interface MemoryRelationRecord {
   id: string;
@@ -141,9 +144,17 @@ export function prepareMemoryRelationInsert(
   const strength = typeof input.strength === "number" && Number.isFinite(input.strength) ? clamp(input.strength, 0, 1) : 1;
 
   return db.prepare(
-      `INSERT OR IGNORE INTO memory_relations (
+      `INSERT INTO memory_relations (
         id, namespace, source_memory_id, target_memory_id, relation_type, strength, reason, created_at
-      ) SELECT ?, ?, ?, ?, ?, ?, ?, ?${guard ? ` WHERE ${guard.sql}` : ""}`
+      ) SELECT ?, ?, ?, ?, ?, ?, ?, ?
+        WHERE ${guard?.sql ?? "1"}
+      ON CONFLICT(namespace, source_memory_id, target_memory_id, relation_type) DO UPDATE SET
+        reason = excluded.reason || CASE
+          WHEN COALESCE(memory_relations.reason, '') = '' THEN ''
+          ELSE '|previous_reason:' || memory_relations.reason
+        END
+      WHERE ${existingRelationProvenance.unproven}
+        AND ${incomingRelationProvenance.proven}`
     ).bind(
       newId("rel"),
       input.namespace,
