@@ -664,7 +664,11 @@ export async function runHistoricalYReconfirmation(
     // RelationCandidate still requires this field; the shared LLM proposer does not use it.
     vectorScore: Number(snapshot.strength)
   }));
-  const proposal = await dependencies.proposeRelations(env, candidates);
+  const proposal = await dependencies.proposeRelations(
+    env,
+    candidates,
+    env.HISTORICAL_Y_RECONFIRM_MODEL
+  );
   if (proposal.error) {
     requestError(`historical_y_model_error:${proposal.error}`, 502);
   }

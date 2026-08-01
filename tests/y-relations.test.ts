@@ -216,6 +216,23 @@ describe("Y relation candidate boundary", () => {
     expect(retryRequest.messages[1].content).toContain("previous response was invalid");
   });
 
+  it("uses an explicit historical model override without changing the shared Dream model", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
+      choices: [{ message: { content: '{"hints":[]}' } }]
+    }), { status: 200 }));
+    const source = { id: "mem_a", content: "alpha" } as MemoryRecord;
+    const target = { id: "mem_b", content: "beta" } as MemoryRecord;
+
+    await proposeRelationsViaLlm({
+      DREAM_MODEL: "deepseek/deepseek-v4-pro",
+      AI_GATEWAY_BASE_URL: "https://example.test",
+      CF_AIG_TOKEN: "test-token"
+    } as Env, [{ pairId: "p0", source, target, vectorScore: 0.9 }], "deepseek/deepseek-v4-flash");
+
+    const request = JSON.parse(String(fetchSpy.mock.calls[0]?.[1]?.body));
+    expect(request.model).toBe("deepseek/deepseek-v4-flash");
+  });
+
   it("returns a bounded error after two invalid JSON responses", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify({
       choices: [{ message: { content: "still-not-json" } }]
