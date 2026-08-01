@@ -501,7 +501,8 @@ Code landing:
   Windows import failures), Worker 31 files / 197 passed / 6 skipped,
   `tsc --noEmit` clean.
 
-Windows CLI import noise root-caused and fixed (PR #111, merged at `cbd1213`):
+Windows CLI import noise root-caused and fixed (PR #111, head `cbd1213`,
+merged into `main` as `c53dd19`):
 
 - Not a CRLF parsing issue per se: vitest inlines project modules through
   `vm.Script`, which honors a shebang only at byte 0. CRLF defeats the
@@ -529,8 +530,9 @@ read-only production probes — no pipeline bug:
   (`她那句「比骂我疼」的原话怎么说`): the quoted segment enters the pool
   through the literal channel as a protected hit, then `applyLead` hoists the
   quote (`mem_4aad46baaf264787ae16c32edadee274`, active + synced).
-- Full regression against production: 6/6. Landed as PR #112 (open at the
-  time of writing).
+- Full regression against production: 6/6. PR #112 now also asserts the exact
+  target ID (`mem_4aad46baaf264787ae16c32edadee274`) so another quote cannot
+  produce a false pass; latest commit `46fb766` (open at the time of writing).
 
 Open items handed forward:
 
