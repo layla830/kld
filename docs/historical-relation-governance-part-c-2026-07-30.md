@@ -549,3 +549,96 @@ Open items handed forward:
   and the local worktree still to be cleaned up.
 
 — Kimi (modal), 2026-07-31
+
+## Eligible-unproven Y reconfirmation runbook (2026-08-02)
+
+The follow-up reconfirmation path is intentionally separate from the ordinary
+five-axis outbox. It does not bump memory revisions, reset terminal
+`memory_five_axis_runs`, run vector Top-K candidate discovery, or permit Y to
+create a relation outside the selected historical manifest rows.
+
+Ownership boundaries:
+
+- `scripts/reconfirm-historical-y-relations.mjs` is the only operator driver;
+- `POST /v1/debug/historical_y_reconfirmation` is the only Worker entry;
+- one request contains 1-10 exact relation IDs and never loops;
+- only `eligible_unproven` snapshot rows with a Y-safe relation type are
+  accepted;
+- `temporal_sequence` remains X-owned, while `contradicts`, `cause_effect`,
+  and `supports` remain review-owned;
+- a safe relation is promoted only when Y independently returns the same
+  pair and the same relation type;
+- the #114 conflict promotion preserves relation ID, strength, and
+  `created_at`, and appends the old semantic reason after `previous_reason:`;
+- non-canonical symmetric pairs fail closed so reconfirmation cannot insert a
+  normalized reverse duplicate.
+
+The schema migration
+`migrations/20260802_historical_y_reconfirmation.sql` adds immutable batch and
+per-relation ledger tables. Apply this migration separately before calling the
+new endpoint. A Worker deployment does not by itself prove that the D1
+migration has run.
+
+Required production sequence:
+
+1. Generate a fresh read-only historical relation manifest.
+2. Snapshot and verify the complete `eligible_unproven` cohort with the
+   existing snapshot command. The Worker accepts only a fully verified
+   manifest whose verified hashes and row count still match.
+3. Apply and verify the reconfirmation-ledger migration under separate
+   production authorization.
+4. Deploy the reviewed Worker and CLI code.
+5. Put the credential in the process environment only; never pass it as a CLI
+   argument or write it into a report:
+
+   ```powershell
+   $env:KLD_API_KEY = '<memory:write key>'
+   ```
+
+6. Run exactly one dry-run batch. This calls the real Y model but writes
+   nothing:
+
+   ```powershell
+   npm.cmd run reconfirm:historical-y -- --remote `
+     --manifest .audit\historical-relations-post-pr114-2026-08-02.json `
+     --offset 0 --limit 10 --json
+   ```
+
+7. Review the predicted `would_promote` and `not_reconfirmed` rows. Apply the
+   same manifest slice only after explicit authorization:
+
+   ```powershell
+   npm.cmd run reconfirm:historical-y -- --remote `
+     --manifest .audit\historical-relations-post-pr114-2026-08-02.json `
+     --offset 0 --limit 10 --apply `
+     --confirm <eligible_unproven_manifest_id> --json
+   ```
+
+8. Re-run the historical relation audit after each approved batch. The
+   expected signal is a decrease in `eligible_unproven` equal to the ledger's
+   `promoted` count; `stale_endpoint` must remain zero.
+
+Every apply revalidates the immutable snapshot, the current relation identity,
+both endpoint states, both endpoint revisions, and the exact manifest
+confirmation. Any drift rejects the batch before the model or before mutation.
+The content-addressed batch ID and `UNIQUE(manifest_id, relation_id)` make an
+apply replay idempotent and prevent repeated model sampling from being used to
+fish for a desired confirmation.
+
+Every apply ledger outcome is terminal for that relation under the same
+manifest, including `not_applied`. Operators must never edit or delete the
+immutable ledger to retry it. If a `not_applied` relation remains unproven and
+still needs reconsideration, generate a fresh audit manifest, snapshot and
+verify its new cohort, and use the new manifest ID; if another producer already
+promoted it, the fresh audit will classify it as proven instead.
+
+Dry-run is advisory rather than a frozen model decision: apply invokes the
+model again for the same exact relation IDs, so its decision can differ even
+at temperature zero. The apply ledger is the durable source of truth.
+
+There is deliberately no automatic promotion rollback command in this phase.
+The immutable ledger stores `before_reason` and `after_reason`, while the
+relation itself preserves the old semantic reason. Restoring provenance would
+therefore be possible, but it must be implemented and reviewed as a separate,
+manifest-guarded repair rather than as an unguarded UPDATE. D1 Time Travel
+remains the emergency whole-database recovery layer.

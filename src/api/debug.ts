@@ -5,7 +5,7 @@ import { runFiveAxisNightlyMaintenance } from "../memory/fiveAxis/nightly";
 import { listFactKeyConflictsForReview } from "../memory/fiveAxis/zFacts";
 import { listMemoryCandidatesByAction } from "../db/memoryCandidates";
 import { json, openAiError } from "../utils/json";
-import { readBody } from "./common";
+import { readBody, readString, resolveNamespace } from "./common";
 import type { Env } from "../types";
 import { proposeFactGroups } from "../memory/factGroups";
 import { runTimelineBackfill } from "../memory/timelineBackfill";
@@ -15,6 +15,10 @@ import { scanFactTransitionReviewCandidates } from "../memory/factTransitionRevi
 import { approveFactTransitionCandidate } from "./adminBoard/factTransitionActions";
 import { labelCoordinateBatch } from "../adapters/llm/coordinateLabeler";
 import { scanDiaryTimelineBackfill } from "../memory/diaryTimelineBackfill";
+import {
+  HistoricalYReconfirmationError,
+  runHistoricalYReconfirmation
+} from "../memory/historicalYReconfirmation";
 
 interface CacheHealthRow {
   created_at: string;
@@ -211,6 +215,48 @@ export async function handleFiveAxisMaintenance(request: Request, env: Env): Pro
   } catch (error) {
     console.error("xyzem_maintenance failed", error);
     return json({ error: "xyzem_maintenance_failed", detail: error instanceof Error ? error.message : String(error) }, { status: 500 });
+  }
+}
+
+export async function handleHistoricalYReconfirmation(
+  request: Request,
+  env: Env
+): Promise<Response> {
+  const auth = await authenticate(request, env);
+  if (!auth.ok) return openAiError("Unauthorized", 401, "authentication_error");
+
+  const scopeError = requireScope(auth.profile, "memory:write");
+  if (scopeError) return scopeError;
+
+  const body = await readBody(request);
+  const namespace = resolveNamespace(auth.profile, body?.namespace);
+  const manifestId = readString(body?.manifest_id) ?? "";
+  const rawRelationIds = body?.relation_ids;
+  const relationIds = Array.isArray(rawRelationIds)
+    && rawRelationIds.every((value): value is string => typeof value === "string")
+    ? rawRelationIds.map((value) => value.trim())
+    : [];
+  const apply = body?.apply === true;
+  const confirm = readString(body?.confirm);
+
+  try {
+    const result = await runHistoricalYReconfirmation(env, namespace, {
+      manifestId,
+      relationIds,
+      dryRun: !apply,
+      confirm
+    });
+    return json({ ok: true, mode: result.mode, result });
+  } catch (error) {
+    if (error instanceof HistoricalYReconfirmationError) {
+      return json({ error: error.code }, { status: error.status });
+    }
+    console.error("historical_y_reconfirmation failed", {
+      namespace,
+      manifest_id: manifestId,
+      error: error instanceof Error ? error.message : String(error)
+    });
+    return json({ error: "historical_y_reconfirmation_failed" }, { status: 500 });
   }
 }
 
