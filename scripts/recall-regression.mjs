@@ -86,12 +86,13 @@ const TESTS = [
     rationale: "guidance + cold_war thread; cold_war_absence must lead",
   },
   {
-    name: "says-this-kind-of-thing",
-    query: "她怎么说这种话",
+    name: "utterance-original-words-lead",
+    query: "她那句「比骂我疼」的原话怎么说",
+    expectTop1Id: "mem_4aad46baaf264787ae16c32edadee274",
     expectTop1Type: "quote",
     expectTop1NotType: ["diary", "timeline_day", "layla_diary", "lesson"],
     expectTop3NotType: ["timeline_day"],
-    rationale: "utterance (怎么说 hits UTTERANCE_RE not GUIDANCE_RE after 652030d); quote must lead via utteranceLeadFirst",
+    rationale: "utterance (原话/怎么说 hits UTTERANCE_RE after 652030d); quoted term 「比骂我疼」 enters the pool via the literal channel as a protected hit, then applyLead hoists the quote (verified target mem_4aad46baaf264787ae16c32edadee274, active + vector synced on 2026-07-31). Replaces says-this-kind-of-thing: that paraphrase had zero lexical overlap with any of the 259 stored quotes and no quote semantically close enough to enter the pool, so the expectation was unsatisfiable against real data.",
   },
   {
     name: "what-do-you-think-of-me",
@@ -206,6 +207,9 @@ function checkExpectations(test, results) {
     return { failures, warnings, top1: null };
   }
   const top1 = results[0];
+  if (test.expectTop1Id && top1.id !== test.expectTop1Id) {
+    failures.push(`top1.id expected "${test.expectTop1Id}", got "${top1.id || "-"}"`);
+  }
   if (test.expectTop1FactKey && top1.fact_key !== test.expectTop1FactKey) {
     failures.push(`top1.fact_key expected "${test.expectTop1FactKey}", got "${top1.fact_key || "-"}"`);
   }
@@ -298,6 +302,7 @@ async function main() {
       status: passed ? "passed" : "failed",
       rationale: test.rationale,
       expectations: {
+        expectTop1Id: test.expectTop1Id || null,
         expectTop1FactKey: test.expectTop1FactKey || null,
         expectTop1FactKeys: test.expectTop1FactKeys || null,
         expectTop1Type: test.expectTop1Type || null,
