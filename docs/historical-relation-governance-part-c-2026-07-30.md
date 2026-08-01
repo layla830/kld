@@ -530,9 +530,9 @@ read-only production probes — no pipeline bug:
   (`她那句「比骂我疼」的原话怎么说`): the quoted segment enters the pool
   through the literal channel as a protected hit, then `applyLead` hoists the
   quote (`mem_4aad46baaf264787ae16c32edadee274`, active + synced).
-- Full regression against production: 6/6. PR #112 now also asserts the exact
+- Full regression against production: 6/6. PR #112 also asserts the exact
   target ID (`mem_4aad46baaf264787ae16c32edadee274`) so another quote cannot
-  produce a false pass; latest commit `46fb766` (open at the time of writing).
+  produce a false pass; merged into `main` as `80ae48a` on 2026-08-01.
 
 Open items handed forward:
 
