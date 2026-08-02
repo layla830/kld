@@ -602,19 +602,54 @@ Required production sequence:
 
    ```powershell
    npm.cmd run reconfirm:historical-y -- --remote `
-     --manifest .audit\historical-relations-post-pr114-2026-08-02.json `
-     --offset 0 --limit 10 --json
+     --manifest .audit\historical-relations-post-pr115-2026-08-02.json `
+     --offset 0 --limit 5 --json
    ```
 
-7. Review the predicted `would_promote` and `not_reconfirmed` rows. Apply the
-   same manifest slice only after explicit authorization:
+   The report distinguishes `exact_match`, `type_changed`, `none_returned`,
+   and `missing_pair`, flags provenance claims, and includes the bounded
+   endpoint excerpts actually reviewed by the model. Reports therefore contain
+   memory content and must remain in gitignored `.audit/` storage.
+
+7. Review the dry-run rows offline. Put only the explicitly approved relation
+   IDs in a local selection file; do not add `--offset` or `--limit` when using
+   `--selection`:
+
+   A dry-run report containing any `missing_pair` is not eligible for apply:
+   never include that relation ID in an approved selection. Investigate the
+   model omission and run a fresh dry-run before considering it again.
+
+   ```json
+   {
+     "schema_version": 1,
+     "manifest_id": "<eligible_unproven_manifest_id>",
+     "relation_ids": ["<approved_relation_id>"]
+   }
+   ```
+
+   Preview that exact selection once. The CLI outputs its canonical
+   `batch_sha256` and still writes nothing:
 
    ```powershell
    npm.cmd run reconfirm:historical-y -- --remote `
-     --manifest .audit\historical-relations-post-pr114-2026-08-02.json `
-     --offset 0 --limit 10 --apply `
-     --confirm <eligible_unproven_manifest_id> --json
+     --manifest .audit\historical-relations-post-pr115-2026-08-02.json `
+     --selection .audit\historical-y-approved-selection.json --json
    ```
+
+   Only after separate user authorization naming both the manifest and the
+   returned hash may the exact selection be applied:
+
+   ```powershell
+   npm.cmd run reconfirm:historical-y -- --remote `
+     --manifest .audit\historical-relations-post-pr115-2026-08-02.json `
+     --selection .audit\historical-y-approved-selection.json --apply `
+     --confirm <eligible_unproven_manifest_id> `
+     --approve-selection <batch_sha256> --json
+   ```
+
+   Unselected offset/limit apply is rejected by the CLI. Dry-run remains
+   advisory: apply calls the model again and can record `not_reconfirmed`
+   instead of promoting a previously predicted exact match.
 
 8. Re-run the historical relation audit after each approved batch. The
    expected signal is a decrease in `eligible_unproven` equal to the ledger's

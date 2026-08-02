@@ -14,7 +14,7 @@ import {
 } from "../src/memory/historicalYReconfirmationContract.js";
 
 const DEFAULT_API_URL = "https://kld.yuxin2247.workers.dev";
-const DEFAULT_LIMIT = 10;
+const DEFAULT_LIMIT = 5;
 const MAX_LIMIT = 10;
 const RECONFIRMABLE_TYPES = new Set(HISTORICAL_Y_RECONFIRMABLE_RELATION_TYPES);
 
@@ -27,9 +27,12 @@ Options:
   --manifest <path>     Required. Read-only historical relation audit manifest.
   --offset <n>          Offset within the Y-reconfirmable cohort. Default: 0
   --limit <n>           Relations in this one request. Default: ${DEFAULT_LIMIT}; max: ${MAX_LIMIT}
+  --selection <path>    Approved explicit-ID selection; mutually exclusive with --offset/--limit.
   --api-url <url>       Worker base URL. Default: KLD_API_URL or ${DEFAULT_API_URL}
-  --apply               Apply one bounded batch. Default is LLM dry-run with zero writes.
+  --apply               Apply one approved selection. Default is LLM dry-run with zero writes.
   --confirm <id>        Required with --apply; exact eligible_unproven manifest_id.
+  --approve-selection <sha256>
+                        Required for apply with --selection; exact batch_sha256.
   --json                Emit machine-readable JSON.
   --help                Show this help.
 
@@ -41,12 +44,16 @@ export function parseHistoricalYReconfirmationArgs(argv, environment = process.e
   const args = {
     remote: false,
     manifestPath: "",
+    selectionPath: "",
     offset: 0,
     limit: DEFAULT_LIMIT,
+    offsetProvided: false,
+    limitProvided: false,
     apiUrl: String(environment.KLD_API_URL || DEFAULT_API_URL).replace(/\/$/, ""),
     apiKey: String(environment.KLD_API_KEY || ""),
     apply: false,
     confirm: "",
+    approveSelection: "",
     json: false,
     help: false
   };
@@ -57,10 +64,20 @@ export function parseHistoricalYReconfirmationArgs(argv, environment = process.e
     else if (arg === "--apply") args.apply = true;
     else if (arg === "--json") args.json = true;
     else if (arg === "--manifest") args.manifestPath = String(argv[++index] ?? "").trim();
-    else if (arg === "--offset") args.offset = Number(argv[++index]);
-    else if (arg === "--limit") args.limit = Number(argv[++index]);
+    else if (arg === "--offset") {
+      args.offset = Number(argv[++index]);
+      args.offsetProvided = true;
+    }
+    else if (arg === "--limit") {
+      args.limit = Number(argv[++index]);
+      args.limitProvided = true;
+    }
+    else if (arg === "--selection") args.selectionPath = String(argv[++index] ?? "").trim();
     else if (arg === "--api-url") args.apiUrl = String(argv[++index] ?? "").replace(/\/$/, "");
     else if (arg === "--confirm") args.confirm = String(argv[++index] ?? "").trim();
+    else if (arg === "--approve-selection") {
+      args.approveSelection = String(argv[++index] ?? "").trim().toLowerCase();
+    }
     else throw new Error(`Unknown argument: ${arg}`);
   }
   if (args.help) return args;
@@ -77,6 +94,18 @@ export function parseHistoricalYReconfirmationArgs(argv, environment = process.e
   if (!args.apply && args.confirm) {
     throw new Error("--confirm is only valid with --apply.");
   }
+  if (args.selectionPath && (args.offsetProvided || args.limitProvided)) {
+    throw new Error("--selection is mutually exclusive with --offset and --limit.");
+  }
+  if (args.approveSelection && (!args.apply || !args.selectionPath)) {
+    throw new Error("--approve-selection is only valid with --apply and --selection.");
+  }
+  if (args.apply && args.selectionPath && !args.approveSelection) {
+    throw new Error("--apply with --selection requires --approve-selection <batch_sha256>.");
+  }
+  if (args.apply && !args.selectionPath) {
+    throw new Error("--apply requires --selection <path> and --approve-selection <batch_sha256>.");
+  }
   return args;
 }
 
@@ -87,7 +116,7 @@ function requireString(value, field) {
   return value;
 }
 
-export function loadHistoricalYReconfirmationPlan(manifest, offset, limit) {
+function loadHistoricalYCandidateContext(manifest) {
   if (!manifest || typeof manifest !== "object") {
     throw new Error("historical_y_manifest_invalid");
   }
@@ -118,10 +147,13 @@ export function loadHistoricalYReconfirmationPlan(manifest, offset, limit) {
     && row.provenance_class === "unproven_source"
     && RECONFIRMABLE_TYPES.has(row.relation_type)
   );
-  const selected = candidates.slice(offset, offset + limit);
-  const relationIds = selected.map((row) => row.id).sort();
-  const canonicalBatch = relationIds.length > 0
-    ? canonicalHistoricalYBatch(cohort.manifest_id, relationIds)
+  return { namespace, cohort, candidates };
+}
+
+function buildHistoricalYPlan({ namespace, cohort, candidates }, relationIds, options = {}) {
+  const normalizedIds = [...relationIds].sort();
+  const canonicalBatch = normalizedIds.length > 0
+    ? canonicalHistoricalYBatch(cohort.manifest_id, normalizedIds)
     : null;
   const relationIdsSha256 = canonicalBatch
     ? createHash("sha256").update(canonicalBatch).digest("hex")
@@ -130,20 +162,65 @@ export function loadHistoricalYReconfirmationPlan(manifest, offset, limit) {
     namespace,
     manifestId: cohort.manifest_id,
     total: candidates.length,
-    offset,
-    selected: relationIds.length,
-    remaining: Math.max(candidates.length - offset - relationIds.length, 0),
-    relationIds,
+    offset: options.offset ?? null,
+    selected: normalizedIds.length,
+    remaining: Math.max(candidates.length - normalizedIds.length - (options.offset ?? 0), 0),
+    relationIds: normalizedIds,
     relationIdsSha256,
     batchId: relationIdsSha256
       ? historicalYBatchIdFromSha256(relationIdsSha256)
-      : null
+      : null,
+    selection: options.selection === true
   };
+}
+
+export function loadHistoricalYReconfirmationPlan(manifest, offset, limit) {
+  const context = loadHistoricalYCandidateContext(manifest);
+  const { candidates } = context;
+  const selected = candidates.slice(offset, offset + limit);
+  const relationIds = selected.map((row) => row.id).sort();
+  return buildHistoricalYPlan(context, relationIds, { offset });
+}
+
+export function loadHistoricalYSelectionPlan(manifest, selection) {
+  const context = loadHistoricalYCandidateContext(manifest);
+  if (!selection || typeof selection !== "object") {
+    throw new Error("historical_y_selection_invalid");
+  }
+  if (selection.schema_version !== 1) {
+    throw new Error("historical_y_selection_schema_version_invalid");
+  }
+  if (selection.manifest_id !== context.cohort.manifest_id) {
+    throw new Error("historical_y_selection_manifest_id_mismatch");
+  }
+  if (!Array.isArray(selection.relation_ids)
+    || selection.relation_ids.length < 1
+    || selection.relation_ids.length > MAX_LIMIT) {
+    throw new Error(`historical_y_selection_relation_count_must_be_1_to_${MAX_LIMIT}`);
+  }
+  const relationIds = selection.relation_ids.map((value) => String(value).trim());
+  if (relationIds.some((value) => !value) || new Set(relationIds).size !== relationIds.length) {
+    throw new Error("historical_y_selection_relation_ids_invalid");
+  }
+  const candidateIds = new Set(context.candidates.map((row) => row.id));
+  if (relationIds.some((id) => !candidateIds.has(id))) {
+    throw new Error("historical_y_selection_relation_not_reconfirmable");
+  }
+  const plan = buildHistoricalYPlan(context, relationIds, { selection: true });
+  if (selection.batch_sha256 != null
+    && (typeof selection.batch_sha256 !== "string"
+      || selection.batch_sha256.toLowerCase() !== plan.relationIdsSha256)) {
+    throw new Error("historical_y_selection_batch_sha256_mismatch");
+  }
+  return plan;
 }
 
 export async function runHistoricalYReconfirmationCommand(args, plan, fetchImpl = fetch) {
   if (args.apply && args.confirm !== plan.manifestId) {
     throw new Error(`--apply requires --confirm ${plan.manifestId}`);
+  }
+  if (args.apply && plan.selection && args.approveSelection !== plan.relationIdsSha256) {
+    throw new Error(`--apply with --selection requires --approve-selection ${plan.relationIdsSha256}`);
   }
   if (plan.selected === 0) {
     return {
@@ -151,6 +228,8 @@ export async function runHistoricalYReconfirmationCommand(args, plan, fetchImpl 
       mode: args.apply ? "apply" : "dry_run",
       manifest_id: plan.manifestId,
       batch_id: null,
+      batch_sha256: null,
+      relation_ids: [],
       offset: plan.offset,
       selected: 0,
       total: plan.total,
@@ -188,6 +267,8 @@ export async function runHistoricalYReconfirmationCommand(args, plan, fetchImpl 
   }
   return {
     ...result,
+    batch_sha256: plan.relationIdsSha256,
+    relation_ids: plan.relationIds,
     offset: plan.offset,
     selected: plan.selected,
     total: plan.total,
@@ -203,7 +284,12 @@ async function main() {
   }
   const manifestPath = path.resolve(args.manifestPath);
   const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
-  const plan = loadHistoricalYReconfirmationPlan(manifest, args.offset, args.limit);
+  const plan = args.selectionPath
+    ? loadHistoricalYSelectionPlan(
+        manifest,
+        JSON.parse(fs.readFileSync(path.resolve(args.selectionPath), "utf8"))
+      )
+    : loadHistoricalYReconfirmationPlan(manifest, args.offset, args.limit);
   const report = await runHistoricalYReconfirmationCommand(args, plan);
   if (args.json) console.log(JSON.stringify(report, null, 2));
   else {
