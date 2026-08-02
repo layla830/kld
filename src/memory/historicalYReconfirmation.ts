@@ -13,10 +13,14 @@ import {
   isFiveAxisMemoryEligible
 } from "./fiveAxis/eligibility";
 import {
-  proposeRelationsViaLlm,
-  type RelationCandidate,
-  type RelationHint
+  type RelationCandidate
 } from "./fiveAxis/yRelations";
+import {
+  historicalYContentExcerpt,
+  proposeHistoricalYRelations,
+  type HistoricalYProposalResult,
+  type HistoricalYRelationHint
+} from "./historicalYProposer";
 import {
   canonicalHistoricalYBatch,
   HISTORICAL_Y_RECONFIRMABLE_RELATION_TYPES,
@@ -93,6 +97,8 @@ interface HistoricalYDecision {
   proposedRelationType: string;
   proposedStrength: number | null;
   exactMatch: boolean;
+  changeKind: "exact_match" | "type_changed" | "none_returned" | "missing_pair";
+  provenanceClaim: boolean;
 }
 
 export class HistoricalYReconfirmationError extends Error {
@@ -105,12 +111,16 @@ export class HistoricalYReconfirmationError extends Error {
 }
 
 export interface HistoricalYReconfirmationDependencies {
-  proposeRelations: typeof proposeRelationsViaLlm;
+  proposeRelations: (
+    env: Env,
+    candidates: RelationCandidate[],
+    modelOverride?: string
+  ) => Promise<HistoricalYProposalResult>;
   now: () => string;
 }
 
 const defaultDependencies: HistoricalYReconfirmationDependencies = {
-  proposeRelations: proposeRelationsViaLlm,
+  proposeRelations: proposeHistoricalYRelations,
   now: () => new Date().toISOString()
 };
 
@@ -315,7 +325,12 @@ async function loadPreflight(
   return { snapshots, memories };
 }
 
-function chooseDecision(snapshot: HistoricalSnapshotRow, hints: RelationHint[]): HistoricalYDecision {
+const PROVENANCE_CLAIM_TYPES = new Set(["derived_from", "instance_of", "origin_split"]);
+
+export function chooseHistoricalYDecision(
+  snapshot: HistoricalSnapshotRow,
+  hints: HistoricalYRelationHint[]
+): HistoricalYDecision {
   const matchingHints = hints.filter((hint) => hint.pair_id === snapshot.relation_id);
   const exact = matchingHints.find(
     (hint) => normalizeRelationType(hint.relation_type) === snapshot.relation_type
@@ -328,7 +343,15 @@ function chooseDecision(snapshot: HistoricalSnapshotRow, hints: RelationHint[]):
     snapshot,
     proposedRelationType: normalizedType || "none",
     proposedStrength: selected ? selected.strength : null,
-    exactMatch: Boolean(exact) && RECONFIRMABLE_TYPES.has(snapshot.relation_type)
+    exactMatch: Boolean(exact) && RECONFIRMABLE_TYPES.has(snapshot.relation_type),
+    changeKind: !selected
+      ? "missing_pair"
+      : normalizedType === "none"
+        ? "none_returned"
+        : exact
+          ? "exact_match"
+          : "type_changed",
+    provenanceClaim: PROVENANCE_CLAIM_TYPES.has(normalizedType)
   };
 }
 
@@ -608,6 +631,30 @@ export async function runHistoricalYReconfirmation(
     proposed_strength: number | null;
     outcome: "would_promote" | "not_reconfirmed";
     after_reason: string | null;
+    change_kind: "exact_match" | "type_changed" | "none_returned" | "missing_pair";
+    provenance_claim: boolean;
+    review_evidence: {
+      original_relation_type: string;
+      original_strength: number;
+      source: {
+        id: string;
+        type: string;
+        status: string;
+        active_fact: number;
+        five_axis_revision: number;
+        created_at: string;
+        content_excerpt: string;
+      };
+      target: {
+        id: string;
+        type: string;
+        status: string;
+        active_fact: number;
+        five_axis_revision: number;
+        created_at: string;
+        content_excerpt: string;
+      };
+    };
   }>;
 }> {
   const manifestId = options.manifestId.trim();
@@ -661,7 +708,7 @@ export async function runHistoricalYReconfirmation(
     source: memories.get(snapshot.source_memory_id)!,
     target: memories.get(snapshot.target_memory_id)!,
     // Historical pairs are exact manifest rows, not vector-ranked discoveries.
-    // RelationCandidate still requires this field; the shared LLM proposer does not use it.
+    // RelationCandidate still requires this field; the historical proposer does not use it.
     vectorScore: Number(snapshot.strength)
   }));
   const proposal = await dependencies.proposeRelations(
@@ -672,7 +719,7 @@ export async function runHistoricalYReconfirmation(
   if (proposal.error) {
     requestError(`historical_y_model_error:${proposal.error}`, 502);
   }
-  const decisions = snapshots.map((snapshot) => chooseDecision(snapshot, proposal.hints));
+  const decisions = snapshots.map((snapshot) => chooseHistoricalYDecision(snapshot, proposal.hints));
   const dryEntries = decisions.map((decision) => ({
     relation_id: decision.snapshot.relation_id,
     before_reason: decision.snapshot.reason,
@@ -681,7 +728,35 @@ export async function runHistoricalYReconfirmation(
     outcome: decision.exactMatch ? "would_promote" as const : "not_reconfirmed" as const,
     after_reason: decision.exactMatch
       ? expectedPromotedReason(decision.snapshot)
-      : decision.snapshot.reason
+      : decision.snapshot.reason,
+    change_kind: decision.changeKind,
+    provenance_claim: decision.provenanceClaim,
+    review_evidence: {
+      original_relation_type: decision.snapshot.relation_type,
+      original_strength: Number(decision.snapshot.strength),
+      source: {
+        id: decision.snapshot.source_memory_id,
+        type: decision.snapshot.source_type,
+        status: decision.snapshot.source_status,
+        active_fact: decision.snapshot.source_active_fact,
+        five_axis_revision: decision.snapshot.source_five_axis_revision,
+        created_at: memories.get(decision.snapshot.source_memory_id)!.created_at,
+        content_excerpt: historicalYContentExcerpt(
+          memories.get(decision.snapshot.source_memory_id)!
+        )
+      },
+      target: {
+        id: decision.snapshot.target_memory_id,
+        type: decision.snapshot.target_type,
+        status: decision.snapshot.target_status,
+        active_fact: decision.snapshot.target_active_fact,
+        five_axis_revision: decision.snapshot.target_five_axis_revision,
+        created_at: memories.get(decision.snapshot.target_memory_id)!.created_at,
+        content_excerpt: historicalYContentExcerpt(
+          memories.get(decision.snapshot.target_memory_id)!
+        )
+      }
+    }
   }));
   if (dryRun) {
     return {
