@@ -607,9 +607,20 @@ Required production sequence:
    ```
 
    The report distinguishes `exact_match`, `type_changed`, `none_returned`,
-   and `missing_pair`, flags provenance claims, and includes the bounded
-   endpoint excerpts actually reviewed by the model. Reports therefore contain
-   memory content and must remain in gitignored `.audit/` storage.
+   `missing_pair`, `structural_confirmed`, `structural_mismatch`, and
+   `structural_skipped`, flags provenance claims and `direction_sensitive`
+   directed types, and includes the bounded endpoint excerpts actually reviewed
+   by the model. Reports therefore contain memory content and must remain in
+   gitignored `.audit/` storage.
+
+   Each response also carries a compact `attempts` array (per model call:
+   `attempt_index`, `model`, `batch_id`, `http_status`, `elapsed_ms`,
+   `finish_reason`, whitelisted `usage` tokens, `content_chars`,
+   `reasoning_chars`, `parse_outcome`) and `model_called: boolean`. An
+   all-structural batch (`in_thread`, `same_fact_key`) makes zero model calls
+   and returns `attempts: []`, `model_called: false`. On model failure the 502
+   body is `{ error, details: { attempts } }`; the `parse_outcome` taxonomy in
+   `details.attempts` identifies the failure class.
 
 7. Review the dry-run rows offline. Put only the explicitly approved relation
    IDs in a local selection file; do not add `--offset` or `--limit` when using
@@ -621,7 +632,7 @@ Required production sequence:
 
    ```json
    {
-     "schema_version": 1,
+     "schema_version": 2,
      "manifest_id": "<eligible_unproven_manifest_id>",
      "relation_ids": ["<approved_relation_id>"]
    }
@@ -647,9 +658,11 @@ Required production sequence:
      --approve-selection <batch_sha256> --json
    ```
 
-   Unselected offset/limit apply is rejected by the CLI. Dry-run remains
-   advisory: apply calls the model again and can record `not_reconfirmed`
-   instead of promoting a previously predicted exact match.
+   Unselected offset/limit apply is rejected by the CLI. Apply stays
+   single-call and remains forbidden until the stability gate (below) passes.
+   The apply ledger is the durable source of truth; `after_reason` stores
+   either `y:auto:` provenance (semantic exact-match) or
+   `historical-structural:<type>:<hash>` provenance (structural promotion).
 
 8. Re-run the historical relation audit after each approved batch. The
    expected signal is a decrease in `eligible_unproven` equal to the ledger's
@@ -679,3 +692,60 @@ relation itself preserves the old semantic reason. Restoring provenance would
 therefore be possible, but it must be implemented and reviewed as a separate,
 manifest-guarded repair rather than as an unguarded UPDATE. D1 Time Travel
 remains the emergency whole-database recovery layer.
+
+### v2 hardening (2026-08-02): structural types, strict parser, telemetry
+
+Schema version bumped to 2. All v1 batch IDs, selection-file hashes, and
+approval hashes are invalid for v2 (production ledger is empty, so zero
+cost). No migration needed; old code cannot replay into v2 semantics.
+
+Structural relation types (`in_thread`, `same_fact_key`) are decided
+deterministically from record fields, never by the model:
+
+- both `fact_key` non-null and equal → `structural_confirmed` (promoted);
+- both `thread` non-null and equal → `structural_confirmed` (promoted);
+- otherwise → `structural_mismatch` (not reconfirmed);
+- `origin_split` is excluded from the candidate set this round
+  (symmetric-set conflict with `SYMMETRIC_RELATION_TYPES` —
+  reverse-duplicate risk must be audited first). It is not offered to the
+  CLI or selection files, and the worker rejects its relation IDs with
+  409 `historical_y_relation_type_not_reconfirmable` before any ledger
+  write, so its one-shot outcome cannot be burned. Plans report the count
+  as `skipped_origin_split`.
+
+Structural promotions write `historical-structural:<type>:<evidence_sha256>`
+provenance (classified `deterministic_rebuildable`), never `y:auto:`. The
+evidence hash covers field names, IDs, and revision numbers only — never raw
+`thread`/`fact_key` values. Semantic (model) promotions keep `y:auto:`.
+
+The model prompt bans the three structural types and adds the `instance_of`
+direction rule (source A is a concrete instance of target B's concept).
+`derived_from` evidence rules are unchanged.
+
+The parser is strict: out-of-vocabulary type, duplicate `pair_id`, unknown
+`pair_id`, malformed hint (missing/non-string fields, non-`none` without
+explicit numeric `strength`) → attempt failure. Two consecutive failures →
+502 with zero writes. `missing_pair` is reserved for an otherwise valid
+response that omits a known requested `pair_id`. The silent `strength: 0.6`
+default is removed.
+
+Dry-run entries carry `field_evidence` (`{fact_key_equal, thread_equal}`,
+`null` when not applicable) so structural decisions show their boolean
+evidence in the report rather than only implicitly via `change_kind`.
+
+### Stability gate (before any new sample or apply)
+
+Before running a new 60-relation stratified sample or any apply, the same
+small window (e.g. offset 99, limit 5) is run **three times** as separate
+dry-run CLI invocations. Pass requires ALL of:
+
+1. 3/3 Worker requests ultimately succeed;
+2. at least 2/3 succeed on the first model attempt;
+3. at least 4 of 5 pairs receive an identical type in 3/3 runs;
+4. every pair whose type is directed (in any run) is self-consistent across
+   3/3 runs;
+5. zero structural-type out-of-vocabulary outputs across all attempts;
+6. final reports contain zero `missing_pair` and zero directed-type flips.
+
+Gate results are recorded in `.audit/`. No apply and no new sample without a
+passed gate and explicit user approval.

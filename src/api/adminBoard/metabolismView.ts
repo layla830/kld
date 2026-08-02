@@ -1,6 +1,7 @@
 import type { MemoryCandidateRecord } from "../../db/memoryCandidates";
 import { isFiveAxisMemoryTypeEligible } from "../../memory/fiveAxis/eligibility";
 import { RECALL_EXCLUDED_TYPES } from "../../recall/outputPolicy";
+import { RELATION_TYPE_REGISTRY } from "../../memory/relationTypeRegistry";
 import { ADMIN_BOARD_ROUTES } from "./routes";
 import { attr, htmlEscape, payloadOf } from "./utils";
 
@@ -16,29 +17,6 @@ interface RelationIssue {
   recommendation: string;
   code: "self_loop" | "missing_endpoint" | "inactive_endpoint" | "symmetric_duplicate" | "unknown";
 }
-
-const RELATION_TYPES: Record<string, RelationTypeInfo> = {
-  same_issue: { label: "同一问题", meaning: "两条记忆在处理同一个问题", direction: "对称关系" },
-  same_project: { label: "同一项目", meaning: "两条记忆属于同一个项目", direction: "对称关系" },
-  same_tool: { label: "同一工具", meaning: "两条记忆涉及同一个工具", direction: "对称关系" },
-  same_event: { label: "同一事件", meaning: "两条记忆描述同一件具体事件", direction: "对称关系" },
-  same_topic: { label: "同一话题", meaning: "两条记忆主题相同，但不一定是同一事件", direction: "对称关系" },
-  temporal_sequence: { label: "时间先后", meaning: "起点记忆发生在前，终点记忆是后续", direction: "有向关系" },
-  emotional_link: { label: "情绪关联", meaning: "两条记忆共享相近的情绪体验", direction: "对称关系" },
-  in_thread: { label: "同一主题线", meaning: "两条记忆属于同一条长期主题线", direction: "对称关系" },
-  same_person: { label: "同一人物", meaning: "两条记忆涉及同一个人", direction: "对称关系" },
-  in_episode: { label: "同一经历", meaning: "两条记忆属于同一段经历", direction: "对称关系" },
-  instance_of: { label: "实例归属", meaning: "起点记忆是终点概念的一个具体实例", direction: "有向关系" },
-  derived_from: { label: "由此提炼", meaning: "终点记忆由起点记忆提炼或演化而来", direction: "有向关系" },
-  same_fact_key: { label: "同一事实槽", meaning: "两条记忆是同一事实的不同记录", direction: "对称关系" },
-  origin_split: { label: "同源拆分", meaning: "两条记忆来自同一条原始记录的拆分", direction: "对称关系" }
-};
-
-Object.assign(RELATION_TYPES, {
-  contradicts: { label: "相互矛盾", meaning: "两条记忆对同一事实给出了不兼容的描述", direction: "对称关系" },
-  cause_effect: { label: "因果关系", meaning: "起点记忆描述原因，终点记忆描述结果", direction: "有向关系" },
-  supports: { label: "支持关系", meaning: "起点记忆为终点记忆提供证据或支撑", direction: "有向关系" }
-} satisfies Record<string, RelationTypeInfo>);
 
 function beforeOf(payload: Record<string, unknown>): Record<string, unknown> {
   return payload.before && typeof payload.before === "object" ? payload.before as Record<string, unknown> : {};
@@ -64,7 +42,16 @@ function isLiveStatus(status: string | null | undefined): boolean {
 }
 
 function relationTypeInfo(type: string | null): RelationTypeInfo {
-  if (type && RELATION_TYPES[type]) return RELATION_TYPES[type];
+  if (type) {
+    const meta = RELATION_TYPE_REGISTRY[type];
+    if (meta) {
+      return {
+        label: meta.label,
+        meaning: meta.meaning,
+        direction: meta.direction === "symmetric" ? "对称关系" : "有向关系"
+      };
+    }
+  }
   return {
     label: type || "未知关系",
     meaning: "页面没有这类关系的中文说明，请先保留并查看完整快照",

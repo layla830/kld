@@ -249,7 +249,10 @@ export async function handleHistoricalYReconfirmation(
     return json({ ok: true, mode: result.mode, result });
   } catch (error) {
     if (error instanceof HistoricalYReconfirmationError) {
-      return json({ error: error.code }, { status: error.status });
+      return json(
+        { error: error.code, ...(error.details ? { details: error.details } : {}) },
+        { status: error.status }
+      );
     }
     console.error("historical_y_reconfirmation failed", {
       namespace,

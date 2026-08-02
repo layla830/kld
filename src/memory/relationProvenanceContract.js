@@ -11,7 +11,8 @@ export const RELATION_PROVENANCE_PREFIXES = Object.freeze({
   deterministic_rebuildable: Object.freeze([
     "diary_day:",
     "diary_timeline:",
-    "timeline_approved:"
+    "timeline_approved:",
+    "historical-structural:"
   ]),
   human_reviewed: Object.freeze([
     "y-review:approved:",
