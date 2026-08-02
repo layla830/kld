@@ -24,6 +24,7 @@ export interface HistoricalYReconfirmationPlan {
   namespace: string;
   manifestId: string;
   total: number;
+  skipped_origin_split: number;
   offset: number | null;
   selected: number;
   remaining: number;

@@ -18,6 +18,7 @@ import {
 import {
   historicalYContentExcerpt,
   proposeHistoricalYRelations,
+  type HistoricalYAttemptTelemetry,
   type HistoricalYProposalResult,
   type HistoricalYRelationHint
 } from "./historicalYProposer";
@@ -29,6 +30,7 @@ import {
   normalizeHistoricalYRelationIds
 } from "./historicalYReconfirmationContract.js";
 import { relationProvenanceSql } from "./relationProvenanceContract.js";
+import { isDirectedRelationType, isStructuralRelationType } from "./relationTypeRegistry";
 
 const MAX_RELATIONS_PER_BATCH = 10;
 const RECONFIRMABLE_TYPES = new Set(HISTORICAL_Y_RECONFIRMABLE_RELATION_TYPES);
@@ -46,7 +48,7 @@ interface HistoricalManifestRow {
   status: string;
 }
 
-interface HistoricalSnapshotRow {
+export interface HistoricalSnapshotRow {
   manifest_id: string;
   namespace: string;
   lifecycle_cohort: string;
@@ -97,14 +99,22 @@ interface HistoricalYDecision {
   proposedRelationType: string;
   proposedStrength: number | null;
   exactMatch: boolean;
-  changeKind: "exact_match" | "type_changed" | "none_returned" | "missing_pair";
+  changeKind: "exact_match" | "type_changed" | "none_returned" | "missing_pair" | "structural_confirmed" | "structural_mismatch" | "structural_skipped";
   provenanceClaim: boolean;
+  matchedFields?: string[];
+  /** Boolean field evidence for structural verdicts; null when not applicable. */
+  fieldEvidence?: { fact_key_equal: boolean | null; thread_equal: boolean | null };
+  /** Base provenance handed to prepareMemoryRelationInsert (it appends |previous_reason itself). */
+  promoteReasonBase?: string;
+  /** Full expected after_reason (base + |previous_reason suffix) for ledger/dry-run. */
+  expectedAfterReason?: string;
 }
 
 export class HistoricalYReconfirmationError extends Error {
   constructor(
     public readonly code: string,
-    public readonly status: number
+    public readonly status: number,
+    public readonly details?: unknown
   ) {
     super(code);
   }
@@ -114,7 +124,8 @@ export interface HistoricalYReconfirmationDependencies {
   proposeRelations: (
     env: Env,
     candidates: RelationCandidate[],
-    modelOverride?: string
+    modelOverride?: string,
+    batchId?: string
   ) => Promise<HistoricalYProposalResult>;
   now: () => string;
 }
@@ -124,8 +135,8 @@ const defaultDependencies: HistoricalYReconfirmationDependencies = {
   now: () => new Date().toISOString()
 };
 
-function requestError(code: string, status = 400): never {
-  throw new HistoricalYReconfirmationError(code, status);
+function requestError(code: string, status = 400, details?: unknown): never {
+  throw new HistoricalYReconfirmationError(code, status, details);
 }
 
 function placeholders(count: number): string {
@@ -152,6 +163,96 @@ function expectedPromotedReason(snapshot: HistoricalSnapshotRow): string {
   return snapshot.reason == null || snapshot.reason === ""
     ? provenance
     : `${provenance}|previous_reason:${snapshot.reason}`;
+}
+
+/**
+ * Deterministic decision for a structural relation type (in_thread / same_fact_key).
+ * The pair is never sent to the model — its verdict comes from record fields.
+ *
+ * origin_split is skipped this round (spec P3: symmetric-set conflict).
+ */
+export function chooseStructuralDecision(
+  snapshot: HistoricalSnapshotRow,
+  source: MemoryRecord,
+  target: MemoryRecord
+): HistoricalYDecision {
+  const type = snapshot.relation_type;
+  if (type === "origin_split") {
+    // Unreachable through the public path: origin_split is excluded from
+    // HISTORICAL_Y_RECONFIRMABLE_RELATION_TYPES, so assertSnapshotCurrent
+    // rejects it with 409 before any decision is made. Kept as
+    // defense-in-depth; apply refuses structural_skipped decisions explicitly.
+    return {
+      snapshot,
+      proposedRelationType: type,
+      proposedStrength: Number(snapshot.strength),
+      exactMatch: false,
+      changeKind: "structural_skipped",
+      provenanceClaim: false,
+      fieldEvidence: { fact_key_equal: null, thread_equal: null }
+    };
+  }
+  const fieldName = type === "same_fact_key" ? "fact_key" : type === "in_thread" ? "thread" : null;
+  const sourceVal = fieldName ? (source as unknown as Record<string, unknown>)[fieldName] : null;
+  const targetVal = fieldName ? (target as unknown as Record<string, unknown>)[fieldName] : null;
+  const match = Boolean(
+    typeof sourceVal === "string" && sourceVal
+    && typeof targetVal === "string" && targetVal
+    && sourceVal === targetVal
+  );
+  const matchedFields = match && fieldName ? [fieldName] : [];
+  return {
+    snapshot,
+    proposedRelationType: type,
+    proposedStrength: Number(snapshot.strength),
+    exactMatch: match,
+    changeKind: match ? "structural_confirmed" : "structural_mismatch",
+    provenanceClaim: false,
+    matchedFields,
+    fieldEvidence: {
+      fact_key_equal: fieldName === "fact_key" ? match : null,
+      thread_equal: fieldName === "thread" ? match : null
+    }
+  };
+}
+
+/**
+ * Build the base proof reason for a structural promotion:
+ * historical-structural:<type>:<evidence_sha256_first_32_hex>
+ *
+ * The evidence hash covers field NAMES, IDs, and revision numbers — never
+ * raw thread/fact_key values.
+ */
+export async function structuralProofBase(
+  snapshot: HistoricalSnapshotRow,
+  matchedFields: string[]
+): Promise<string> {
+  const evidence = JSON.stringify({
+    schema_version: 2,
+    relation_type: snapshot.relation_type,
+    matched_fields: matchedFields,
+    source_memory_id: snapshot.source_memory_id,
+    source_five_axis_revision: snapshot.source_five_axis_revision,
+    target_memory_id: snapshot.target_memory_id,
+    target_five_axis_revision: snapshot.target_five_axis_revision
+  });
+  const hash = (await sha256Hex(evidence)).slice(0, 32);
+  return `historical-structural:${snapshot.relation_type}:${hash}`;
+}
+
+/**
+ * Build the full expected proof reason for a structural promotion:
+ * structuralProofBase plus |previous_reason:<old> when an old reason exists.
+ * This is the durable value stored in the ledger's after_reason.
+ */
+export async function structuralPromotedReason(
+  snapshot: HistoricalSnapshotRow,
+  matchedFields: string[]
+): Promise<string> {
+  const base = await structuralProofBase(snapshot, matchedFields);
+  return snapshot.reason == null || snapshot.reason === ""
+    ? base
+    : `${base}|previous_reason:${snapshot.reason}`;
 }
 
 function assertManifestVerified(manifest: HistoricalManifestRow | null): asserts manifest is HistoricalManifestRow {
@@ -527,9 +628,10 @@ function prepareLedgerInsert(
   decision: HistoricalYDecision,
   createdAt: string
 ): D1PreparedStatement {
-  const expectedAfter = decision.exactMatch
-    ? expectedPromotedReason(decision.snapshot)
-    : decision.snapshot.reason;
+  const expectedAfter = decision.expectedAfterReason
+    ?? (decision.exactMatch
+      ? expectedPromotedReason(decision.snapshot)
+      : decision.snapshot.reason);
   const outcomeSql = decision.exactMatch
     ? "CASE WHEN relation.reason IS ? THEN 'promoted' ELSE 'not_applied' END"
     : "'not_reconfirmed'";
@@ -585,16 +687,20 @@ async function applyDecisions(
   const statements: D1PreparedStatement[] = [prepareBatchClaim(db, input)];
   for (const decision of input.decisions) {
     if (decision.exactMatch) {
+      // NOTE: pass the BASE provenance only — prepareMemoryRelationInsert
+      // appends "|previous_reason:<old>" itself in its ON CONFLICT clause.
+      const reason = decision.promoteReasonBase
+        ?? relationProvenance.yAuto(
+          decision.snapshot.source_memory_id,
+          decision.snapshot.source_five_axis_revision
+        );
       const relation = prepareMemoryRelationInsert(db, {
         namespace: input.namespace,
         sourceMemoryId: decision.snapshot.source_memory_id,
         targetMemoryId: decision.snapshot.target_memory_id,
         relationType: decision.snapshot.relation_type,
         strength: decision.snapshot.strength,
-        reason: relationProvenance.yAuto(
-          decision.snapshot.source_memory_id,
-          decision.snapshot.source_five_axis_revision
-        )
+        reason
       }, exactSnapshotGuard(decision.snapshot, input.batchId));
       if (!relation) requestError("historical_y_relation_statement_rejected", 409);
       statements.push(relation);
@@ -624,6 +730,8 @@ export async function runHistoricalYReconfirmation(
   promoted: number;
   not_reconfirmed: number;
   not_applied: number;
+  attempts: HistoricalYAttemptTelemetry[];
+  model_called: boolean;
   entries: Array<HistoricalReconfirmationEntry | {
     relation_id: string;
     before_reason: string | null;
@@ -631,8 +739,10 @@ export async function runHistoricalYReconfirmation(
     proposed_strength: number | null;
     outcome: "would_promote" | "not_reconfirmed";
     after_reason: string | null;
-    change_kind: "exact_match" | "type_changed" | "none_returned" | "missing_pair";
+    change_kind: "exact_match" | "type_changed" | "none_returned" | "missing_pair" | "structural_confirmed" | "structural_mismatch" | "structural_skipped";
     provenance_claim: boolean;
+    direction_sensitive: boolean;
+    field_evidence: { fact_key_equal: boolean | null; thread_equal: boolean | null } | null;
     review_evidence: {
       original_relation_type: string;
       original_strength: number;
@@ -693,6 +803,8 @@ export async function runHistoricalYReconfirmation(
       promoted: stored.entries.filter((entry) => entry.outcome === "promoted").length,
       not_reconfirmed: stored.entries.filter((entry) => entry.outcome === "not_reconfirmed").length,
       not_applied: stored.entries.filter((entry) => entry.outcome === "not_applied").length,
+      attempts: [],
+      model_called: false,
       entries: stored.entries
     };
   }
@@ -703,23 +815,68 @@ export async function runHistoricalYReconfirmation(
     manifestId,
     relationIds
   );
-  const candidates: RelationCandidate[] = snapshots.map((snapshot) => ({
-    pairId: snapshot.relation_id,
-    source: memories.get(snapshot.source_memory_id)!,
-    target: memories.get(snapshot.target_memory_id)!,
-    // Historical pairs are exact manifest rows, not vector-ranked discoveries.
-    // RelationCandidate still requires this field; the historical proposer does not use it.
-    vectorScore: Number(snapshot.strength)
-  }));
-  const proposal = await dependencies.proposeRelations(
-    env,
-    candidates,
-    env.HISTORICAL_Y_RECONFIRM_MODEL
-  );
-  if (proposal.error) {
-    requestError(`historical_y_model_error:${proposal.error}`, 502);
+
+  // Split snapshots into structural (deterministic) and semantic (model) pairs.
+  const structuralSnapshots = snapshots.filter((s) => isStructuralRelationType(s.relation_type));
+  const semanticSnapshots = snapshots.filter((s) => !isStructuralRelationType(s.relation_type));
+
+  // Structural decisions: deterministic, zero model calls.
+  const structuralDecisions: HistoricalYDecision[] = [];
+  for (const snapshot of structuralSnapshots) {
+    const source = memories.get(snapshot.source_memory_id)!;
+    const target = memories.get(snapshot.target_memory_id)!;
+    const decision = chooseStructuralDecision(snapshot, source, target);
+    if (decision.changeKind === "structural_confirmed") {
+      decision.promoteReasonBase = await structuralProofBase(
+        snapshot,
+        decision.matchedFields ?? []
+      );
+      decision.expectedAfterReason = await structuralPromotedReason(
+        snapshot,
+        decision.matchedFields ?? []
+      );
+    }
+    structuralDecisions.push(decision);
   }
-  const decisions = snapshots.map((snapshot) => chooseHistoricalYDecision(snapshot, proposal.hints));
+
+  // Semantic decisions: send only semantic candidates to the model.
+  let attempts: HistoricalYAttemptTelemetry[] = [];
+  let modelCalled = false;
+  let semanticDecisions: HistoricalYDecision[] = [];
+
+  if (semanticSnapshots.length === 0) {
+    // All-structural batch: zero model calls (spec P2).
+    modelCalled = false;
+    attempts = [];
+  } else {
+    const semanticCandidates: RelationCandidate[] = semanticSnapshots.map((snapshot) => ({
+      pairId: snapshot.relation_id,
+      source: memories.get(snapshot.source_memory_id)!,
+      target: memories.get(snapshot.target_memory_id)!,
+      vectorScore: Number(snapshot.strength)
+    }));
+    const proposal = await dependencies.proposeRelations(
+      env,
+      semanticCandidates,
+      env.HISTORICAL_Y_RECONFIRM_MODEL,
+      batchId
+    );
+    attempts = proposal.attempts ?? [];
+    modelCalled = proposal.modelCalled ?? true;
+    if (proposal.error) {
+      requestError(`historical_y_model_error:${proposal.error}`, 502, { attempts });
+    }
+    semanticDecisions = semanticSnapshots.map((snapshot) =>
+      chooseHistoricalYDecision(snapshot, proposal.hints)
+    );
+  }
+
+  // Merge decisions preserving original snapshot order.
+  const decisionMap = new Map<string, HistoricalYDecision>();
+  for (const d of structuralDecisions) decisionMap.set(d.snapshot.relation_id, d);
+  for (const d of semanticDecisions) decisionMap.set(d.snapshot.relation_id, d);
+  const decisions = snapshots.map((snapshot) => decisionMap.get(snapshot.relation_id)!);
+
   const dryEntries = decisions.map((decision) => ({
     relation_id: decision.snapshot.relation_id,
     before_reason: decision.snapshot.reason,
@@ -727,10 +884,12 @@ export async function runHistoricalYReconfirmation(
     proposed_strength: decision.proposedStrength,
     outcome: decision.exactMatch ? "would_promote" as const : "not_reconfirmed" as const,
     after_reason: decision.exactMatch
-      ? expectedPromotedReason(decision.snapshot)
+      ? (decision.expectedAfterReason ?? expectedPromotedReason(decision.snapshot))
       : decision.snapshot.reason,
     change_kind: decision.changeKind,
     provenance_claim: decision.provenanceClaim,
+    direction_sensitive: isDirectedRelationType(decision.proposedRelationType),
+    field_evidence: decision.fieldEvidence ?? null,
     review_evidence: {
       original_relation_type: decision.snapshot.relation_type,
       original_strength: Number(decision.snapshot.strength),
@@ -769,11 +928,21 @@ export async function runHistoricalYReconfirmation(
       promoted: dryEntries.filter((entry) => entry.outcome === "would_promote").length,
       not_reconfirmed: dryEntries.filter((entry) => entry.outcome === "not_reconfirmed").length,
       not_applied: 0,
+      attempts,
+      model_called: modelCalled,
       entries: dryEntries
     };
   }
 
   const createdAt = dependencies.now();
+  // Defense-in-depth: a structural_skipped decision must never reach the
+  // ledger. origin_split is excluded from the reconfirmable contract so
+  // preflight already rejects it with 409; if a skipped decision ever
+  // appears anyway, fail the whole apply with zero writes rather than
+  // burning the relation's one-shot outcome (spec P3 / review F1).
+  if (decisions.some((decision) => decision.changeKind === "structural_skipped")) {
+    requestError("historical_y_structural_skipped_not_applicable", 409);
+  }
   await applyDecisions(env.DB, {
     batchId,
     manifestId,
@@ -801,6 +970,8 @@ export async function runHistoricalYReconfirmation(
     promoted: applied.entries.filter((entry) => entry.outcome === "promoted").length,
     not_reconfirmed: applied.entries.filter((entry) => entry.outcome === "not_reconfirmed").length,
     not_applied: applied.entries.filter((entry) => entry.outcome === "not_applied").length,
+    attempts,
+    model_called: modelCalled,
     entries: applied.entries
   };
 }

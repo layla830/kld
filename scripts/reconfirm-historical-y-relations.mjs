@@ -147,10 +147,17 @@ function loadHistoricalYCandidateContext(manifest) {
     && row.provenance_class === "unproven_source"
     && RECONFIRMABLE_TYPES.has(row.relation_type)
   );
-  return { namespace, cohort, candidates };
+  // P3: origin_split is excluded from the candidate set this round; count it
+  // separately so the plan report shows how many were skipped by exclusion.
+  const skippedOriginSplit = rebuilt.relations.filter((row) =>
+    row.lifecycle_cohort === "eligible_unproven"
+    && row.provenance_class === "unproven_source"
+    && row.relation_type === "origin_split"
+  ).length;
+  return { namespace, cohort, candidates, skippedOriginSplit };
 }
 
-function buildHistoricalYPlan({ namespace, cohort, candidates }, relationIds, options = {}) {
+function buildHistoricalYPlan({ namespace, cohort, candidates, skippedOriginSplit }, relationIds, options = {}) {
   const normalizedIds = [...relationIds].sort();
   const canonicalBatch = normalizedIds.length > 0
     ? canonicalHistoricalYBatch(cohort.manifest_id, normalizedIds)
@@ -162,6 +169,7 @@ function buildHistoricalYPlan({ namespace, cohort, candidates }, relationIds, op
     namespace,
     manifestId: cohort.manifest_id,
     total: candidates.length,
+    skipped_origin_split: skippedOriginSplit ?? 0,
     offset: options.offset ?? null,
     selected: normalizedIds.length,
     remaining: Math.max(candidates.length - normalizedIds.length - (options.offset ?? 0), 0),
@@ -187,7 +195,7 @@ export function loadHistoricalYSelectionPlan(manifest, selection) {
   if (!selection || typeof selection !== "object") {
     throw new Error("historical_y_selection_invalid");
   }
-  if (selection.schema_version !== 1) {
+  if (selection.schema_version !== 2) {
     throw new Error("historical_y_selection_schema_version_invalid");
   }
   if (selection.manifest_id !== context.cohort.manifest_id) {
@@ -224,7 +232,7 @@ export async function runHistoricalYReconfirmationCommand(args, plan, fetchImpl 
   }
   if (plan.selected === 0) {
     return {
-      schema_version: 1,
+      schema_version: 2,
       mode: args.apply ? "apply" : "dry_run",
       manifest_id: plan.manifestId,
       batch_id: null,
@@ -233,6 +241,7 @@ export async function runHistoricalYReconfirmationCommand(args, plan, fetchImpl 
       offset: plan.offset,
       selected: 0,
       total: plan.total,
+      skipped_origin_split: plan.skipped_origin_split,
       remaining: plan.remaining,
       complete: plan.offset >= plan.total
     };
@@ -272,6 +281,7 @@ export async function runHistoricalYReconfirmationCommand(args, plan, fetchImpl 
     offset: plan.offset,
     selected: plan.selected,
     total: plan.total,
+    skipped_origin_split: plan.skipped_origin_split,
     remaining: plan.remaining
   };
 }

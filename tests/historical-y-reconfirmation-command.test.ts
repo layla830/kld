@@ -99,6 +99,41 @@ describe("historical Y reconfirmation command", () => {
     expect(plan.batchId).toMatch(/^hyr_[0-9a-f]{32}$/);
   });
 
+  it("excludes origin_split from candidates and reports the skipped count", () => {
+    const rows = [
+      relationRow("rel_1", "same_topic"),
+      relationRow("rel_9", "origin_split")
+    ];
+    const manifest = buildHistoricalRelationManifest({
+      namespace: "default",
+      summaryRows: [
+        {
+          lifecycle_cohort: "eligible_unproven",
+          provenance_class: "unproven_source",
+          relation_type: "same_topic",
+          relation_count: 1
+        },
+        {
+          lifecycle_cohort: "eligible_unproven",
+          provenance_class: "unproven_source",
+          relation_type: "origin_split",
+          relation_count: 1
+        }
+      ],
+      rows,
+      generatedAt: "2026-08-02T00:00:00.000Z"
+    });
+    const plan = loadHistoricalYReconfirmationPlan(manifest, 0, 10);
+    expect(plan.total).toBe(1);
+    expect(plan.relationIds).toEqual(["rel_1"]);
+    expect(plan.skipped_origin_split).toBe(1);
+    expect(() => loadHistoricalYSelectionPlan(manifest, {
+      schema_version: 2,
+      manifest_id: plan.manifestId,
+      relation_ids: ["rel_9"]
+    })).toThrow("historical_y_selection_relation_not_reconfirmable");
+  });
+
   it("makes one bounded dry-run request and rejects unselected apply", async () => {
     const plan = loadHistoricalYReconfirmationPlan(commandManifest(), 0, 10);
     const args = parseHistoricalYReconfirmationArgs([
@@ -153,12 +188,30 @@ describe("historical Y reconfirmation command", () => {
     expect(historicalYBatchIdFromSha256(hash)).toBe(`hyr_${hash.slice(0, 32)}`);
   });
 
+  it("uses schema version 2 in canonical batch so v1 hashes cannot drive v2 requests", async () => {
+    const manifestId = "hrg_0123456789abcdef0123456789abcdef";
+    const relationIds = ["rel_a", "rel_b"];
+    const canonicalV2 = canonicalHistoricalYBatch(manifestId, relationIds);
+    expect(JSON.parse(canonicalV2).schema_version).toBe(2);
+    // Simulate v1 canonical (schema_version: 1) to prove the hash differs.
+    const canonicalV1 = JSON.stringify({
+      schema_version: 1,
+      manifest_id: manifestId,
+      relation_ids: relationIds
+    });
+    const v2Digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(canonicalV2));
+    const v1Digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(canonicalV1));
+    const toHex = (buf: ArrayBuffer) => [...new Uint8Array(buf)]
+      .map((b) => b.toString(16).padStart(2, "0")).join("");
+    expect(toHex(v2Digest)).not.toBe(toHex(v1Digest));
+  });
+
   it("validates a manifest-guarded explicit selection and its apply approval", async () => {
     const manifest = commandManifest();
     const sliced = loadHistoricalYReconfirmationPlan(manifest, 0, 10);
     const batchSha256 = sliced.relationIdsSha256!;
     const selection = {
-      schema_version: 1,
+      schema_version: 2,
       manifest_id: sliced.manifestId,
       relation_ids: sliced.relationIds,
       batch_sha256: batchSha256,
@@ -172,7 +225,7 @@ describe("historical Y reconfirmation command", () => {
       selection: true
     });
     expect(loadHistoricalYSelectionPlan(manifest, {
-      schema_version: 1,
+      schema_version: 2,
       manifest_id: sliced.manifestId,
       relation_ids: sliced.relationIds
     }).relationIdsSha256).toBe(batchSha256);
@@ -212,13 +265,13 @@ describe("historical Y reconfirmation command", () => {
     const manifest = commandManifest();
     const sliced = loadHistoricalYReconfirmationPlan(manifest, 0, 10);
     expect(() => loadHistoricalYSelectionPlan(manifest, {
-      schema_version: 1,
+      schema_version: 2,
       manifest_id: sliced.manifestId,
       relation_ids: ["rel_1"],
       batch_sha256: "0".repeat(64)
     })).toThrow("historical_y_selection_batch_sha256_mismatch");
     expect(() => loadHistoricalYSelectionPlan(manifest, {
-      schema_version: 1,
+      schema_version: 2,
       manifest_id: sliced.manifestId,
       relation_ids: ["rel_not_in_manifest"],
       batch_sha256: "0".repeat(64)

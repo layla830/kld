@@ -1,4 +1,4 @@
-import { readAssistantTexts } from "../adapters/llm/assistantText";
+import { readAssistantParts } from "../adapters/llm/assistantText";
 import { callOpenAICompat } from "../proxy/openaiAdapter";
 import type { Env, MemoryRecord, OpenAIChatRequest, OpenAIChatResponse } from "../types";
 import { extractJsonObject } from "../utils/jsonHelpers";
@@ -7,15 +7,63 @@ import type { RelationCandidate } from "./fiveAxis/yRelations";
 export const HISTORICAL_Y_CONTENT_LIMIT = 200;
 const HISTORICAL_Y_MAX_TOKENS = 4096;
 
+/**
+ * Semantic relation types the model is allowed to output.
+ *
+ * Structural types (in_thread, same_fact_key, origin_split) are excluded —
+ * those are decided deterministically from record fields, never by the model.
+ */
+const SEMANTIC_RELATION_TYPES = new Set<string>(
+  [
+    "same_issue",
+    "same_project",
+    "same_tool",
+    "same_event",
+    "same_topic",
+    "emotional_link",
+    "same_person",
+    "in_episode",
+    "instance_of",
+    "derived_from",
+    "none"
+  ]
+);
+
 export interface HistoricalYRelationHint {
   pair_id: string;
   relation_type: string;
   strength: number | null;
 }
 
+/**
+ * Per-attempt telemetry recorded for every model call.  Never contains prompt
+ * text, memory content, or completion text — only structured features.
+ *
+ * See: spec §2.1
+ */
+export interface HistoricalYAttemptTelemetry {
+  attempt_index: number;
+  model: string | null;
+  batch_id: string | null;
+  http_status: number | null;
+  elapsed_ms: number;
+  finish_reason: string | null;
+  usage: {
+    prompt_tokens: number | null;
+    completion_tokens: number | null;
+    total_tokens: number | null;
+    reasoning_tokens: number | null;
+  };
+  content_chars: number;
+  reasoning_chars: number | null;
+  parse_outcome: string;
+}
+
 export interface HistoricalYProposalResult {
   hints: HistoricalYRelationHint[];
   error?: string;
+  attempts?: HistoricalYAttemptTelemetry[];
+  modelCalled?: boolean;
 }
 
 export function historicalYContentExcerpt(memory: Pick<MemoryRecord, "content">): string {
@@ -48,9 +96,14 @@ export function buildHistoricalYPrompt(candidates: RelationCandidate[]): string 
     "输出格式：{\"hints\":[{\"pair_id\":\"...\",\"relation_type\":\"same_topic\",\"strength\":0.7}]}",
     "若没有足够关系，也必须返回该 pair_id，relation_type 使用 none，strength 使用 null。",
     "",
-    "允许类型：same_issue, same_project, same_tool, same_event, same_topic, emotional_link, in_thread, same_person, in_episode, instance_of, derived_from, same_fact_key, origin_split, none。",
+    "允许类型：same_issue, same_project, same_tool, same_event, same_topic, emotional_link, same_person, in_episode, instance_of, derived_from, none。",
     "时间先后关系由 X 轴维护，绝不输出 temporal_sequence。",
+    "in_thread、same_fact_key、origin_split 由系统从记录字段判定，证据不在模型输入中，模型不得输出这三个类型。",
     "same_event 表示同一具体事件的两条记录；same_topic 表示同主题但不是同一事件。",
+    "",
+    "instance_of 是有方向的：起点 A 是终点 B 概念的一个具体实例。方向不明时不得输出 instance_of。",
+    "合成正例：A 是一次具体争吵记录；B 是关于『争吵模式』的认知 rule，则 A→B 可为 instance_of。",
+    "合成反例：A 和 B 都是独立整合的 rule，共享主题但没有实例归属关系，应为 same_topic，不是 instance_of。",
     "",
     "derived_from 是有方向的来源断言：目标 B 是从来源 A 提炼、总结或拆分出来的。",
     "没有明确来源证据不得输出 derived_from，也不得仅凭内容相似猜测来源。",
@@ -66,48 +119,111 @@ export function buildHistoricalYPrompt(candidates: RelationCandidate[]): string 
   ].join("\n");
 }
 
-function parseHistoricalHints(value: unknown): HistoricalYRelationHint[] | null {
-  const rawHints = value && typeof value === "object"
-    ? (value as { hints?: unknown }).hints
-    : null;
-  if (!Array.isArray(rawHints)) return null;
+/**
+ * Parse the model's JSON response strictly.
+ *
+ * Returns `{ hints, parseOutcome }`.  When `parseOutcome` is not `"ok"`,
+ * `hints` is null and the attempt is considered failed.
+ *
+ * `missing_pair` is NOT a parse outcome — the parser succeeds (ok) even if
+ * some requested pair_ids are absent; missing_pair is detected by the writer.
+ */
+function parseHistoricalHints(
+  value: unknown,
+  requestedPairIds: Set<string>
+): { hints: HistoricalYRelationHint[] | null; parseOutcome: string } {
+  if (!value || typeof value !== "object") {
+    return { hints: null, parseOutcome: "no_json_object" };
+  }
+  const rawHints = (value as { hints?: unknown }).hints;
+  if (!Array.isArray(rawHints)) {
+    return { hints: null, parseOutcome: "hints_array_invalid" };
+  }
+  if (rawHints.length === 0) {
+    return { hints: null, parseOutcome: "empty_choices" };
+  }
   const hints: HistoricalYRelationHint[] = [];
   const seenPairIds = new Set<string>();
   for (const item of rawHints) {
-    if (!item || typeof item !== "object") continue;
+    if (!item || typeof item !== "object") {
+      return { hints: null, parseOutcome: "malformed_hint" };
+    }
     const record = item as Record<string, unknown>;
     const pairId = typeof record.pair_id === "string" ? record.pair_id.trim() : "";
     const relationType = typeof record.relation_type === "string"
       ? record.relation_type.trim()
       : "";
-    if (!pairId || !relationType) continue;
-    if (seenPairIds.has(pairId)) return null;
+    if (!pairId || !relationType) {
+      return { hints: null, parseOutcome: "malformed_hint" };
+    }
+    if (!SEMANTIC_RELATION_TYPES.has(relationType)) {
+      return { hints: null, parseOutcome: "out_of_vocabulary_type" };
+    }
+    if (!requestedPairIds.has(pairId)) {
+      return { hints: null, parseOutcome: "unknown_pair_id" };
+    }
+    if (seenPairIds.has(pairId)) {
+      return { hints: null, parseOutcome: "duplicate_pair_id" };
+    }
     seenPairIds.add(pairId);
-    hints.push({
-      pair_id: pairId,
-      relation_type: relationType,
-      strength: relationType.toLowerCase() === "none"
-        ? null
-        : typeof record.strength === "number"
-          ? Math.min(Math.max(record.strength, 0), 1)
-          : 0.6
-    });
+
+    const isNone = relationType.toLowerCase() === "none";
+    if (isNone) {
+      hints.push({ pair_id: pairId, relation_type: relationType, strength: null });
+    } else if (typeof record.strength === "number" && Number.isFinite(record.strength)) {
+      hints.push({
+        pair_id: pairId,
+        relation_type: relationType,
+        strength: Math.min(Math.max(record.strength, 0), 1)
+      });
+    } else {
+      return { hints: null, parseOutcome: "malformed_hint" };
+    }
   }
-  return hints;
+  return { hints, parseOutcome: "ok" };
+}
+
+/**
+ * Extract usage fields via a numeric whitelist.  Never passes the raw upstream
+ * object through; missing fields become explicit nulls.
+ */
+function extractUsage(raw: unknown): HistoricalYAttemptTelemetry["usage"] {
+  const u = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
+  const details = typeof u.completion_tokens_details === "object" && u.completion_tokens_details
+    ? u.completion_tokens_details as Record<string, unknown>
+    : {};
+  return {
+    prompt_tokens: typeof u.prompt_tokens === "number" ? u.prompt_tokens : null,
+    completion_tokens: typeof u.completion_tokens === "number" ? u.completion_tokens : null,
+    total_tokens: typeof u.total_tokens === "number" ? u.total_tokens : null,
+    reasoning_tokens: typeof details.reasoning_tokens === "number" ? details.reasoning_tokens : null
+  };
+}
+
+function logTelemetry(telemetry: HistoricalYAttemptTelemetry): void {
+  console.log(JSON.stringify({
+    event: "historical_y_attempt",
+    ...telemetry
+  }));
 }
 
 export async function proposeHistoricalYRelations(
   env: Env,
   candidates: RelationCandidate[],
-  modelOverride?: string
+  modelOverride?: string,
+  batchId?: string
 ): Promise<HistoricalYProposalResult> {
-  if (candidates.length === 0) return { hints: [] };
+  if (candidates.length === 0) return { hints: [], attempts: [], modelCalled: false };
   const model = historicalRelationModel(env, modelOverride);
-  if (!model) return { hints: [], error: "missing_model" };
+  if (!model) return { hints: [], error: "missing_model", attempts: [], modelCalled: false };
 
+  const requestedPairIds = new Set(candidates.map((candidate) => candidate.pairId));
   const basePrompt = buildHistoricalYPrompt(candidates);
+  const attempts: HistoricalYAttemptTelemetry[] = [];
   let lastError = "invalid_json";
+
   for (let attempt = 0; attempt < 2; attempt += 1) {
+    const attemptStart = Date.now();
     const request: OpenAIChatRequest = {
       model,
       messages: [
@@ -124,26 +240,81 @@ export async function proposeHistoricalYRelations(
       response_format: { type: "json_object" },
       stream: false
     };
+
+    let telemetry: HistoricalYAttemptTelemetry;
+
     try {
       const response = await callOpenAICompat(env, request);
+      const elapsedMs = Date.now() - attemptStart;
+
       if (!response.ok) {
         lastError = `model_status_${response.status}`;
+        telemetry = {
+          attempt_index: attempt,
+          model,
+          batch_id: batchId ?? null,
+          http_status: response.status,
+          elapsed_ms: elapsedMs,
+          finish_reason: null,
+          usage: { prompt_tokens: null, completion_tokens: null, total_tokens: null, reasoning_tokens: null },
+          content_chars: 0,
+          reasoning_chars: null,
+          parse_outcome: "http_error"
+        };
+        attempts.push(telemetry);
+        logTelemetry(telemetry);
         if (attempt === 0 && response.status >= 500) continue;
-        return { hints: [], error: lastError };
+        return { hints: [], error: lastError, attempts, modelCalled: true };
       }
+
       const parsed = (await response.json()) as OpenAIChatResponse;
-      const hints = readAssistantTexts(parsed)
-        .map((text) => parseHistoricalHints(extractJsonObject(text)))
-        .find((value) => value !== null) ?? null;
+      const { content: contentText, reasoning: reasoningText } = readAssistantParts(parsed);
+
+      const extractedJson = extractJsonObject(contentText);
+      const { hints, parseOutcome } = parseHistoricalHints(extractedJson, requestedPairIds);
+
+      const finishReason = parsed.choices?.[0]?.finish_reason ?? null;
+      const usage = extractUsage(parsed.usage);
+
+      telemetry = {
+        attempt_index: attempt,
+        model,
+        batch_id: batchId ?? null,
+        http_status: response.status,
+        elapsed_ms: elapsedMs,
+        finish_reason: typeof finishReason === "string" ? finishReason : null,
+        usage,
+        content_chars: contentText.length,
+        reasoning_chars: reasoningText.length > 0 ? reasoningText.length : null,
+        parse_outcome: hints ? "ok" : parseOutcome
+      };
+      attempts.push(telemetry);
+      logTelemetry(telemetry);
+
       if (!hints) {
         lastError = "invalid_json";
         continue;
       }
-      return { hints };
+      return { hints, attempts, modelCalled: true };
     } catch (error) {
+      const elapsedMs = Date.now() - attemptStart;
       lastError = error instanceof Error ? error.message : String(error);
+      telemetry = {
+        attempt_index: attempt,
+        model,
+        batch_id: batchId ?? null,
+        http_status: null,
+        elapsed_ms: elapsedMs,
+        finish_reason: null,
+        usage: { prompt_tokens: null, completion_tokens: null, total_tokens: null, reasoning_tokens: null },
+        content_chars: 0,
+        reasoning_chars: null,
+        parse_outcome: "exception"
+      };
+      attempts.push(telemetry);
+      logTelemetry(telemetry);
       if (attempt === 0) continue;
     }
   }
-  return { hints: [], error: lastError };
+  return { hints: [], error: lastError, attempts, modelCalled: true };
 }

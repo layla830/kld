@@ -1,4 +1,4 @@
-export const HISTORICAL_Y_RECONFIRMATION_SCHEMA_VERSION = 1;
+export const HISTORICAL_Y_RECONFIRMATION_SCHEMA_VERSION = 2;
 
 export const HISTORICAL_Y_RECONFIRMABLE_RELATION_TYPES = Object.freeze([
   "same_issue",
@@ -12,9 +12,22 @@ export const HISTORICAL_Y_RECONFIRMABLE_RELATION_TYPES = Object.freeze([
   "in_episode",
   "instance_of",
   "derived_from",
-  "same_fact_key",
-  "origin_split"
+  "same_fact_key"
 ]);
+
+// origin_split stays structural but is NOT reconfirmable this round (spec P3):
+// the admin table calls it symmetric while SYMMETRIC_RELATION_TYPES excludes it,
+// so pair direction is never canonicalized. Excluding it here keeps the CLI
+// candidate set clean and makes the worker reject origin_split relation IDs
+// with 409 before any ledger row can burn the relation's one-shot outcome.
+
+export const HISTORICAL_Y_DIRECTED_RELATION_TYPES = Object.freeze(
+  ["derived_from", "instance_of"]
+);
+
+export const HISTORICAL_Y_STRUCTURAL_RELATION_TYPES = Object.freeze(
+  ["in_thread", "same_fact_key", "origin_split"]
+);
 
 export function normalizeHistoricalYRelationIds(relationIds) {
   if (!Array.isArray(relationIds)) {
