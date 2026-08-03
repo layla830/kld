@@ -265,6 +265,14 @@ export async function runHistoricalYReconfirmationCommand(args, plan, fetchImpl 
     const code = payload && typeof payload === "object" && "error" in payload
       ? String(payload.error)
       : `http_${response.status}`;
+    // Preserve the v2 failure telemetry (details.attempts) on stderr so the
+    // operator's .audit capture keeps the autopsy data the 502 body carried.
+    const details = payload && typeof payload === "object" && "details" in payload
+      ? payload.details
+      : null;
+    if (details) {
+      console.error(`historical_y_worker_error_details:${JSON.stringify(details)}`);
+    }
     throw new Error(`historical_y_worker_error:${code}`);
   }
   if (!payload || typeof payload !== "object" || !("result" in payload)) {
