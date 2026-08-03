@@ -172,6 +172,51 @@ describe("historical Y reconfirmation command", () => {
     ], { KLD_API_KEY: "secret" })).toThrow("--apply requires --selection");
   });
 
+  it("surfaces 502 details.attempts telemetry on stderr for .audit capture", async () => {
+    const plan = loadHistoricalYReconfirmationPlan(commandManifest(), 0, 10);
+    const args = parseHistoricalYReconfirmationArgs([
+      "--remote",
+      "--manifest", "manifest.json"
+    ], { KLD_API_KEY: "secret", KLD_API_URL: "https://example.test" });
+    const attempts = [
+      { attempt_index: 0, model: "test", batch_id: plan.batchId, http_status: 200, parse_outcome: "no_json_object" },
+      { attempt_index: 1, model: "test", batch_id: plan.batchId, http_status: 200, parse_outcome: "no_json_object" }
+    ];
+    const fetchImpl = vi.fn(async () => Response.json({
+      error: "historical_y_model_error:invalid_json",
+      details: { attempts }
+    }, { status: 502 }));
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await expect(runHistoricalYReconfirmationCommand(args, plan, fetchImpl))
+        .rejects.toThrow("historical_y_worker_error:historical_y_model_error:invalid_json");
+      expect(errorSpy).toHaveBeenCalledWith(
+        `historical_y_worker_error_details:${JSON.stringify({ attempts })}`
+      );
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("does not log details when the error body has none", async () => {
+    const plan = loadHistoricalYReconfirmationPlan(commandManifest(), 0, 10);
+    const args = parseHistoricalYReconfirmationArgs([
+      "--remote",
+      "--manifest", "manifest.json"
+    ], { KLD_API_KEY: "secret", KLD_API_URL: "https://example.test" });
+    const fetchImpl = vi.fn(async () => Response.json({
+      error: "historical_y_relation_type_not_reconfirmable:rel_1"
+    }, { status: 409 }));
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await expect(runHistoricalYReconfirmationCommand(args, plan, fetchImpl))
+        .rejects.toThrow("historical_y_worker_error:historical_y_relation_type_not_reconfirmable:rel_1");
+      expect(errorSpy).not.toHaveBeenCalled();
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
   it("content-addresses sorted relation ids", async () => {
     const canonical = canonicalHistoricalYBatch(
       "hrg_0123456789abcdef0123456789abcdef",

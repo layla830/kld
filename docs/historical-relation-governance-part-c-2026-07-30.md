@@ -620,7 +620,9 @@ Required production sequence:
    all-structural batch (`in_thread`, `same_fact_key`) makes zero model calls
    and returns `attempts: []`, `model_called: false`. On model failure the 502
    body is `{ error, details: { attempts } }`; the `parse_outcome` taxonomy in
-   `details.attempts` identifies the failure class.
+   `details.attempts` identifies the failure class. On failure the CLI echoes
+   `historical_y_worker_error_details:{...}` to stderr before exiting non-zero,
+   so capturing stderr alongside the report preserves the autopsy telemetry.
 
 7. Review the dry-run rows offline. Put only the explicitly approved relation
    IDs in a local selection file; do not add `--offset` or `--limit` when using
