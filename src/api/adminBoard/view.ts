@@ -9,7 +9,7 @@ import type { CoordinateBackfillStatus } from "../../memory/coordinateBackfillCo
 import { renderTimelineCandidate } from "./timelineView";
 import { renderOperationalReviewCandidate } from "./metabolismView";
 import type { TimelineBackfillStatus } from "../../memory/timelineBackfill";
-import { M_BATCH_SCRIPT, renderDreamReviewBatchBar, renderFactBatchBar, renderMBatchBar, renderQualityBatchBar } from "./batchBars";
+import { M_BATCH_SCRIPT, renderCandidateBatchBar, renderDreamReviewBatchBar, renderFactBatchBar, renderMBatchBar, renderQualityBatchBar } from "./batchBars";
 import { renderPageShell } from "./pageShell";
 import { renderMetabolismReviewGuide, renderTimelineReviewGuide } from "./reviewGuides";
 import { renderToastScriptContent } from "./viewToast";
@@ -343,7 +343,8 @@ export function renderPage(input: PageInput, data: PageData): string {
   const listTitle = input.tab === "message" ? "历史留言" : input.tab === "diary" ? "我们的日记" : input.tab === "quote" ? "我的语录" : input.tab === "timeline" ? "分段日记" : input.tab === "review" ? "Dream 审核" : input.tab === "x-review" ? "X 时间轴审核" : input.tab === "m-review" ? "Z 事实状态 · Y 关系清理 · M 安全巡检" : input.date ? `${input.date} 的记忆` : input.q ? `${searchPrefix}：${input.q}` : "记忆列表";
   const qualityBatchBar = input.tab === "review" ? renderQualityBatchBar(data.candidates) : "";
   const factBatchBar = input.tab === "review" ? renderFactBatchBar(data.candidates) : "";
-  const candidateList = input.tab === "review" ? qualityBatchBar + factBatchBar + data.candidates.map(renderMemoryCandidate).join("") : input.tab === "x-review" ? data.candidates.map(renderTimelineCandidate).join("") : input.tab === "m-review" ? data.candidates.map(renderOperationalReviewCandidate).join("") : "";
+  const candidateBatchBar = input.tab === "review" ? renderCandidateBatchBar(data.candidates) : "";
+  const candidateList = input.tab === "review" ? candidateBatchBar + qualityBatchBar + factBatchBar + data.candidates.map(renderMemoryCandidate).join("") : input.tab === "x-review" ? data.candidates.map(renderTimelineCandidate).join("") : input.tab === "m-review" ? data.candidates.map(renderOperationalReviewCandidate).join("") : "";
   const resolvedOperational = input.tab === "m-review" && data.resolvedCandidates.length
     ? `<details class="card memory-detail"><summary>最近已执行，可回滚（${data.resolvedCandidates.length}）</summary>${data.resolvedCandidates.map(renderOperationalReviewCandidate).join("")}</details>`
     : "";
