@@ -152,6 +152,97 @@ export function buildHistoricalRelationPageQuery(input) {
   };
 }
 
+export function buildHistoricalStructuralMismatchRowsQuery(input) {
+  const relationIds = Array.isArray(input.relationIds)
+    ? input.relationIds.map((value) => String(value).trim())
+    : [];
+  if (
+    relationIds.length < 1
+    || relationIds.length > 100
+    || relationIds.some((value) => !value)
+    || new Set(relationIds).size !== relationIds.length
+  ) {
+    throw new Error("historical_structural_manifest_relation_ids_invalid");
+  }
+  return {
+    name: "historical_structural_mismatch_manifest_rows",
+    sql: `${classifiedRelationsCte(input.namespace)}
+    SELECT classified_relations.*,
+      CASE
+        WHEN relation_type = 'same_fact_key' THEN EXISTS (
+          SELECT 1
+          FROM memory_relations AS live_relation
+          JOIN memories AS source_memory
+            ON source_memory.namespace = live_relation.namespace
+           AND source_memory.id = live_relation.source_memory_id
+          JOIN memories AS target_memory
+            ON target_memory.namespace = live_relation.namespace
+           AND target_memory.id = live_relation.target_memory_id
+          WHERE live_relation.namespace = classified_relations.namespace
+            AND live_relation.id = classified_relations.id
+            AND NOT (
+              source_memory.fact_key IS NOT NULL
+              AND target_memory.fact_key IS NOT NULL
+              AND source_memory.fact_key = target_memory.fact_key
+            )
+        )
+        WHEN relation_type = 'in_thread' THEN EXISTS (
+          SELECT 1
+          FROM memory_relations AS live_relation
+          JOIN memories AS source_memory
+            ON source_memory.namespace = live_relation.namespace
+           AND source_memory.id = live_relation.source_memory_id
+          JOIN memories AS target_memory
+            ON target_memory.namespace = live_relation.namespace
+           AND target_memory.id = live_relation.target_memory_id
+          WHERE live_relation.namespace = classified_relations.namespace
+            AND live_relation.id = classified_relations.id
+            AND NOT (
+              source_memory.thread IS NOT NULL
+              AND target_memory.thread IS NOT NULL
+              AND source_memory.thread = target_memory.thread
+            )
+        )
+        ELSE 0
+      END AS structural_mismatch
+    FROM classified_relations
+    WHERE id IN (${relationIds.map(sqlString).join(", ")})
+    ORDER BY created_at, id`
+  };
+}
+
+export function buildHistoricalRelationSubsetSummary(rows) {
+  const groups = new Map();
+  for (const row of rows) {
+    const key = JSON.stringify([
+      row.lifecycle_cohort,
+      row.provenance_class,
+      row.relation_type
+    ]);
+    const current = groups.get(key) ?? {
+      lifecycle_cohort: row.lifecycle_cohort,
+      provenance_class: row.provenance_class,
+      relation_type: row.relation_type,
+      relation_count: 0,
+      first_created_at: row.created_at,
+      last_created_at: row.created_at
+    };
+    current.relation_count += 1;
+    if (String(row.created_at) < String(current.first_created_at)) {
+      current.first_created_at = row.created_at;
+    }
+    if (String(row.created_at) > String(current.last_created_at)) {
+      current.last_created_at = row.created_at;
+    }
+    groups.set(key, current);
+  }
+  return [...groups.values()].sort((left, right) => (
+    String(left.lifecycle_cohort).localeCompare(String(right.lifecycle_cohort))
+    || String(left.provenance_class).localeCompare(String(right.provenance_class))
+    || String(left.relation_type).localeCompare(String(right.relation_type))
+  ));
+}
+
 export function assertReadOnlyHistoricalRelationQueries(queries) {
   const writePattern =
     /\b(?:INSERT|UPDATE|DELETE|REPLACE|CREATE|ALTER|DROP|PRAGMA|VACUUM|ATTACH|DETACH)\b/i;
