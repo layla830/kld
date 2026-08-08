@@ -4,7 +4,9 @@
   { "name": "preference_uses_worker", "prompt": "我不喜欢你用什么说话方式", "expected_owner": "worker", "worker_should_recall": true },
   { "name": "relationship_history_uses_worker", "prompt": "那次我们为什么吵架", "expected_owner": "worker", "worker_should_recall": true },
   { "name": "durable_status_uses_worker", "prompt": "复婚是谁来提", "expected_owner": "worker", "worker_should_recall": true },
-  { "name": "recent_context_uses_vps", "prompt": "刚才聊到哪了", "expected_owner": "local", "worker_should_recall": false },
+  { "name": "current_context_needs_no_retrieval", "prompt": "刚才聊到哪了", "expected_owner": "none", "worker_should_recall": false },
+  { "name": "recent_cross_session_history_uses_vps", "prompt": "最近这几天部署问题", "expected_owner": "local", "worker_should_recall": false },
+  { "name": "non_deictic_shangmian_uses_worker", "prompt": "以前那份文档上面写了什么", "expected_owner": "worker", "worker_should_recall": true },
   { "name": "raw_evidence_uses_vps", "prompt": "把6月10日我当时的原话找出来", "expected_owner": "local", "worker_should_recall": true },
   { "name": "current_emotion_does_not_force_recall", "prompt": "我现在好难过", "expected_owner": "none", "worker_should_recall": false },
   { "name": "trivial_message_does_not_recall", "prompt": "好", "expected_owner": "none", "worker_should_recall": false }

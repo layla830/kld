@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Route recall requests by evidence ownership, not by token-hit count.
 
-VPS local history owns recent conversation and explicit verbatim-evidence asks.
+The active conversation already owns current-turn continuity and must not be
+duplicated through retrieval. VPS local history owns cross-session verbatim
+evidence; the Worker owns durable memory.
 The Worker owns curated long-term facts, dated timelines, relationships, rules,
 preferences, and response posture.
 """
@@ -26,7 +28,12 @@ STATUS_QUESTION_RE = re.compile(
     r"(?:还在|还有|还要|是否|是不是).{0,12}(?:吗|呢|么)$",
     re.I,
 )
-RAW_EVIDENCE_RE = re.compile(r"原话|逐字|一字不差|原文|聊天记录|当时怎么说|刚才说了什么|verbatim|exact\s+(?:words|quote)", re.I)
+RAW_EVIDENCE_RE = re.compile(r"原话|逐字|一字不差|原文|聊天记录|当时怎么说|verbatim|exact\s+(?:words|quote)", re.I)
+CURRENT_CONTEXT_RE = re.compile(
+    r"刚刚|刚才|方才|刚聊|刚说|上面(?:这|那)?(?:句|条|段|部分|内容|回答|消息)|上一条|"
+    r"这轮(?:对话)?|本轮(?:对话)?|这段对话|当前对话|current\s+(?:turn|conversation)",
+    re.I,
+)
 DURABLE_QUESTION_RE = re.compile(
     r"(?:平时|一直|总是|以后|应该|喜欢|不喜欢|偏好|习惯|规则|底线|约定|承诺).{0,24}(?:什么|哪|谁|为什么|怎么|是否|是不是)|"
     r"(?:是谁|谁来|谁负责).{0,16}(?:提|说|做|处理|决定)",
@@ -73,15 +80,22 @@ def decide_recall(prompt: str, *, force: bool = False) -> RecallDecision:
     if force:
         return RecallDecision(prompt, intent, True, True, False, "forced")
 
+    # UserPromptSubmit runs inside the active conversation. Deictic references
+    # to that conversation are already visible to the model, so retrieval would
+    # only duplicate context. Explicit operator --force remains available for
+    # diagnostics and recovery.
+    if CURRENT_CONTEXT_RE.search(prompt):
+        return RecallDecision(prompt, intent, False, False, False, "current_context")
+
     meaningful = tokens(prompt)
     memory_signal = bool(MEMORY_SIGNAL_RE.search(prompt))
     raw_evidence = bool(RAW_EVIDENCE_RE.search(prompt))
     status_question = len(meaningful) >= 2 and bool(STATUS_QUESTION_RE.search(prompt))
     durable_question = bool(DURABLE_QUESTION_RE.search(prompt))
 
-    # Explicit raw evidence and recent conversational continuity are the only
-    # synchronous local-recall jobs. Historical dates belong to the Worker's
-    # curated timeline; this prevents a weak local LIKE hit from suppressing it.
+    # Cross-session raw evidence and recent history are the only synchronous
+    # local-recall jobs. Historical dates belong to the Worker's curated
+    # timeline; this prevents a weak local LIKE hit from suppressing it.
     if raw_evidence or intent.mode == "recent":
         reason = "raw_evidence" if raw_evidence else "recent"
         return RecallDecision(prompt, intent, True, True, False, reason)
