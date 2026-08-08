@@ -368,3 +368,52 @@ export async function rejectDreamReview(
     target: null
   };
 }
+
+export type DreamReviewBatchResult = {
+  decision: "approve" | "reject";
+  selected: number;
+  processed: number;
+  skipped: number;
+};
+
+export const MAX_DREAM_REVIEW_BATCH_SIZE = 24;
+
+export async function batchReviewDreamProposals(
+  env: Env,
+  form: FormData
+): Promise<DreamReviewBatchResult | null> {
+  const decision = readFormText(form, "decision");
+  if (decision !== "approve" && decision !== "reject") return null;
+  const ids = Array.from(new Set(
+    form.getAll("id")
+      .filter((value): value is string => typeof value === "string")
+      .map((value) => value.trim())
+      .filter(Boolean)
+  ));
+  if (ids.length > MAX_DREAM_REVIEW_BATCH_SIZE) {
+    throw new Error("dream_review_batch_size_exceeded");
+  }
+  if (ids.length === 0) return { decision, selected: 0, processed: 0, skipped: 0 };
+
+  let processed = 0;
+  let skipped = 0;
+  for (const id of ids) {
+    const item = new FormData();
+    item.set("id", id);
+    try {
+      const result = decision === "approve"
+        ? await approveDreamReview(env, item)
+        : await rejectDreamReview(env, item);
+      if (result) processed += 1;
+      else skipped += 1;
+    } catch (error) {
+      skipped += 1;
+      console.error("admin dream review batch item skipped", {
+        proposalId: id,
+        decision,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+  }
+  return { decision, selected: ids.length, processed, skipped };
+}

@@ -3,6 +3,7 @@ import type { MemoryCandidateRecord } from "../src/db/memoryCandidates";
 import type { MemoryRecord } from "../src/types";
 import {
   M_BATCH_SCRIPT,
+  renderDreamReviewBatchBar,
   renderFactBatchBar,
   renderMBatchBar,
   renderQualityBatchBar
@@ -152,7 +153,7 @@ describe("admin board view", () => {
     expect(TOAST_TEXT["five-axis-retried"]).toBe("五维死信已重新入队");
     expect(TOAST_TEXT["x-approved"]).toBe("日期标签已更新");
     expect(TOAST_TEXT["y-relation-stale"]).toContain("关系候选已过期");
-    expect(Object.keys(TOAST_TEXT)).toHaveLength(31);
+    expect(Object.keys(TOAST_TEXT)).toHaveLength(34);
     expect(renderToastScriptContent("x-approved")).toContain('const n="x-approved"');
     expect(renderToastScriptContent(null)).toContain("const n=null");
     expect(renderToastScriptContent(undefined)).toContain("const n=undefined");
@@ -182,6 +183,37 @@ describe("admin board view", () => {
     expect(M_BATCH_SCRIPT).toContain("function updateMBatch()");
     expect(M_BATCH_SCRIPT).toContain("确认只删除选中的");
     expect(M_BATCH_SCRIPT).toContain("确认保留选中的");
+  });
+
+  it("renders the dream review batch bar and per-card checkboxes", () => {
+    expect(renderDreamReviewBatchBar([])).toBe("");
+    expect(renderDreamReviewBatchBar([memoryRecord()])).toBe("");
+    const proposal = memoryRecord({
+      id: "review_batch_test",
+      type: "dream_review",
+      content: "Update proposal",
+      summary: JSON.stringify({
+        kind: "dream_review",
+        action: "update",
+        target_id: "mem_target",
+        patch: { content: "updated memory" },
+        target: { id: "mem_target", type: "note", status: "active", content: "old memory" }
+      })
+    });
+    const bar = renderDreamReviewBatchBar([proposal]);
+    expect(bar).toContain('action="/admin/memories/review/batch"');
+    expect(bar).toContain("function updateDreamReviewBatch()");
+    expect(bar).toContain("确认批量同意选中的");
+    expect(bar).toContain("确认批量拒绝选中的");
+
+    const page = renderPage(pageInput("review"), pageData({ records: [proposal] }));
+    expect(page).toContain('id="dream-review-batch-form"');
+    expect(page).toContain('class="dream-review-batch-checkbox"');
+    expect(page).toContain('form="dream-review-batch-form"');
+    expect(page).toContain('name="id" value="review_batch_test"');
+    expect(TOAST_TEXT["dream-batch-approved"]).toBeTruthy();
+    expect(TOAST_TEXT["dream-batch-rejected"]).toBeTruthy();
+    expect(TOAST_TEXT["dream-batch-partial"]).toBeTruthy();
   });
 
   it("renders review guides only in their owning tabs", () => {

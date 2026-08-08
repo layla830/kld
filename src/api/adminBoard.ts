@@ -1,7 +1,7 @@
 import type { Env } from "../types";
 import { enqueueDiarySplitIfNeeded, enqueueMemoryVectorSync } from "../queue/producer";
 import { createBoardMemory, deleteBoardMemory, editBoardMemory } from "./adminBoard/actions";
-import { approveDreamReview, rejectDreamReview } from "./adminBoard/dreamReviewActions";
+import { approveDreamReview, batchReviewDreamProposals, rejectDreamReview } from "./adminBoard/dreamReviewActions";
 import { forbidden, isAuthorized, isSameOriginAdminPost, unauthorized } from "./adminBoard/auth";
 import { fetchHeatmap, fetchLmc5Dashboard, fetchMemories, fetchQuoteCategories, fetchStats, fetchTimelineDates, fetchTypes } from "./adminBoard/data";
 import { fetchDreamReviewMemories } from "./adminBoard/reviewData";
@@ -76,6 +76,22 @@ export async function handleAdminBoard(request: Request, env: Env, ctx: Executio
       return Response.redirect(`${url.origin}${noticeUrl(ref, result ? "rejected" : "empty")}`, 303);
     } catch (error) {
       console.error("admin dream review reject failed", error);
+      return Response.redirect(`${url.origin}${noticeUrl(ref, "error")}`, 303);
+    }
+  }
+
+  if (request.method === "POST" && url.pathname === ADMIN_BOARD_ROUTES.batchDreamReview.path) {
+    const ref = request.headers.get("referer") || `${url.origin}/admin/memories?tab=review`;
+    try {
+      const result = await batchReviewDreamProposals(env, await request.formData());
+      const notice = !result || result.processed === 0
+        ? "empty"
+        : result.skipped > 0
+          ? "dream-batch-partial"
+          : result.decision === "approve" ? "dream-batch-approved" : "dream-batch-rejected";
+      return Response.redirect(`${url.origin}${noticeUrl(ref, notice)}`, 303);
+    } catch (error) {
+      console.error("admin dream review batch failed", error);
       return Response.redirect(`${url.origin}${noticeUrl(ref, "error")}`, 303);
     }
   }
