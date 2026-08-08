@@ -3,7 +3,7 @@ import type { CandidateInput } from "../src/db/memoryCandidates";
 import type { MemoryCandidateRecord } from "../src/db/memoryCandidates";
 import {
   applyDreamCandidatePolicy,
-  applyDreamDeleteTargetPolicy,
+  applyDreamMutationTargetPolicy,
   hasUsableChunkSummary,
   isMemoryDreamDeleteProtected
 } from "../src/memory/dreamCandidatePolicy";
@@ -52,7 +52,7 @@ describe("Dream candidate ingress policy", () => {
     const target = { pinned: 0, type: "rule", importance: 0.6, fact_key: null, active_fact: 1 };
 
     expect(isMemoryDreamDeleteProtected(target)).toBe(true);
-    expect(applyDreamDeleteTargetPolicy(input, target)).toMatchObject({
+    expect(applyDreamMutationTargetPolicy(input, target)).toMatchObject({
       outcome: "suppress",
       reason: "protected_delete_target"
     });
@@ -63,7 +63,27 @@ describe("Dream candidate ingress policy", () => {
     const target = { pinned: 0, type: "note", importance: 0.89, fact_key: null, active_fact: 1 };
 
     expect(isMemoryDreamDeleteProtected(target)).toBe(false);
-    expect(applyDreamDeleteTargetPolicy(input, target)).toEqual({ outcome: "accept", candidate: input });
+    expect(applyDreamMutationTargetPolicy(input, target)).toEqual({ outcome: "accept", candidate: input });
+  });
+
+  it("suppresses updates to an original diary", () => {
+    const input = candidate({ action: "update", targetId: "mem_diary" });
+    const target = { pinned: 0, type: "diary", importance: 0.6, fact_key: null, active_fact: 1 };
+
+    expect(applyDreamMutationTargetPolicy(input, target)).toMatchObject({
+      outcome: "suppress",
+      reason: "protected_update_target"
+    });
+  });
+
+  it("suppresses updates that would convert another memory into a diary", () => {
+    const input = candidate({ action: "update", targetId: "mem_note", payload: { type: "auto_diary" } });
+    const target = { pinned: 0, type: "note", importance: 0.6, fact_key: null, active_fact: 1 };
+
+    expect(applyDreamMutationTargetPolicy(input, target)).toMatchObject({
+      outcome: "suppress",
+      reason: "protected_update_target"
+    });
   });
 
   it("protects pinned, critical, and current fact-keyed memories", () => {

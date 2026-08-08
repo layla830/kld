@@ -52,4 +52,49 @@ describe("Dream candidate ingress accounting", () => {
       "SELECT COUNT(*) AS count FROM memory_candidates WHERE namespace = 'default' AND external_key = ?"
     ).bind(externalKey).first()).resolves.toMatchObject({ count: 0 });
   });
+
+  it("suppresses an update that targets an original diary", async () => {
+    const originalContent = `original diary ${crypto.randomUUID()}`;
+    const target = await createMemory(env.DB, {
+      namespace: "default",
+      type: "diary",
+      content: originalContent
+    });
+    const externalKey = `protected-ingress-update:${crypto.randomUUID()}`;
+    const response = await handleMemoryCandidates(new Request("https://worker.test/v1/memory-candidates", {
+      method: "POST",
+      headers: {
+        authorization: "Bearer candidate-ingress-key",
+        "content-type": "application/json"
+      },
+      body: JSON.stringify({
+        candidates: [{
+          external_key: externalKey,
+          dream_date: "2026-08-08",
+          action: "update",
+          status: "pending",
+          target_id: target.id,
+          payload: { content: "Dream must not replace the original diary." },
+          source_chunk_ids: [1],
+          source_chunks: [{
+            summary: "This source summary is deliberately long enough to pass the ordinary evidence-shape check."
+          }]
+        }]
+      })
+    }), {
+      DB: env.DB,
+      DEBUG_API_KEY: "candidate-ingress-key"
+    } as Env);
+
+    expect(response.status).toBe(202);
+    await expect(response.json()).resolves.toMatchObject({
+      data: { accepted: 0, stored: 0, suppressed: 1 }
+    });
+    await expect(env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM memory_candidates WHERE namespace = 'default' AND external_key = ?"
+    ).bind(externalKey).first()).resolves.toMatchObject({ count: 0 });
+    await expect(env.DB.prepare(
+      "SELECT content FROM memories WHERE namespace = 'default' AND id = ?"
+    ).bind(target.id).first()).resolves.toMatchObject({ content: originalContent });
+  });
 });
