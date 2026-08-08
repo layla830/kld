@@ -797,3 +797,54 @@ provenance and preserves its prior reason via the existing
 `|previous_reason:` suffix. The 17 mismatches were not included in the apply
 selection and received no terminal ledger entry. Semantic Y sampling and
 semantic apply remain stopped because the v2 model stability gate failed.
+
+#### Structural mismatch deletion runbook (prepared 2026-08-08)
+
+The remaining 8 `same_fact_key` and 9 `in_thread` mismatches are eligible for
+governed deletion only. They must not be retyped and must not use the shared
+1369-row manifest lifecycle. The CLI enforces this structurally: every row in
+the supplied manifest must be an eligible-unproven structural candidate, so
+the mixed shared manifest is rejected before any remote query.
+
+1. Put the exact 17 relation IDs in a local JSON array, then create a dedicated
+   read-only manifest. The command performs one bounded SELECT and emits no raw
+   `fact_key`, `thread`, or memory content:
+
+   ```powershell
+   npm.cmd run manifest:historical-structural-mismatch -- --remote `
+     --relation-ids .audit\historical-structural-mismatch-ids.json `
+     --output .audit\historical-structural-mismatch-manifest.json
+   ```
+
+2. Snapshot and verify that manifest with the existing
+   `snapshot:historical-relations` command and cohort `eligible_unproven`.
+   Rollback code must be present before any delete apply.
+
+3. Split the IDs into explicit selection files of at most 10 rows. A selection
+   has `schema_version: 1`, the dedicated `manifest_id`, `relation_ids`, and an
+   optional `batch_sha256`. Run the structural delete command without
+   `--apply` first. It returns the canonical hash and writes nothing.
+
+4. Apply only after separate approval naming both the dedicated manifest ID
+   and exact batch hash:
+
+   ```powershell
+   npm.cmd run delete:historical-structural-mismatch -- --remote `
+     --manifest .audit\historical-structural-mismatch-manifest.json `
+     --selection .audit\historical-structural-mismatch-selection-1.json `
+     --apply --confirm <manifest_id> --approve-selection <batch_sha256> --json
+   ```
+
+   Any relation drift, unattributed missing row, or now-equal structural field
+   aborts the whole selected batch before the SQL file runs. A now-equal row is
+   reported as `now_confirmable`; the command never redirects to another write
+   path.
+
+5. Rollback uses the same selection and approval boundary with
+   `rollback:historical-structural-mismatch`. It restores only rows attributed
+   to this manifest's immutable deletion ledger and refuses a conflicting live
+   relation identity.
+
+Deletion is recoverable through that rollback snapshot. The existing v2
+promotion path cannot recreate a relation after its live row has been deleted;
+future deterministic creation, if needed, is a separate owner and scope.
