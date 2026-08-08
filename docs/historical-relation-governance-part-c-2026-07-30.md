@@ -767,3 +767,33 @@ probe was out of sequence and does not reopen the gate. PR #119 fixed the CLI
 so future non-2xx captures retain the Worker's structured failure telemetry.
 A production read-only check on 2026-08-08 confirmed zero reconfirmation batch
 rows and zero reconfirmation entry rows.
+
+#### Deterministic structural closure (2026-08-08)
+
+The verified `eligible_unproven` manifest
+`hrg_acd903f8c2cc13e9494d105add28737e` contained 26 structural relations:
+8 `same_fact_key` and 18 `in_thread`. Bounded dry-runs evaluated all 26 from
+current endpoint fields with zero model calls and zero writes:
+
+- all 8 `same_fact_key` relations had unequal current `fact_key` values and
+  were left unchanged;
+- 9 `in_thread` relations had equal non-empty current `thread` values and
+  were selected for promotion;
+- the other 9 `in_thread` relations had unequal current `thread` values and
+  were left unchanged.
+
+After explicit approval of manifest and selection SHA-256, one production
+apply promoted the 9 confirmed `in_thread` relations atomically:
+
+- batch ID: `hyr_2df13585b407494c2da4526cd47184a8`;
+- selection SHA-256:
+  `2df13585b407494c2da4526cd47184a87950aa2ca116024e669ffbbd0f74d9fe`;
+- result: 9 `promoted`, 0 `not_reconfirmed`, 0 `not_applied`;
+- `model_called: false`, `attempts: []`;
+- the apply response's ledger readback returned all 9 promoted entries.
+
+Each promoted relation now carries `historical-structural:in_thread:<hash>`
+provenance and preserves its prior reason via the existing
+`|previous_reason:` suffix. The 17 mismatches were not included in the apply
+selection and received no terminal ledger entry. Semantic Y sampling and
+semantic apply remain stopped because the v2 model stability gate failed.
