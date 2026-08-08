@@ -300,7 +300,7 @@ export async function batchReviewDiaryFactCandidates(env: Env, form: FormData): 
 const MAX_CANDIDATE_BATCH_SIZE = 100;
 
 export interface CandidateBatchReviewResult {
-  decision: "approve" | "reject";
+  decision: "approve" | "reject" | "override";
   selected: number;
   processed: number;
   skipped: number;
@@ -309,7 +309,7 @@ export interface CandidateBatchReviewResult {
 
 export async function batchReviewCandidates(env: Env, form: FormData): Promise<CandidateBatchReviewResult | null> {
   const decision = readFormText(form, "decision");
-  if (decision !== "approve" && decision !== "reject") return null;
+  if (decision !== "approve" && decision !== "reject" && decision !== "override") return null;
   const ids = [...new Set(form.getAll("ids").map(String).map((id) => id.trim()).filter(Boolean))]
     .slice(0, MAX_CANDIDATE_BATCH_SIZE);
   if (ids.length === 0) return null;
@@ -320,12 +320,19 @@ export async function batchReviewCandidates(env: Env, form: FormData): Promise<C
     const itemForm = new FormData();
     itemForm.set("id", id);
     try {
-      if (decision === "approve") {
+      if (decision === "reject") {
+        if (!(await rejectCandidate(env, itemForm))) continue;
+      } else {
+        if (decision === "override") {
+          const candidate = await getMemoryCandidate(env.DB, "default", id);
+          if (candidate && candidate.status !== "pending") {
+            if (!canOverrideCandidateValidation(candidate)) continue;
+            itemForm.set("override_validation", "1");
+          }
+        }
         const target = await approveCandidate(env, itemForm);
         if (!target) continue;
         targets.push(target);
-      } else if (!(await rejectCandidate(env, itemForm))) {
-        continue;
       }
       processed += 1;
     } catch {

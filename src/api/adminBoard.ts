@@ -213,7 +213,9 @@ export async function handleAdminBoard(request: Request, env: Env, ctx: Executio
         ? "empty"
         : result.skipped > 0
           ? "candidate-batch-partial"
-          : result.decision === "approve" ? "candidate-batch-approved" : "candidate-batch-rejected";
+          : result.decision === "approve"
+            ? "candidate-batch-approved"
+            : result.decision === "reject" ? "candidate-batch-rejected" : "candidate-batch-overridden";
       return Response.redirect(`${url.origin}${noticeUrl(ref, notice)}`, 303);
     } catch (error) {
       console.error("admin candidate batch review failed", error);
