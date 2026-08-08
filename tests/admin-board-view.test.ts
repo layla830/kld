@@ -154,7 +154,7 @@ describe("admin board view", () => {
     expect(TOAST_TEXT["five-axis-retried"]).toBe("五维死信已重新入队");
     expect(TOAST_TEXT["x-approved"]).toBe("日期标签已更新");
     expect(TOAST_TEXT["y-relation-stale"]).toContain("关系候选已过期");
-    expect(Object.keys(TOAST_TEXT)).toHaveLength(37);
+    expect(Object.keys(TOAST_TEXT)).toHaveLength(38);
     expect(renderToastScriptContent("x-approved")).toContain('const n="x-approved"');
     expect(renderToastScriptContent(null)).toContain("const n=null");
     expect(renderToastScriptContent(undefined)).toContain("const n=undefined");
@@ -193,6 +193,9 @@ describe("admin board view", () => {
     expect(bar).toContain("function updateCandidateBatch()");
     expect(bar).toContain("确认批量同意选中的");
     expect(bar).toContain("确认批量拒绝选中的");
+    expect(bar).toContain('name="decision" value="override"');
+    expect(bar).toContain("人工确认通过选中项");
+    expect(bar).toContain("强行通过选中的");
 
     const page = renderPage(pageInput("review"), pageData({ candidates: [candidate("add")] }));
     expect(page).toContain('id="candidate-batch-form"');
@@ -202,6 +205,7 @@ describe("admin board view", () => {
     expect(TOAST_TEXT["candidate-batch-approved"]).toBeTruthy();
     expect(TOAST_TEXT["candidate-batch-rejected"]).toBeTruthy();
     expect(TOAST_TEXT["candidate-batch-partial"]).toBeTruthy();
+    expect(TOAST_TEXT["candidate-batch-overridden"]).toBeTruthy();
   });
 
   it("renders the dream review batch bar and per-card checkboxes", () => {
