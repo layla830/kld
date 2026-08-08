@@ -848,3 +848,22 @@ the mixed shared manifest is rejected before any remote query.
 Deletion is recoverable through that rollback snapshot. The existing v2
 promotion path cannot recreate a relation after its live row has been deleted;
 future deterministic creation, if needed, is a separate owner and scope.
+
+#### Recorded structural mismatch deletion (2026-08-08)
+
+After PR #122 merged at `4f72f0a`, production manifest
+`hrg_3b5d6dc34f01b69be677da97b150bb2d` was snapshotted and independently
+verified with 17 immutable rows. Two explicitly approved, bounded delete
+batches then removed the deterministic mismatches:
+
+- batch 1: `hrs_a9a262d3403849393960c37f0d2a_1`, 10 relations, selection
+  SHA-256 `a9a262d3403849393960c37f0d2a16db3fe665558d3d9de251e883ac2bc2ecc7`;
+- batch 2: `hrs_827f8e44f1b7a1a9a363c350d6b7_2`, 7 relations, selection
+  SHA-256 `827f8e44f1b7a1a9a363c350d6b7f34d2b675ee1cd1e76ffb182df7b96e3af30`.
+
+Final readback returned manifest status `deleted`, 17/17
+`attributed_deleted`, zero `missing_unattributed`, zero `drifted`, zero
+`now_confirmable`, and zero remaining deletable/live rows. The immutable
+snapshot and deletion ledger remain the rollback source of truth. The shared
+1369-row reconfirmation manifest was not mutated, and semantic Y remains
+frozen under the failed stability gate.
