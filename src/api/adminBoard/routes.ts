@@ -10,6 +10,7 @@ export const ADMIN_BOARD_ROUTES = {
   delete: { method: "POST", path: "/admin/memories/delete" },
   approveDreamReview: { method: "POST", path: "/admin/memories/review/approve" },
   rejectDreamReview: { method: "POST", path: "/admin/memories/review/reject" },
+  batchDreamReview: { method: "POST", path: "/admin/memories/review/batch" },
   approveCandidate: { method: "POST", path: "/admin/memories/candidates/approve" },
   rejectCandidate: { method: "POST", path: "/admin/memories/candidates/reject" },
   repairCandidateEvidence: { method: "POST", path: "/admin/memories/candidates/repair-evidence" },

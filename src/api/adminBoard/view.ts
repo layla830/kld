@@ -9,7 +9,7 @@ import type { CoordinateBackfillStatus } from "../../memory/coordinateBackfillCo
 import { renderTimelineCandidate } from "./timelineView";
 import { renderOperationalReviewCandidate } from "./metabolismView";
 import type { TimelineBackfillStatus } from "../../memory/timelineBackfill";
-import { M_BATCH_SCRIPT, renderFactBatchBar, renderMBatchBar, renderQualityBatchBar } from "./batchBars";
+import { M_BATCH_SCRIPT, renderDreamReviewBatchBar, renderFactBatchBar, renderMBatchBar, renderQualityBatchBar } from "./batchBars";
 import { renderPageShell } from "./pageShell";
 import { renderMetabolismReviewGuide, renderTimelineReviewGuide } from "./reviewGuides";
 import { renderToastScriptContent } from "./viewToast";
@@ -348,7 +348,8 @@ export function renderPage(input: PageInput, data: PageData): string {
     ? `<details class="card memory-detail"><summary>最近已执行，可回滚（${data.resolvedCandidates.length}）</summary>${data.resolvedCandidates.map(renderOperationalReviewCandidate).join("")}</details>`
     : "";
   const memoryList = data.records.map((record) => renderMemory(record, input.tab)).join("");
-  const list = candidateList || memoryList || resolvedOperational ? candidateList + memoryList + resolvedOperational : '<div class="empty">这里还没有内容</div>';
+  const dreamReviewBatchBar = input.tab === "review" ? renderDreamReviewBatchBar(data.records) : "";
+  const list = candidateList || memoryList || resolvedOperational ? candidateList + dreamReviewBatchBar + memoryList + resolvedOperational : '<div class="empty">这里还没有内容</div>';
   const dashboard = input.tab === "browse" ? renderDashboard(input, data) : "";
   const lmc5Dashboard = input.tab === "lmc5" ? renderCoordinateBackfill(data.coordinateBackfill) + renderLmc5Dashboard(data.lmc5) : "";
   const calendar = input.tab === "timeline" ? renderCalendar(input, data.timelineDates) : "";

@@ -29,7 +29,10 @@ const TOAST_ENTRIES = [
   ["m-rolled-back", "已按快照回滚"],
   ["m-batch-approved", "已批量删除选中的关系边"],
   ["m-batch-rejected", "已批量保留选中的关系边"],
-  ["m-batch-partial", "批量操作已完成，变化项已跳过"]
+  ["m-batch-partial", "批量操作已完成，变化项已跳过"],
+  ["dream-batch-approved", "已批量同意选中的提案"],
+  ["dream-batch-rejected", "已批量拒绝选中的提案"],
+  ["dream-batch-partial", "批量处理完成，部分提案已跳过"]
 ] as const;
 
 export const TOAST_TEXT: Readonly<Record<string, string>> = Object.freeze(
