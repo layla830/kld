@@ -8,7 +8,7 @@ import { fetchDreamReviewMemories } from "./adminBoard/reviewData";
 import { inputFromUrl, noticeUrl, PAGE_SIZE, qs, readFormText } from "./adminBoard/utils";
 import { renderPage } from "./adminBoard/view";
 import { countMemoryCandidatesByAction, countPendingOperationalReviewCandidates, listMemoryCandidates, listMemoryCandidatesByAction, listOperationalReviewCandidates, listRecentApprovedOperationalReviewCandidates } from "../db/memoryCandidates";
-import { approveCandidate, batchRejectLowQualityCandidates, batchReviewDiaryFactCandidates, rejectCandidate, repairCandidateEvidence } from "./adminBoard/candidateActions";
+import { approveCandidate, batchRejectLowQualityCandidates, batchReviewCandidates, batchReviewDiaryFactCandidates, rejectCandidate, repairCandidateEvidence } from "./adminBoard/candidateActions";
 import { getCoordinateBackfillStatus, setCoordinateBackfillEnabled } from "../memory/coordinateBackfillControl";
 import { approveTimelineCandidate, rejectTimelineCandidate, timelineCandidateNotice } from "./adminBoard/timelineActions";
 import { getTimelineBackfillStatus, scanTimelineBackfillPage } from "../memory/timelineBackfill";
@@ -201,6 +201,22 @@ export async function handleAdminBoard(request: Request, env: Env, ctx: Executio
       return Response.redirect(`${url.origin}${noticeUrl(ref, notice)}`, 303);
     } catch (error) {
       console.error("admin diary fact batch review failed", error);
+      return Response.redirect(`${url.origin}${noticeUrl(ref, "error")}`, 303);
+    }
+  }
+
+  if (request.method === "POST" && url.pathname === ADMIN_BOARD_ROUTES.batchReviewCandidates.path) {
+    const ref = request.headers.get("referer") || `${url.origin}/admin/memories?tab=review`;
+    try {
+      const result = await batchReviewCandidates(env, await request.formData());
+      const notice = !result || result.processed === 0
+        ? "empty"
+        : result.skipped > 0
+          ? "candidate-batch-partial"
+          : result.decision === "approve" ? "candidate-batch-approved" : "candidate-batch-rejected";
+      return Response.redirect(`${url.origin}${noticeUrl(ref, notice)}`, 303);
+    } catch (error) {
+      console.error("admin candidate batch review failed", error);
       return Response.redirect(`${url.origin}${noticeUrl(ref, "error")}`, 303);
     }
   }

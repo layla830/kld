@@ -281,6 +281,44 @@ export async function batchReviewDiaryFactCandidates(env: Env, form: FormData): 
   return { decision, selected: ids.length, processed, skipped: ids.length - processed, targets };
 }
 
+const MAX_CANDIDATE_BATCH_SIZE = 100;
+
+export interface CandidateBatchReviewResult {
+  decision: "approve" | "reject";
+  selected: number;
+  processed: number;
+  skipped: number;
+  targets: MemoryRecord[];
+}
+
+export async function batchReviewCandidates(env: Env, form: FormData): Promise<CandidateBatchReviewResult | null> {
+  const decision = readFormText(form, "decision");
+  if (decision !== "approve" && decision !== "reject") return null;
+  const ids = [...new Set(form.getAll("ids").map(String).map((id) => id.trim()).filter(Boolean))]
+    .slice(0, MAX_CANDIDATE_BATCH_SIZE);
+  if (ids.length === 0) return null;
+
+  const targets: MemoryRecord[] = [];
+  let processed = 0;
+  for (const id of ids) {
+    const itemForm = new FormData();
+    itemForm.set("id", id);
+    try {
+      if (decision === "approve") {
+        const target = await approveCandidate(env, itemForm);
+        if (!target) continue;
+        targets.push(target);
+      } else if (!(await rejectCandidate(env, itemForm))) {
+        continue;
+      }
+      processed += 1;
+    } catch {
+      continue;
+    }
+  }
+  return { decision, selected: ids.length, processed, skipped: ids.length - processed, targets };
+}
+
 async function approveCreateCandidate(
   env: Env,
   candidate: MemoryCandidateRecord,

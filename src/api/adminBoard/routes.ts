@@ -16,6 +16,7 @@ export const ADMIN_BOARD_ROUTES = {
   repairCandidateEvidence: { method: "POST", path: "/admin/memories/candidates/repair-evidence" },
   batchRejectCandidateQuality: { method: "POST", path: "/admin/memories/candidates/batch-quality-reject" },
   batchReviewCandidateFacts: { method: "POST", path: "/admin/memories/candidates/batch-facts" },
+  batchReviewCandidates: { method: "POST", path: "/admin/memories/candidates/batch" },
   toggleCoordinateBackfill: { method: "POST", path: "/admin/memories/coordinate-backfill/toggle" },
   scanTimeline: { method: "POST", path: "/admin/memories/x-timeline/scan" },
   approveTimeline: { method: "POST", path: "/admin/memories/x-timeline/approve" },
