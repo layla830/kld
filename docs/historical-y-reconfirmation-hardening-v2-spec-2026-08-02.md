@@ -2,8 +2,10 @@
 
 - Date: 2026-08-02 (r2 incorporates the Codex review resolutions; v2 r1 was
   approved in direction but blocked on 5 spec defects)
-- Status: spec only — no implementation, no commit, no deploy, no model
-  calls, no D1 changes
+- Status: implemented by PR #118 and CLI telemetry follow-up PR #119;
+  merged and deployed. Post-deployment work remained dry-run only, and the
+  production reconfirmation batch and entry ledgers were still empty on
+  2026-08-08.
 - Supersedes: v1 (`historical-y-reconfirmation-hardening-spec-2026-08-02.md`)
   and v2 r1 (this document's first revision)
 - Base: `main` @ `73e39d4` (PR #117 merged and deployed)
@@ -246,6 +248,20 @@ migration is needed; old code simply cannot replay into v2 semantics.
 4. No apply in this phase. The human type-correction writer must not be
    designed, let alone executed, until a validated sample shows it is
    needed.
+
+### Post-deployment result
+
+The required offset-99, limit-5 window was run three times after deployment.
+All three Worker requests succeeded on their first model attempt, with zero
+`missing_pair`, structural out-of-vocabulary output, or directed-type flip.
+However, only 2 of 5 pairs received an identical type in all three runs,
+below the required 4-of-5 threshold. The stability gate therefore **failed**.
+
+No apply or 60-relation sample is authorized. An additional offset-792
+dry-run probe was performed after the failed gate: two requests succeeded and
+one ended in `invalid_json`. It wrote nothing, but it was outside the ordered
+plan above and must not be treated as authorization to continue sampling.
+PR #119 subsequently preserved Worker failure telemetry on CLI stderr.
 
 ## Tests and deployment order (blocking fix: runbook ships in-PR)
 

@@ -751,3 +751,19 @@ dry-run CLI invocations. Pass requires ALL of:
 
 Gate results are recorded in `.audit/`. No apply and no new sample without a
 passed gate and explicit user approval.
+
+#### Recorded v2 gate outcome (2026-08-02 to 2026-08-03)
+
+The post-deployment offset-99, limit-5 gate failed. All three requests
+succeeded on their first model attempt, but only 2 of 5 pairs received an
+identical type in all three runs; the contract requires at least 4 of 5.
+There were no `missing_pair`, structural out-of-vocabulary, or directed-flip
+failures. Historical semantic Y sampling and all apply operations remain
+stopped.
+
+One additional offset-792 dry-run probe was run after the failed gate. Two
+requests succeeded and one returned `invalid_json`; all were zero-write. This
+probe was out of sequence and does not reopen the gate. PR #119 fixed the CLI
+so future non-2xx captures retain the Worker's structured failure telemetry.
+A production read-only check on 2026-08-08 confirmed zero reconfirmation batch
+rows and zero reconfirmation entry rows.
