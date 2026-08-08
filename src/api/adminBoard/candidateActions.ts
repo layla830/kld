@@ -33,6 +33,8 @@ import { createMemoryEvent, prepareMemoryEventInsert } from "../../db/memoryEven
 import {
   DREAM_DELETE_CRITICAL_IMPORTANCE,
   DREAM_DELETE_PROTECTED_TYPES,
+  DREAM_UPDATE_PROTECTED_TYPES,
+  isDreamUpdateProtectedType,
   isMemoryDreamDeleteProtected
 } from "../../memory/dreamCandidatePolicy";
 import { nowIso } from "../../utils/time";
@@ -209,6 +211,20 @@ function dreamDeleteTargetAllowedGuard(namespace: string, memoryId: string): Mem
         AND NOT (fact_key IS NOT NULL AND fact_key != '' AND active_fact != 0)
     )`,
     binds: [namespace, memoryId, ...protectedTypes, DREAM_DELETE_CRITICAL_IMPORTANCE]
+  };
+}
+
+function dreamUpdateTargetAllowedGuard(namespace: string, memoryId: string): MemoryMutationGuard {
+  const protectedTypes = [...DREAM_UPDATE_PROTECTED_TYPES];
+  const placeholders = protectedTypes.map(() => "?").join(", ");
+  return {
+    sql: `EXISTS (
+      SELECT 1 FROM memories
+      WHERE namespace = ? AND id = ?
+        AND status = 'active'
+        AND lower(type) NOT IN (${placeholders})
+    )`,
+    binds: [namespace, memoryId, ...protectedTypes]
   };
 }
 
@@ -435,7 +451,16 @@ async function approveUpdateCandidate(
     });
   }
   const patch = candidateUpdatePatch(payload);
+  if (isDreamUpdateProtectedType(existing.type) || isDreamUpdateProtectedType(patch.type)) {
+    return rejectUnsafeTargetCandidate(env, candidate, {
+      eventType: "memory_candidate_refused_protected_target",
+      reason: "target_is_update_protected",
+      targetStatus: existing.status,
+      targetType: existing.type
+    });
+  }
   if (!Object.values(patch).some((value) => value !== undefined)) return null;
+  const targetGuard = dreamUpdateTargetAllowedGuard(candidate.namespace, existing.id);
   const expectedRevision = existing.five_axis_revision ?? 1;
   const transition = classifyMemoryEligibilityTransition(
     existing,
@@ -453,7 +478,7 @@ async function approveUpdateCandidate(
       candidateId: candidate.id,
       operationId: `deproj_${candidate.id}`,
       memory: existing,
-      guard: candidateApprovalGuard(candidate)
+      guard: combineMutationGuards(candidateApprovalGuard(candidate), targetGuard)
     });
     const committed = await commitMemoryCandidateApproval(env.DB, {
       namespace: candidate.namespace,
@@ -480,7 +505,7 @@ async function approveUpdateCandidate(
     patch,
     expectedStatus: "active",
     expectedRevision,
-    guard: candidateApprovalGuard(candidate),
+    guard: combineMutationGuards(candidateApprovalGuard(candidate), targetGuard),
     markVectorUnsynced: true,
     now: mutationAt
   });

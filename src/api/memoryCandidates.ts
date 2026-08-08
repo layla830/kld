@@ -5,7 +5,7 @@ import { createMemoryEvent } from "../db/memoryEvents";
 import { fetchMemoriesByIds } from "../db/memories";
 import {
   applyDreamCandidatePolicy,
-  applyDreamDeleteTargetPolicy,
+  applyDreamMutationTargetPolicy,
   type DreamCandidatePolicyDecision
 } from "../memory/dreamCandidatePolicy";
 import { isDreamIngressCandidateAction } from "../memory/candidateActionContract";
@@ -56,18 +56,20 @@ export async function handleMemoryCandidates(request: Request, env: Env): Promis
   if (candidates.some((item) => !item)) return openAiError("invalid candidate payload", 400);
   const namespace = resolveNamespace(auth.profile, body?.namespace);
   const decisions = (candidates as CandidateInput[]).map(applyDreamCandidatePolicy);
-  const deleteTargetIds = [...new Set(decisions.flatMap((decision) =>
-    decision.outcome === "accept" && decision.candidate.action === "delete" && decision.candidate.targetId
+  const mutationTargetIds = [...new Set(decisions.flatMap((decision) =>
+    decision.outcome === "accept"
+      && ["update", "delete"].includes(decision.candidate.action)
+      && decision.candidate.targetId
       ? [decision.candidate.targetId]
       : []
   ))];
-  const deleteTargets = await fetchMemoriesByIds(env.DB, { namespace, ids: deleteTargetIds });
-  const deleteTargetsById = new Map(deleteTargets.map((memory) => [memory.id, memory]));
+  const mutationTargets = await fetchMemoriesByIds(env.DB, { namespace, ids: mutationTargetIds });
+  const mutationTargetsById = new Map(mutationTargets.map((memory) => [memory.id, memory]));
   const targetChecked = decisions.map((decision): DreamCandidatePolicyDecision =>
     decision.outcome === "accept"
-      ? applyDreamDeleteTargetPolicy(
+      ? applyDreamMutationTargetPolicy(
         decision.candidate,
-        decision.candidate.targetId ? deleteTargetsById.get(decision.candidate.targetId) : null
+        decision.candidate.targetId ? mutationTargetsById.get(decision.candidate.targetId) : null
       )
       : decision
   );

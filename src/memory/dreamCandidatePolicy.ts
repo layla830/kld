@@ -5,7 +5,7 @@ export type DreamCandidatePolicyDecision =
   | { outcome: "accept"; candidate: CandidateInput }
   | {
     outcome: "suppress";
-    reason: "standalone_excerpt" | "protected_delete_target";
+    reason: "standalone_excerpt" | "protected_delete_target" | "protected_update_target";
     candidate: CandidateInput;
   };
 
@@ -27,6 +27,12 @@ export const DREAM_DELETE_PROTECTED_TYPES = new Set([
 
 export const DREAM_DELETE_CRITICAL_IMPORTANCE = 0.9;
 
+export const DREAM_UPDATE_PROTECTED_TYPES = new Set([
+  "diary",
+  "layla_diary",
+  "auto_diary"
+]);
+
 type DreamDeleteTarget = Pick<
   MemoryRecord,
   "pinned" | "type" | "importance" | "fact_key" | "active_fact"
@@ -39,10 +45,21 @@ export function isMemoryDreamDeleteProtected(memory: DreamDeleteTarget): boolean
   return Boolean(memory.fact_key && memory.active_fact);
 }
 
-export function applyDreamDeleteTargetPolicy(
+export function isDreamUpdateProtectedType(type: string | null | undefined): boolean {
+  return typeof type === "string" && DREAM_UPDATE_PROTECTED_TYPES.has(type.toLowerCase());
+}
+
+export function applyDreamMutationTargetPolicy(
   candidate: CandidateInput,
   target: DreamDeleteTarget | null | undefined
 ): DreamCandidatePolicyDecision {
+  const proposedType = typeof candidate.payload.type === "string" ? candidate.payload.type : null;
+  if (
+    candidate.action === "update"
+    && (isDreamUpdateProtectedType(target?.type) || isDreamUpdateProtectedType(proposedType))
+  ) {
+    return { outcome: "suppress", reason: "protected_update_target", candidate };
+  }
   if (candidate.action === "delete" && target && isMemoryDreamDeleteProtected(target)) {
     return { outcome: "suppress", reason: "protected_delete_target", candidate };
   }

@@ -388,7 +388,7 @@ describe("inactive memory lifecycle callers", () => {
     });
   });
 
-  it("atomically deprojects an inactivating Dream update candidate before approval", async () => {
+  it("refuses a Dream update that would turn a memory into an original diary", async () => {
     const memory = await createEligibleMemory("dream candidate type update");
     await seedRelation(memory, "dream candidate type update");
     const candidateId = await createUpdateCandidate(memory.id, { type: "diary" }, "type");
@@ -404,29 +404,58 @@ describe("inactive memory lifecycle callers", () => {
     await expect(env.DB.prepare(
       "SELECT status, result_memory_id FROM memory_candidates WHERE namespace = 'default' AND id = ?"
     ).bind(candidateId).first()).resolves.toMatchObject({
-      status: "approved",
-      result_memory_id: memory.id
+      status: "rejected",
+      result_memory_id: null
     });
     await expect(env.DB.prepare(
-      `SELECT status, type, active_fact, vector_sync_status, vector_synced
+      `SELECT status, type, active_fact
        FROM memories WHERE namespace = 'default' AND id = ?`
     ).bind(memory.id).first()).resolves.toMatchObject({
       status: "active",
-      type: "diary",
-      active_fact: 1,
-      vector_sync_status: "deleted",
-      vector_synced: 0
+      type: "note",
+      active_fact: 1
     });
-    await expect(relationCount(memory.id)).resolves.toBe(0);
-    await expect(deprojection(memory.id)).resolves.toMatchObject({
-      source: "dream_candidate",
-      reason: "dream_candidate_update",
-      candidate_id: candidateId,
-      invariants_verified: 1
-    });
-    expect(vectors.deletedIds).toContain(memory.vector_id);
+    await expect(relationCount(memory.id)).resolves.toBe(1);
+    await expect(env.DB.prepare(
+      "SELECT COUNT(*) AS count FROM memory_deprojections WHERE namespace = 'default' AND memory_id = ?"
+    ).bind(memory.id).first()).resolves.toMatchObject({ count: 0 });
+    expect(vectors.deletedIds).not.toContain(memory.vector_id);
     expect(vectors.upsertedIds).not.toContain(memory.vector_id);
     expect(vectors.fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("refuses approval of a persisted Dream update targeting an original diary", async () => {
+    const originalContent = `protected diary ${crypto.randomUUID()}`;
+    const memory = await createMemory(env.DB, {
+      namespace: "default",
+      type: "diary",
+      content: originalContent
+    });
+    const candidateId = await createUpdateCandidate(
+      memory.id,
+      { content: "Dream must not rewrite this diary." },
+      "existing-diary"
+    );
+
+    const response = await worker.fetch(
+      adminRequest(ADMIN_BOARD_ROUTES.approveCandidate.path, { id: candidateId }),
+      runtimeEnv,
+      createExecutionContext()
+    );
+
+    expect(response.status).toBe(303);
+    await expect(env.DB.prepare(
+      "SELECT status, result_memory_id FROM memory_candidates WHERE namespace = 'default' AND id = ?"
+    ).bind(candidateId).first()).resolves.toMatchObject({
+      status: "rejected",
+      result_memory_id: null
+    });
+    await expect(env.DB.prepare(
+      "SELECT type, content FROM memories WHERE namespace = 'default' AND id = ?"
+    ).bind(memory.id).first()).resolves.toMatchObject({
+      type: "diary",
+      content: originalContent
+    });
   });
 
   it("keeps an ordinary Dream update candidate on the guarded update path", async () => {
@@ -520,7 +549,7 @@ describe("inactive memory lifecycle callers", () => {
   it("keeps target, relation, and candidate pending when deprojection cannot start", async () => {
     const memory = await createEligibleMemory("dream candidate atomic failure");
     await seedRelation(memory, "dream candidate atomic failure");
-    const candidateId = await createUpdateCandidate(memory.id, { type: "diary" }, "atomic");
+    const candidateId = await createUpdateCandidate(memory.id, { type: "dream_review" }, "atomic");
     const operationId = `deproj_${candidateId}`;
     const triggerName = `ignore_dream_update_${crypto.randomUUID().replaceAll("-", "")}`;
     await env.DB.prepare(
